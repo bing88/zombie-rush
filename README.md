@@ -25,7 +25,7 @@ from you and 2-3 other testers (see Gate 0 in the reconciled plan doc).
 | Client input | `StarterPlayer/StarterPlayerScripts/Controllers/WeaponController.lua` | Hold left mouse/tap-and-hold to fire (full-auto gated by weapon fire rate), `R` or the on-screen Reload button to reload. Local ammo/reload state is **prediction only** for instant UI feedback — `SyncFromServer()` overwrites it with the server's authoritative value whenever `AmmoUpdated` arrives, so any drift self-corrects. |
 | Client UI | `StarterPlayer/StarterPlayerScripts/Controllers/UIController.lua` | HP bar, ammo counter (shows "RELOADING..." mid-reload), crosshair, Reload button, death overlay. Nothing else. |
 | Client effects | `StarterPlayer/StarterPlayerScripts/Controllers/EffectsController.lua` | Purely cosmetic — turns each server `WeaponFired` broadcast into a bullet tracer, muzzle flash, and (if it hit) a red spark. Runs for every player's shots, not just your own. |
-| Client camera/facing | `StarterPlayer/StarterPlayerScripts/Controllers/CameraController.lua` | Disables `Humanoid.AutoRotate` and manually locks the character's yaw to the camera's yaw every frame, so the character always faces the crosshair (third-person-shooter style) instead of only turning toward its movement direction. Strafing still works — only facing changes. |
+| Client camera/facing | `StarterPlayer/StarterPlayerScripts/Controllers/CameraController.lua` | Disables `Humanoid.AutoRotate` and manually locks the character's yaw to the camera's yaw every frame, so the character always faces the crosshair (third-person-shooter style) instead of only turning toward its movement direction. Strafing still works — only facing changes. Also sets an over-the-shoulder camera offset in third person and handles the first-person toggle. |
 | Bootstrap (client) | `StarterPlayer/StarterPlayerScripts/ClientMain.client.lua` | Wires controllers together. |
 | Bootstrap (map) | `ServerScriptService/MapBootstrap.server.lua` | Creates a baseplate + SpawnLocation on server start if they don't already exist, so the place is playable immediately after a fresh sync. |
 
@@ -33,6 +33,7 @@ from you and 2-3 other testers (see Gate 0 in the reconciled plan doc).
 
 - **Fire:** hold left mouse (desktop) or hold your finger down on the screen (mobile/touch)
 - **Reload:** press `R` (desktop) or tap the **RELOAD** button (bottom-right, works on any platform)
+- **Toggle first-person / third-person:** press `V`
 
 ---
 
