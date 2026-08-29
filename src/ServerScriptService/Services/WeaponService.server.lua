@@ -3,10 +3,14 @@
 
 	Server-authoritative shooting. Per the plan (section 5), the client is
 	NEVER trusted for damage, ammo, or fire rate. The client only sends
-	"I want to fire" with aim data; everything else happens here.
+	"I want to fire" with aim data (and "I want to reload"); everything
+	else — including what actually gets drawn as a tracer/flash on every
+	client — is decided here and broadcast out.
 
-	Tier 0 scope: one weapon (AssaultRifle), single-target hitscan raycast,
-	no reload UI polish, ammo tracked server-side per player.
+	Tier 0 scope: one weapon (AssaultRifle), single-target hitscan raycast
+	from the equipped Tool's muzzle, manual + auto reload, ammo tracked
+	server-side per player and synced back to the owner as the source of
+	truth (the client's own copy is prediction only, for responsiveness).
 ]]
 
 local Players = game:GetService("Players")
@@ -17,6 +21,9 @@ local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 
 local FireWeapon = Remotes.FireWeapon
+local ReloadWeapon = Remotes.ReloadWeapon
+local AmmoUpdated = Remotes.AmmoUpdated
+local WeaponFired = Remotes.WeaponFired
 local ZombieHPChanged = Remotes.ZombieHPChanged
 
 -- Per-player runtime state. Never trust the client's copy of this.
@@ -46,8 +53,13 @@ local function getOrCreateState(player: Player): PlayerWeaponState
 	return state
 end
 
+local function syncAmmo(player: Player, state: PlayerWeaponState, stats)
+	AmmoUpdated:FireClient(player, state.AmmoInMagazine, stats.MagazineSize, state.Reloading)
+end
+
 Players.PlayerAdded:Connect(function(player)
-	getOrCreateState(player)
+	local state = getOrCreateState(player)
+	syncAmmo(player, state, WeaponConfig[state.WeaponName])
 end)
 
 Players.PlayerRemoving:Connect(function(player)
@@ -55,33 +67,45 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 --[[
-	Validates and resolves a raycast hit into damage applied to a zombie.
-	Returns true if a zombie was hit, false otherwise.
+	Finds the equipped Tool's muzzle world position, so shots visually
+	originate from the barrel instead of the torso center. Falls back to a
+	position near the player's chest if no tool/muzzle is found (shouldn't
+	normally happen since PlayerService auto-equips the weapon on spawn).
 ]]
-local function resolveHit(player: Player, stats, origin: Vector3, direction: Vector3): boolean
-	local character = player.Character
-	if not character then
-		return false
+local function getMuzzlePosition(character: Model, rootPart: BasePart): Vector3
+	local tool = character:FindFirstChildOfClass("Tool")
+	local handle = tool and tool:FindFirstChild("Handle")
+	local muzzle = handle and handle:FindFirstChild("Muzzle")
+	if muzzle and muzzle:IsA("Attachment") then
+		return muzzle.WorldPosition
 	end
+	return rootPart.Position + Vector3.new(0, 1, 0)
+end
 
+--[[
+	Raycasts and applies damage if a zombie was hit.
+	Returns (hitZombie, endPosition) — endPosition is used by every client
+	to draw the tracer regardless of whether anything was actually hit.
+]]
+local function resolveHit(character: Model, stats, origin: Vector3, direction: Vector3): (boolean, Vector3)
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
 	raycastParams.FilterDescendantsInstances = { character }
 
 	local result = Workspace:Raycast(origin, direction * stats.Range, raycastParams)
 	if not result then
-		return false
+		return false, origin + direction * stats.Range
 	end
 
 	local hitInstance = result.Instance
 	local zombieModel = hitInstance:FindFirstAncestorOfClass("Model")
 	if not zombieModel or not zombieModel:HasTag("Zombie") then
-		return false
+		return false, result.Position
 	end
 
 	local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then
-		return false
+		return false, result.Position
 	end
 
 	local damage = stats.Damage
@@ -90,17 +114,36 @@ local function resolveHit(player: Player, stats, origin: Vector3, direction: Vec
 	end
 
 	humanoid:TakeDamage(damage)
-
 	ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)
 
-	return true
+	return true, result.Position
+end
+
+local function startReload(player: Player, state: PlayerWeaponState, stats)
+	if state.Reloading or state.AmmoInMagazine >= stats.MagazineSize then
+		return
+	end
+
+	state.Reloading = true
+	syncAmmo(player, state, stats)
+
+	task.delay(stats.ReloadTime, function()
+		-- Guard against the player leaving or their state being replaced
+		-- mid-reload (e.g. respawn) before firing the completion sync.
+		if playerStates[player] ~= state then
+			return
+		end
+		state.AmmoInMagazine = stats.MagazineSize
+		state.Reloading = false
+		syncAmmo(player, state, stats)
+	end)
 end
 
 FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
-	-- Validate input shape before trusting anything about it.
-	if typeof(aimDirection) ~= "Vector3" then
+	if typeof(aimDirection) ~= "Vector3" or aimDirection.Magnitude < 0.5 then
 		return
 	end
+	aimDirection = aimDirection.Unit
 
 	local character = player.Character
 	if not character then
@@ -125,13 +168,14 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
 		return
 	end
 
-	-- Validate ammo.
+	-- Validate ammo/reload state.
 	if state.Reloading or state.AmmoInMagazine <= 0 then
 		return
 	end
 
 	state.LastFireTime = now
 	state.AmmoInMagazine -= 1
+	syncAmmo(player, state, stats)
 
 	-- Apply weapon spread server-side so clients can't send a laser-perfect
 	-- direction and bypass spread.
@@ -142,17 +186,23 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
 		* CFrame.Angles(randomAngleY, randomAngleX, 0)
 	local finalDirection = spreadCFrame.LookVector
 
-	resolveHit(player, stats, rootPart.Position, finalDirection)
+	local origin = getMuzzlePosition(character, rootPart)
+	local hitZombie, endPosition = resolveHit(character, stats, origin, finalDirection)
 
-	-- Auto-reload when empty. Tier 0 keeps this simple; Tier 1 can add a
-	-- manual reload input + animation.
+	-- Broadcast to ALL clients (not just the shooter) so every player in
+	-- the match sees the tracer/muzzle flash/hit spark, not just their own.
+	WeaponFired:FireAllClients(player, origin, endPosition, hitZombie)
+
 	if state.AmmoInMagazine <= 0 then
-		state.Reloading = true
-		task.delay(stats.ReloadTime, function()
-			if playerStates[player] == state then
-				state.AmmoInMagazine = stats.MagazineSize
-				state.Reloading = false
-			end
-		end)
+		startReload(player, state, stats)
 	end
+end)
+
+ReloadWeapon.OnServerEvent:Connect(function(player: Player)
+	local state = getOrCreateState(player)
+	local stats = WeaponConfig[state.WeaponName]
+	if not stats then
+		return
+	end
+	startReload(player, state, stats)
 end)

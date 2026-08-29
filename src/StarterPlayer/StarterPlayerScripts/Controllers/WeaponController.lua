@@ -2,12 +2,14 @@
 	WeaponController.lua (ModuleScript)
 
 	Client responsibilities only (per plan section 5): input, camera-based
-	aim direction, and local visual/ammo prediction for UI responsiveness.
-	The server re-validates everything — this script cannot grant damage,
-	ammo, or fire rate on its own; the server silently drops anything it
-	doesn't accept.
+	aim direction, and local prediction for a responsive-feeling UI. The
+	server re-validates everything and is the actual source of truth —
+	SyncFromServer() below overwrites local prediction with the server's
+	authoritative ammo/reload state whenever AmmoUpdated arrives, so any
+	drift (e.g. a fire request the server silently rejected) self-corrects.
 
-	Exposes Init() and OnAmmoChanged() so ClientMain can wire this into UI.
+	Exposes Init(), RequestReload(), OnAmmoChanged(), and SyncFromServer()
+	so ClientMain can wire this into UI and the AmmoUpdated remote.
 ]]
 
 local UserInputService = game:GetService("UserInputService")
@@ -18,6 +20,7 @@ local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 
 local FireWeapon = Remotes.FireWeapon
+local ReloadWeapon = Remotes.ReloadWeapon
 local DEFAULT_WEAPON = "AssaultRifle"
 local stats = WeaponConfig[DEFAULT_WEAPON]
 
@@ -30,12 +33,11 @@ local reloading = false
 local mouseHeld = false
 local initialized = false
 
-local ammoChangedCallback: ((number, number) -> ())? = nil
+local ammoChangedCallback: ((number, number, boolean) -> ())? = nil
 
-local function setAmmo(value: number)
-	predictedAmmo = value
+local function updateAmmoUI()
 	if ammoChangedCallback then
-		ammoChangedCallback(predictedAmmo, stats.MagazineSize)
+		ammoChangedCallback(predictedAmmo, stats.MagazineSize, reloading)
 	end
 end
 
@@ -54,17 +56,17 @@ local function tryFire()
 	end
 
 	lastFireTime = now
-	setAmmo(predictedAmmo - 1)
+	predictedAmmo -= 1
+	updateAmmoUI()
 
 	local aimDirection = camera.CFrame.LookVector
 	FireWeapon:FireServer(aimDirection)
 
+	-- Local prediction only — the server independently decides when to
+	-- actually start a reload and will correct this via SyncFromServer.
 	if predictedAmmo <= 0 then
 		reloading = true
-		task.delay(stats.ReloadTime, function()
-			reloading = false
-			setAmmo(stats.MagazineSize)
-		end)
+		updateAmmoUI()
 	end
 end
 
@@ -78,14 +80,19 @@ function WeaponController.Init()
 		if gameProcessed then
 			return
 		end
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
 			mouseHeld = true
 			tryFire()
+		elseif input.KeyCode == Enum.KeyCode.R then
+			WeaponController.RequestReload()
 		end
 	end)
 
 	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
 			mouseHeld = false
 		end
 	end)
@@ -98,9 +105,26 @@ function WeaponController.Init()
 	end)
 end
 
-function WeaponController.OnAmmoChanged(callback: (number, number) -> ())
+function WeaponController.RequestReload()
+	if reloading or predictedAmmo >= stats.MagazineSize then
+		return
+	end
+	-- Optimistic local flag so the player gets instant feedback; the
+	-- server's AmmoUpdated reply is still what actually confirms this.
+	reloading = true
+	updateAmmoUI()
+	ReloadWeapon:FireServer()
+end
+
+function WeaponController.SyncFromServer(current: number, max: number, isReloading: boolean)
+	predictedAmmo = current
+	reloading = isReloading
+	updateAmmoUI()
+end
+
+function WeaponController.OnAmmoChanged(callback: (number, number, boolean) -> ())
 	ammoChangedCallback = callback
-	callback(predictedAmmo, stats.MagazineSize)
+	callback(predictedAmmo, stats.MagazineSize, reloading)
 end
 
 return WeaponController

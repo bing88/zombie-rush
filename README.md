@@ -17,14 +17,21 @@ from you and 2-3 other testers (see Gate 0 in the reconciled plan doc).
 |---|---|---|
 | Weapon config | `ReplicatedStorage/Shared/WeaponConfig.lua` | One weapon: AssaultRifle. Data-driven so Tier 1 just adds entries. |
 | Zombie config | `ReplicatedStorage/Shared/ZombieConfig.lua` | One type: Normal. |
-| Remotes | `ReplicatedStorage/Remotes/init.lua` | FireWeapon, ZombieHPChanged, PlayerHPChanged, PlayerDied. |
-| Shooting (server-authoritative) | `ServerScriptService/Services/WeaponService.server.lua` | Validates fire rate + ammo, raycasts, applies damage, headshot multiplier. Client cannot control damage or bypass spread. |
+| Weapon model | `ReplicatedStorage/Shared/WeaponModelFactory.lua` | Builds a placeholder Tool (Handle + Muzzle attachment) so the gun is visible in-hand and raycasts originate from the barrel, not the torso. Swap for real rigged art later without touching any other script. |
+| Remotes | `ReplicatedStorage/Remotes/init.lua` | FireWeapon, ReloadWeapon, AmmoUpdated, WeaponFired, ZombieHPChanged, PlayerHPChanged, PlayerDied. |
+| Shooting (server-authoritative) | `ServerScriptService/Services/WeaponService.server.lua` | Validates fire rate + ammo + reload state, raycasts from the equipped Tool's muzzle, applies damage, headshot multiplier, handles manual + auto reload, broadcasts `WeaponFired` to all clients for tracer/flash effects. Client cannot control damage, ammo, or bypass spread. |
 | Zombie spawn + AI | `ServerScriptService/Services/ZombieService.server.lua` | Trickle-spawns zombies (max 8 concurrent), direct-chase AI (no PathfindingService — see "Open Decisions" in the plan doc). Builds a placeholder procedural rig since no art exists yet. |
-| Player HP/death/respawn | `ServerScriptService/Services/PlayerService.server.lua` | Uses Roblox's default `LoadCharacter` respawn flow. |
-| Client input | `StarterPlayer/StarterPlayerScripts/Controllers/WeaponController.lua` | Hold left mouse to fire (full-auto gated by weapon fire rate). Local ammo/reload state is **prediction only** for UI responsiveness — the server keeps its own authoritative copy and silently drops anything it disagrees with. |
-| Client UI | `StarterPlayer/StarterPlayerScripts/Controllers/UIController.lua` | HP bar, ammo counter, death overlay. Nothing else. |
+| Player HP/death/respawn/weapon | `ServerScriptService/Services/PlayerService.server.lua` | Uses Roblox's default `LoadCharacter` respawn flow. Auto-equips the AssaultRifle Tool on every spawn. |
+| Client input | `StarterPlayer/StarterPlayerScripts/Controllers/WeaponController.lua` | Hold left mouse/tap-and-hold to fire (full-auto gated by weapon fire rate), `R` or the on-screen Reload button to reload. Local ammo/reload state is **prediction only** for instant UI feedback — `SyncFromServer()` overwrites it with the server's authoritative value whenever `AmmoUpdated` arrives, so any drift self-corrects. |
+| Client UI | `StarterPlayer/StarterPlayerScripts/Controllers/UIController.lua` | HP bar, ammo counter (shows "RELOADING..." mid-reload), crosshair, Reload button, death overlay. Nothing else. |
+| Client effects | `StarterPlayer/StarterPlayerScripts/Controllers/EffectsController.lua` | Purely cosmetic — turns each server `WeaponFired` broadcast into a bullet tracer, muzzle flash, and (if it hit) a red spark. Runs for every player's shots, not just your own. |
 | Bootstrap (client) | `StarterPlayer/StarterPlayerScripts/ClientMain.client.lua` | Wires controllers together. |
 | Bootstrap (map) | `ServerScriptService/MapBootstrap.server.lua` | Creates a baseplate + SpawnLocation on server start if they don't already exist, so the place is playable immediately after a fresh sync. |
+
+### Controls
+
+- **Fire:** hold left mouse (desktop) or hold your finger down on the screen (mobile/touch)
+- **Reload:** press `R` (desktop) or tap the **RELOAD** button (bottom-right, works on any platform)
 
 ---
 

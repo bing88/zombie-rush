@@ -9,6 +9,9 @@
 
 local remoteNames = {
 	"FireWeapon", -- client -> server: player fired their weapon
+	"ReloadWeapon", -- client -> server: player requested a manual reload
+	"AmmoUpdated", -- server -> owning client: authoritative ammo/reload state
+	"WeaponFired", -- server -> all clients: origin/endpoint for tracer + flash effects
 	"ZombieHPChanged", -- server -> client: for hit feedback / health bars
 	"PlayerHPChanged", -- server -> client: for HP UI
 	"PlayerDied", -- server -> client: for death UI

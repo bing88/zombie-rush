@@ -2,8 +2,12 @@
 	UIController.lua (ModuleScript)
 
 	Tier 0 UI is deliberately minimal per the reconciled plan:
-	"No UI beyond HP bar and ammo counter." No wave counter, no coins,
-	no menus — those arrive in Tier 1.
+	HP bar, ammo counter, crosshair, and a reload button. No wave counter,
+	no coins, no menus — those arrive in Tier 1.
+
+	The reload button exists mainly for mobile/touch, where there's no R
+	key. Desktop can use either the button or the R key (see
+	WeaponController).
 ]]
 
 local Players = game:GetService("Players")
@@ -16,7 +20,36 @@ local screenGui: ScreenGui
 local hpLabel: TextLabel
 local hpBarFill: Frame
 local ammoLabel: TextLabel
+local reloadButton: TextButton
 local deathLabel: TextLabel
+
+local function buildCrosshair(parent: ScreenGui)
+	local crosshair = Instance.new("Frame")
+	crosshair.Name = "Crosshair"
+	crosshair.AnchorPoint = Vector2.new(0.5, 0.5)
+	crosshair.Position = UDim2.fromScale(0.5, 0.5)
+	crosshair.Size = UDim2.fromOffset(20, 20)
+	crosshair.BackgroundTransparency = 1
+	crosshair.Parent = parent
+
+	local vertical = Instance.new("Frame")
+	vertical.Name = "Vertical"
+	vertical.AnchorPoint = Vector2.new(0.5, 0.5)
+	vertical.Position = UDim2.fromScale(0.5, 0.5)
+	vertical.Size = UDim2.fromOffset(2, 14)
+	vertical.BackgroundColor3 = Color3.new(1, 1, 1)
+	vertical.BorderSizePixel = 0
+	vertical.Parent = crosshair
+
+	local horizontal = Instance.new("Frame")
+	horizontal.Name = "Horizontal"
+	horizontal.AnchorPoint = Vector2.new(0.5, 0.5)
+	horizontal.Position = UDim2.fromScale(0.5, 0.5)
+	horizontal.Size = UDim2.fromOffset(14, 2)
+	horizontal.BackgroundColor3 = Color3.new(1, 1, 1)
+	horizontal.BorderSizePixel = 0
+	horizontal.Parent = crosshair
+end
 
 local function buildUI()
 	screenGui = Instance.new("ScreenGui")
@@ -24,6 +57,8 @@ local function buildUI()
 	screenGui.ResetOnSpawn = false
 	screenGui.IgnoreGuiInset = true
 	screenGui.Parent = player:WaitForChild("PlayerGui")
+
+	buildCrosshair(screenGui)
 
 	-- HP bar
 	local hpBarBackground = Instance.new("Frame")
@@ -64,6 +99,19 @@ local function buildUI()
 	ammoLabel.Text = "30 / 30"
 	ammoLabel.Parent = screenGui
 
+	-- Reload button (mainly for mobile/touch; desktop can also use R key)
+	reloadButton = Instance.new("TextButton")
+	reloadButton.Name = "ReloadButton"
+	reloadButton.Size = UDim2.fromOffset(100, 36)
+	reloadButton.Position = UDim2.new(1, -180, 1, -110)
+	reloadButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	reloadButton.BackgroundTransparency = 0.2
+	reloadButton.TextColor3 = Color3.new(1, 1, 1)
+	reloadButton.Font = Enum.Font.GothamBold
+	reloadButton.TextSize = 16
+	reloadButton.Text = "RELOAD"
+	reloadButton.Parent = screenGui
+
 	-- Death overlay (hidden by default)
 	deathLabel = Instance.new("TextLabel")
 	deathLabel.Name = "DeathLabel"
@@ -93,11 +141,23 @@ function UIController.SetHP(current: number, max: number)
 	hpBarFill.Size = UDim2.fromScale(max > 0 and (current / max) or 0, 1)
 end
 
-function UIController.SetAmmo(current: number, max: number)
+function UIController.SetAmmo(current: number, max: number, isReloading: boolean?)
 	if not ammoLabel then
 		return
 	end
-	ammoLabel.Text = string.format("%d / %d", current, max)
+	if isReloading then
+		ammoLabel.Text = "RELOADING..."
+	else
+		ammoLabel.Text = string.format("%d / %d", current, max)
+	end
+end
+
+function UIController.OnReloadPressed(callback: () -> ())
+	if reloadButton then
+		-- Activated covers both mouse clicks and touch taps, unlike
+		-- MouseButton1Click which is desktop-only.
+		reloadButton.Activated:Connect(callback)
+	end
 end
 
 function UIController.ShowDeath()

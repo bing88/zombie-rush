@@ -12,12 +12,24 @@ local Remotes = require(ReplicatedStorage.Remotes)
 local Controllers = script.Parent:WaitForChild("Controllers")
 local WeaponController = require(Controllers.WeaponController)
 local UIController = require(Controllers.UIController)
+local EffectsController = require(Controllers.EffectsController)
 
 UIController.Init()
 WeaponController.Init()
+EffectsController.Init()
 
-WeaponController.OnAmmoChanged(function(current, max)
-	UIController.SetAmmo(current, max)
+WeaponController.OnAmmoChanged(function(current, max, isReloading)
+	UIController.SetAmmo(current, max, isReloading)
+end)
+
+UIController.OnReloadPressed(function()
+	WeaponController.RequestReload()
+end)
+
+-- Server is the source of truth for ammo/reload state; this overwrites
+-- whatever WeaponController predicted locally.
+Remotes.AmmoUpdated.OnClientEvent:Connect(function(current: number, max: number, isReloading: boolean)
+	WeaponController.SyncFromServer(current, max, isReloading)
 end)
 
 Remotes.PlayerHPChanged.OnClientEvent:Connect(function(current: number, max: number)
