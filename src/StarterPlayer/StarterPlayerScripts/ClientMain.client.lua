@@ -16,9 +16,12 @@ local EffectsController = require(Controllers.EffectsController)
 local CameraController = require(Controllers.CameraController)
 
 UIController.Init()
+CameraController.Init() -- must init before WeaponController: its RenderStepped
+                         -- connection needs to register first so camera-bending
+                         -- (auto-aim lock) happens before WeaponController reads
+                         -- camera.CFrame.LookVector to decide fire direction.
 WeaponController.Init()
 EffectsController.Init()
-CameraController.Init()
 
 WeaponController.OnAmmoChanged(function(current, max, isReloading)
 	UIController.SetAmmo(current, max, isReloading)

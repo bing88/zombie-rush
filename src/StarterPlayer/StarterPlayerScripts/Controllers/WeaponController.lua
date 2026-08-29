@@ -1,26 +1,33 @@
 --[[
 	WeaponController.lua (ModuleScript)
 
-	Client responsibilities only (per plan section 5): input, camera-based
-	aim direction, and local prediction for a responsive-feeling UI. The
-	server re-validates everything and is the actual source of truth —
-	SyncFromServer() below overwrites local prediction with the server's
-	authoritative ammo/reload state whenever AmmoUpdated arrives, so any
-	drift (e.g. a fire request the server silently rejected) self-corrects.
+	Client responsibilities only (per plan section 5): input and local
+	prediction for a responsive-feeling UI. The server re-validates
+	everything and is the actual source of truth — SyncFromServer() below
+	overwrites local prediction with the server's authoritative ammo/
+	reload state whenever AmmoUpdated arrives.
 
-	Firing is no longer triggered by tapping/clicking anywhere on screen.
-	The only manual trigger is the dedicated on-screen fire button
-	(SetFireButtonHeld, wired from UIController) — this also happens to
-	work for a desktop mouse click on that button, so there's one trigger
-	path instead of two. On top of that, every frame this also checks
-	AutoAimController for a nearby target and auto-fires at it regardless
-	of whether the fire button is held, as a convenience assist.
+	Aim direction is always just camera.CFrame.LookVector at the moment of
+	firing — no separate override logic here. CameraController is what
+	decides whether the camera itself is currently bent toward a nearby
+	target (auto-aim lock-on); this controller doesn't need to know why
+	the camera is pointing where it's pointing, only that it should fire
+	there when told to. That's what keeps manual aim and auto-aim
+	perfectly consistent: there's only one aim direction, ever.
+
+	Firing triggers on:
+	  - The dedicated on-screen fire button being held (SetFireButtonHeld)
+	  - CameraController reporting a target is currently locked (auto-fire)
+
+	IMPORTANT: this must be Init()'d AFTER CameraController in ClientMain,
+	so CameraController's RenderStepped connection (which may bend the
+	camera this frame) registers and therefore runs first. Both use
+	RenderStepped so they stay in lockstep frame-to-frame.
 
 	Exposes Init(), RequestReload(), SetFireButtonHeld(), OnAmmoChanged(),
 	and SyncFromServer() so ClientMain can wire this into UI and remotes.
 ]]
 
-local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -29,7 +36,7 @@ local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 
 local Controllers = script.Parent
-local AutoAimController = require(Controllers.AutoAimController)
+local CameraController = require(Controllers.CameraController)
 local WeaponViewController = require(Controllers.WeaponViewController)
 
 local FireWeapon = Remotes.FireWeapon
@@ -39,7 +46,6 @@ local stats = WeaponConfig[DEFAULT_WEAPON]
 
 local WeaponController = {}
 
-local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 local predictedAmmo = stats.MagazineSize
@@ -73,22 +79,7 @@ local function setReloading(value: boolean)
 	updateAmmoUI()
 end
 
-local function getMuzzlePosition(): Vector3?
-	local character = player.Character
-	if not character then
-		return nil
-	end
-	local tool = character:FindFirstChildOfClass("Tool")
-	local handle = tool and tool:FindFirstChild("Handle")
-	local muzzle = handle and handle:FindFirstChild("Muzzle")
-	if muzzle and muzzle:IsA("Attachment") then
-		return muzzle.WorldPosition
-	end
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	return rootPart and rootPart.Position
-end
-
-local function tryFire(overrideDirection: Vector3?)
+local function tryFire()
 	if reloading then
 		return
 	end
@@ -106,8 +97,7 @@ local function tryFire(overrideDirection: Vector3?)
 	predictedAmmo -= 1
 	updateAmmoUI()
 
-	local aimDirection = overrideDirection or camera.CFrame.LookVector
-	FireWeapon:FireServer(aimDirection)
+	FireWeapon:FireServer(camera.CFrame.LookVector)
 
 	if predictedAmmo <= 0 then
 		setReloading(true)
@@ -130,16 +120,8 @@ function WeaponController.Init()
 		end
 	end)
 
-	RunService.Heartbeat:Connect(function()
-		local muzzlePosition = getMuzzlePosition()
-		local autoAimDirection, shouldAutoFire = nil, false
-		if muzzlePosition then
-			autoAimDirection, shouldAutoFire = AutoAimController.FindTarget(muzzlePosition)
-		end
-
-		if shouldAutoFire and autoAimDirection then
-			tryFire(autoAimDirection)
-		elseif fireButtonHeld then
+	RunService.RenderStepped:Connect(function()
+		if CameraController.IsLocked() or fireButtonHeld then
 			tryFire()
 		end
 	end)

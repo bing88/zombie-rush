@@ -1,29 +1,44 @@
 --[[
 	CameraController.lua (ModuleScript)
 
-	Two responsibilities:
+	Three responsibilities:
 
-	1. Makes the character always face the direction the camera (and
-	   therefore the crosshair) is pointing, instead of Roblox's default
-	   behavior of only turning to face whichever direction you're
-	   currently moving in. Matches third-person shooter expectations:
-	   strafe left/right/backward while always aiming/facing forward.
+	1. Character-facing: makes the character always face the direction the
+	   camera (and therefore the crosshair) is pointing, instead of
+	   Roblox's default behavior of only turning to face the movement
+	   direction.
 
-	2. Over-the-shoulder third-person camera (character offset to the
-	   right instead of dead-center) with a toggle to switch into true
-	   first-person (LockFirstPerson).
+	2. Over-the-shoulder third-person camera offset, with a toggle (V) to
+	   switch into true first-person (LockFirstPerson).
 
-	How #1 works: Humanoid.AutoRotate is disabled so the built-in
-	controller stops auto-turning the character toward its movement
-	vector, then every frame the character's yaw is manually snapped to
-	match the camera's yaw. WASD movement itself is still camera-relative
-	regardless — that's unrelated, default Roblox behavior — so strafing
-	keeps working correctly; only facing direction changes.
+	3. Auto-aim lock-on: when a zombie is within a small cone around the
+	   crosshair and in range, this actually BENDS THE CAMERA's look
+	   direction toward it (smoothly, not an instant teleport), so the
+	   crosshair visually settles onto the target. WeaponController then
+	   just fires wherever the camera is currently pointing — manual aim
+	   and auto-aim share the exact same direction source, so what you
+	   see is always what you shoot. IsLocked() tells WeaponController
+	   whether to auto-fire this frame.
+
+	Implementation note on #3: Roblox's default camera script re-derives
+	camera.CFrame from its own internally tracked yaw/pitch every frame,
+	so overriding camera.CFrame here only affects the frame it's set on —
+	next frame the default script recomputes from its own state, and we
+	override again. That's fine while a lock is continuously held (we run
+	every frame), but the *instant* a target leaves lock range, control
+	reverts entirely and the camera will visibly snap back to wherever the
+	default script's own tracked direction currently is. That snap is a
+	deliberate, accepted tradeoff here (not a bug) — instant lock-on/
+	lock-off is standard for this genre (casual arcade zombie shooters),
+	and avoiding it would require fully replacing Roblox's camera system
+	rather than layering on top of it.
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+
+local AutoAimController = require(script.Parent.AutoAimController)
 
 local CameraController = {}
 
@@ -36,7 +51,16 @@ local camera = workspace.CurrentCamera
 local SHOULDER_OFFSET = Vector3.new(1.75, 0.4, 0)
 local FIRST_PERSON_TOGGLE_KEY = Enum.KeyCode.V
 
+-- Higher = snappier lock-on (reaches ~63% of the way to the target's
+-- direction every 1/LOCK_TURN_RATE seconds). Tune to taste.
+local LOCK_TURN_RATE = 10
+
 local isFirstPerson = false
+local isLocked = false
+
+function CameraController.IsLocked(): boolean
+	return isLocked
+end
 
 local function faceCamera(character: Model)
 	local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -54,6 +78,32 @@ local function faceCamera(character: Model)
 	end
 
 	rootPart.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + lookVector.Unit)
+end
+
+--[[
+	Finds a nearby target and, if one qualifies, smoothly bends the
+	camera's look direction toward it — leaving position untouched, only
+	rotation changes. Updates isLocked for WeaponController to read.
+]]
+local function updateAutoAimLock(deltaTime: number)
+	local cameraPosition = camera.CFrame.Position
+	local cameraLook = camera.CFrame.LookVector
+
+	local targetPart = AutoAimController.FindTargetPart(cameraPosition, cameraLook)
+	if not targetPart then
+		isLocked = false
+		return
+	end
+
+	isLocked = true
+
+	local desiredLook = (targetPart.Position - cameraPosition).Unit
+	local alpha = math.clamp(deltaTime * LOCK_TURN_RATE, 0, 1)
+	local blendedLook = cameraLook:Lerp(desiredLook, alpha)
+
+	if blendedLook.Magnitude > 0.001 then
+		camera.CFrame = CFrame.lookAt(cameraPosition, cameraPosition + blendedLook.Unit)
+	end
 end
 
 local function applyCameraMode(character: Model)
@@ -96,7 +146,9 @@ function CameraController.Init()
 		end
 	end)
 
-	RunService.RenderStepped:Connect(function()
+	RunService.RenderStepped:Connect(function(deltaTime)
+		updateAutoAimLock(deltaTime)
+
 		local character = player.Character
 		if character then
 			faceCamera(character)
