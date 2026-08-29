@@ -1,0 +1,14 @@
+# Rojo build artifacts
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+# OS / editor cruft
+.DS_Store
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Aftman/Foreman tool installs (if used)
+.aftman/
