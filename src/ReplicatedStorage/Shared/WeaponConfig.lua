@@ -23,7 +23,7 @@ local WeaponConfig: { [string]: WeaponStats } = {
 		FireRate = 0.12,
 		MagazineSize = 30,
 		ReloadTime = 2.0,
-		Range = 300,
+		Range = 10000, -- effectively unlimited for any realistic Tier 0/1 map size
 		Spread = 2,
 		HeadshotMultiplier = 2,
 	},
