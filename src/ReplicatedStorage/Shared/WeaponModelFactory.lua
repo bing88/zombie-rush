@@ -15,6 +15,10 @@
 
 local WeaponModelFactory = {}
 
+-- Exposed so other scripts (e.g. the reload animation) can reset back to
+-- this exact pose without duplicating the magic numbers.
+WeaponModelFactory.DEFAULT_GRIP = CFrame.new(0, -0.15, 0)
+
 function WeaponModelFactory.CreateAssaultRifleTool(): Tool
 	local tool = Instance.new("Tool")
 	tool.Name = "AssaultRifle"
@@ -38,7 +42,7 @@ function WeaponModelFactory.CreateAssaultRifleTool(): Tool
 
 	-- Cosmetic-only grip offset so the block doesn't float oddly in-hand.
 	-- Safe to retune freely; it doesn't affect gameplay.
-	tool.Grip = CFrame.new(0, -0.15, 0)
+	tool.Grip = WeaponModelFactory.DEFAULT_GRIP
 
 	return tool
 end

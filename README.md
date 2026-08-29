@@ -22,8 +22,10 @@ from you and 2-3 other testers (see Gate 0 in the reconciled plan doc).
 | Shooting (server-authoritative) | `ServerScriptService/Services/WeaponService.server.lua` | Validates fire rate + ammo + reload state, raycasts from the equipped Tool's muzzle, applies damage, headshot multiplier, handles manual + auto reload, broadcasts `WeaponFired` (origin, endpoint, hit result, damage dealt) to all clients for tracer/flash/sound/damage-number effects. Client cannot control damage, ammo, or bypass spread. |
 | Zombie spawn + AI | `ServerScriptService/Services/ZombieService.server.lua` | Trickle-spawns zombies (max 8 concurrent), direct-chase AI (no PathfindingService — see "Open Decisions" in the plan doc). Builds a placeholder procedural rig since no art exists yet. |
 | Player HP/death/respawn/weapon | `ServerScriptService/Services/PlayerService.server.lua` | Uses Roblox's default `LoadCharacter` respawn flow. Auto-equips the AssaultRifle Tool on every spawn. |
-| Client input | `StarterPlayer/StarterPlayerScripts/Controllers/WeaponController.lua` | Hold left mouse/tap-and-hold to fire (full-auto gated by weapon fire rate), `R` or the on-screen Reload button to reload. Local ammo/reload state is **prediction only** for instant UI feedback — `SyncFromServer()` overwrites it with the server's authoritative value whenever `AmmoUpdated` arrives, so any drift self-corrects. |
-| Client UI | `StarterPlayer/StarterPlayerScripts/Controllers/UIController.lua` | HP bar, ammo counter (shows "RELOADING..." mid-reload), crosshair, Reload button, death overlay. Nothing else. |
+| Client input | `StarterPlayer/StarterPlayerScripts/Controllers/WeaponController.lua` | Firing is triggered only by the dedicated Fire button (or auto-aim, see below) — no more tap/click-anywhere-to-fire. `R` or the on-screen Reload button to reload. Local ammo/reload state is **prediction only** for instant UI feedback — `SyncFromServer()` overwrites it with the server's authoritative value whenever `AmmoUpdated` arrives, so any drift self-corrects. |
+| Client auto-aim | `StarterPlayer/StarterPlayerScripts/Controllers/AutoAimController.lua` | Client-side convenience assist: each frame, scans tagged zombies within a small cone around the crosshair and within range; if one qualifies, hands back a snapped-to-target direction and signals auto-fire. Not a trust boundary — the server independently raycasts and validates every shot regardless of where the direction came from. |
+| Client weapon view | `StarterPlayer/StarterPlayerScripts/Controllers/WeaponViewController.lua` | Placeholder reload "animation" — tweens the equipped Tool's `Grip` CFrame to fake a dip-and-return motion, since no real animation asset exists yet. Local-only; doesn't replicate to other clients. |
+| Client UI | `StarterPlayer/StarterPlayerScripts/Controllers/UIController.lua` | HP bar, ammo counter (shows "RELOADING..." mid-reload), crosshair, Reload button, circular Fire button (bottom-right), death overlay. |
 | Client effects | `StarterPlayer/StarterPlayerScripts/Controllers/EffectsController.lua` | Purely cosmetic — turns each server `WeaponFired` broadcast into a bullet tracer, muzzle flash, fire sound, and (on a hit) a hit spark, hit sound, and a floating "-N" damage number. Runs for every player's shots, not just your own. Sounds use Roblox's own bundled `rbxasset://sounds/...` clips as placeholders — swap for real SFX later (see plan Phase 8). |
 | Client camera/facing | `StarterPlayer/StarterPlayerScripts/Controllers/CameraController.lua` | Disables `Humanoid.AutoRotate` and manually locks the character's yaw to the camera's yaw every frame, so the character always faces the crosshair (third-person-shooter style) instead of only turning toward its movement direction. Strafing still works — only facing changes. Also sets an over-the-shoulder camera offset in third person and handles the first-person toggle. |
 | Bootstrap (client) | `StarterPlayer/StarterPlayerScripts/ClientMain.client.lua` | Wires controllers together. |
@@ -31,8 +33,9 @@ from you and 2-3 other testers (see Gate 0 in the reconciled plan doc).
 
 ### Controls
 
-- **Fire:** hold left mouse (desktop) or hold your finger down on the screen (mobile/touch)
-- **Reload:** press `R` (desktop) or tap the **RELOAD** button (bottom-right, works on any platform)
+- **Fire:** hold the on-screen **FIRE** button (bottom-right circle) — works via mouse click or touch hold on any platform. Screen-tap-anywhere no longer fires.
+- **Auto-aim/auto-fire:** if a zombie is within ~50 studs and close to your crosshair (within an 8° cone), the game snaps aim to it and fires automatically — no button needed. The Fire button is for anything outside that assist range/cone.
+- **Reload:** press `R` (desktop) or tap the **RELOAD** button (works on any platform)
 - **Toggle first-person / third-person:** press `V`
 
 ---

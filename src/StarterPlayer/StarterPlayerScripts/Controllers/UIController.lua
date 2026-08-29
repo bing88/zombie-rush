@@ -21,6 +21,7 @@ local hpLabel: TextLabel
 local hpBarFill: Frame
 local ammoLabel: TextLabel
 local reloadButton: TextButton
+local fireButton: TextButton
 local deathLabel: TextLabel
 
 local function buildCrosshair(parent: ScreenGui)
@@ -89,8 +90,9 @@ local function buildUI()
 	-- Ammo counter
 	ammoLabel = Instance.new("TextLabel")
 	ammoLabel.Name = "AmmoLabel"
+	ammoLabel.AnchorPoint = Vector2.new(1, 1)
 	ammoLabel.Size = UDim2.fromOffset(160, 28)
-	ammoLabel.Position = UDim2.new(1, -180, 1, -60)
+	ammoLabel.Position = UDim2.new(1, -20, 1, -200)
 	ammoLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	ammoLabel.BackgroundTransparency = 0.3
 	ammoLabel.TextColor3 = Color3.new(1, 1, 1)
@@ -99,11 +101,12 @@ local function buildUI()
 	ammoLabel.Text = "30 / 30"
 	ammoLabel.Parent = screenGui
 
-	-- Reload button (mainly for mobile/touch; desktop can also use R key)
+	-- Reload button (works via mouse click or touch tap on any platform)
 	reloadButton = Instance.new("TextButton")
 	reloadButton.Name = "ReloadButton"
-	reloadButton.Size = UDim2.fromOffset(100, 36)
-	reloadButton.Position = UDim2.new(1, -180, 1, -110)
+	reloadButton.AnchorPoint = Vector2.new(1, 1)
+	reloadButton.Size = UDim2.fromOffset(110, 40)
+	reloadButton.Position = UDim2.new(1, -20, 1, -150)
 	reloadButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	reloadButton.BackgroundTransparency = 0.2
 	reloadButton.TextColor3 = Color3.new(1, 1, 1)
@@ -111,6 +114,27 @@ local function buildUI()
 	reloadButton.TextSize = 16
 	reloadButton.Text = "RELOAD"
 	reloadButton.Parent = screenGui
+
+	-- Fire button: the ONLY manual firing trigger (see WeaponController —
+	-- generic screen-tap/click firing was removed). Works via mouse click
+	-- or touch hold on any platform. Positioned bottom-right for
+	-- thumb reach on mobile.
+	fireButton = Instance.new("TextButton")
+	fireButton.Name = "FireButton"
+	fireButton.AnchorPoint = Vector2.new(1, 1)
+	fireButton.Size = UDim2.fromOffset(110, 110)
+	fireButton.Position = UDim2.new(1, -20, 1, -20)
+	fireButton.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+	fireButton.BackgroundTransparency = 0.25
+	fireButton.TextColor3 = Color3.new(1, 1, 1)
+	fireButton.Font = Enum.Font.GothamBold
+	fireButton.TextSize = 18
+	fireButton.Text = "FIRE"
+	fireButton.Parent = screenGui
+
+	local fireButtonCorner = Instance.new("UICorner")
+	fireButtonCorner.CornerRadius = UDim.new(1, 0) -- circular
+	fireButtonCorner.Parent = fireButton
 
 	-- Death overlay (hidden by default)
 	deathLabel = Instance.new("TextLabel")
@@ -158,6 +182,30 @@ function UIController.OnReloadPressed(callback: () -> ())
 		-- MouseButton1Click which is desktop-only.
 		reloadButton.Activated:Connect(callback)
 	end
+end
+
+--[[
+	Reports held/released rather than a single click, since firing needs
+	to support full-auto (hold to keep firing), unlike Reload's one-shot
+	Activated event. InputBegan/InputEnded on the button instance covers
+	both mouse and touch.
+]]
+function UIController.OnFireButtonStateChanged(callback: (boolean) -> ())
+	if not fireButton then
+		return
+	end
+	fireButton.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			callback(true)
+		end
+	end)
+	fireButton.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			callback(false)
+		end
+	end)
 end
 
 function UIController.ShowDeath()

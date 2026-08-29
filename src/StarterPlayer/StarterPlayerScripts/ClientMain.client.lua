@@ -28,6 +28,10 @@ UIController.OnReloadPressed(function()
 	WeaponController.RequestReload()
 end)
 
+UIController.OnFireButtonStateChanged(function(held: boolean)
+	WeaponController.SetFireButtonHeld(held)
+end)
+
 -- Server is the source of truth for ammo/reload state; this overwrites
 -- whatever WeaponController predicted locally.
 Remotes.AmmoUpdated.OnClientEvent:Connect(function(current: number, max: number, isReloading: boolean)
