@@ -13,10 +13,12 @@ local Controllers = script.Parent:WaitForChild("Controllers")
 local WeaponController = require(Controllers.WeaponController)
 local UIController = require(Controllers.UIController)
 local EffectsController = require(Controllers.EffectsController)
+local CameraController = require(Controllers.CameraController)
 
 UIController.Init()
 WeaponController.Init()
 EffectsController.Init()
+CameraController.Init()
 
 WeaponController.OnAmmoChanged(function(current, max, isReloading)
 	UIController.SetAmmo(current, max, isReloading)
