@@ -23,7 +23,8 @@ from you and 2-3 other testers (see Gate 0 in the reconciled plan doc).
 | Player HP/death/respawn | `ServerScriptService/Services/PlayerService.server.lua` | Uses Roblox's default `LoadCharacter` respawn flow. |
 | Client input | `StarterPlayer/StarterPlayerScripts/Controllers/WeaponController.lua` | Hold left mouse to fire (full-auto gated by weapon fire rate). Local ammo/reload state is **prediction only** for UI responsiveness — the server keeps its own authoritative copy and silently drops anything it disagrees with. |
 | Client UI | `StarterPlayer/StarterPlayerScripts/Controllers/UIController.lua` | HP bar, ammo counter, death overlay. Nothing else. |
-| Bootstrap | `StarterPlayer/StarterPlayerScripts/ClientMain.client.lua` | Wires controllers together. |
+| Bootstrap (client) | `StarterPlayer/StarterPlayerScripts/ClientMain.client.lua` | Wires controllers together. |
+| Bootstrap (map) | `ServerScriptService/MapBootstrap.server.lua` | Creates a baseplate + SpawnLocation on server start if they don't already exist, so the place is playable immediately after a fresh sync. |
 
 ---
 
@@ -53,11 +54,14 @@ from you and 2-3 other testers (see Gate 0 in the reconciled plan doc).
    rojo serve
    ```
 3. In Roblox Studio, open the Rojo plugin and click **Connect**.
-4. Add a Baseplate to Workspace if the place is empty (Tier 0 doesn't need
-   anything fancier).
-5. Press **Play** (Studio Play, not just Run — you need a Player object for
+   `MapBootstrap.server.lua` creates a baseplate + SpawnLocation
+   automatically the first time the server runs — you don't need to build
+   anything in Studio manually. If you start from a template that already
+   has terrain/parts you want instead, just delete or edit the
+   `MapBootstrap.server.lua` logic.
+4. Press **Play** (Studio Play, not just Run — you need a Player object for
    `Players.PlayerAdded` to fire).
-6. Hold left mouse to shoot. Zombies spawn every 3 seconds near
+5. Hold left mouse to shoot. Zombies spawn every 3 seconds near
    `(0, 5, 20)` unless you've added a `ZombieSpawns` folder.
 
 ---
