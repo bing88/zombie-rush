@@ -84,28 +84,29 @@ end
 
 --[[
 	Raycasts and applies damage if a zombie was hit.
-	Returns (hitZombie, endPosition) — endPosition is used by every client
-	to draw the tracer regardless of whether anything was actually hit.
+	Returns (hitZombie, endPosition, damageDealt) — endPosition is used by
+	every client to draw the tracer regardless of whether anything was
+	actually hit; damageDealt drives the floating damage number.
 ]]
-local function resolveHit(character: Model, stats, origin: Vector3, direction: Vector3): (boolean, Vector3)
+local function resolveHit(character: Model, stats, origin: Vector3, direction: Vector3): (boolean, Vector3, number)
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
 	raycastParams.FilterDescendantsInstances = { character }
 
 	local result = Workspace:Raycast(origin, direction * stats.Range, raycastParams)
 	if not result then
-		return false, origin + direction * stats.Range
+		return false, origin + direction * stats.Range, 0
 	end
 
 	local hitInstance = result.Instance
 	local zombieModel = hitInstance:FindFirstAncestorOfClass("Model")
 	if not zombieModel or not zombieModel:HasTag("Zombie") then
-		return false, result.Position
+		return false, result.Position, 0
 	end
 
 	local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then
-		return false, result.Position
+		return false, result.Position, 0
 	end
 
 	local damage = stats.Damage
@@ -116,7 +117,7 @@ local function resolveHit(character: Model, stats, origin: Vector3, direction: V
 	humanoid:TakeDamage(damage)
 	ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)
 
-	return true, result.Position
+	return true, result.Position, damage
 end
 
 local function startReload(player: Player, state: PlayerWeaponState, stats)
@@ -187,11 +188,12 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
 	local finalDirection = spreadCFrame.LookVector
 
 	local origin = getMuzzlePosition(character, rootPart)
-	local hitZombie, endPosition = resolveHit(character, stats, origin, finalDirection)
+	local hitZombie, endPosition, damageDealt = resolveHit(character, stats, origin, finalDirection)
 
 	-- Broadcast to ALL clients (not just the shooter) so every player in
-	-- the match sees the tracer/muzzle flash/hit spark, not just their own.
-	WeaponFired:FireAllClients(player, origin, endPosition, hitZombie)
+	-- the match sees the tracer/muzzle flash/hit spark/damage number,
+	-- not just their own.
+	WeaponFired:FireAllClients(player, origin, endPosition, hitZombie, damageDealt)
 
 	if state.AmmoInMagazine <= 0 then
 		startReload(player, state, stats)
