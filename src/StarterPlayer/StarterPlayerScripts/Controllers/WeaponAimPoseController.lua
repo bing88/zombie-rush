@@ -205,6 +205,26 @@ local function createArmIK(character: Model, humanoid: Humanoid, chainRootPart: 
 	trySet(ikControl, "Weight", 1)
 	trySet(ikControl, "Enabled", true)
 
+	-- Probing for a Priority-like property — if this exists and defaults
+	-- too low, the base Idle/Walk animation (see logPlayingAnimations)
+	-- could simply be winning the per-frame blend every time, which
+	-- would perfectly explain "IK computes correctly internally
+	-- (confirmed by the angle metric) but produces zero visible change."
+	-- Not certain this property exists at all on IKControl; each
+	-- candidate is independently pcall-guarded via trySet already.
+	local priorityCandidates = { "Action", "Action2", "Action3", "Action4", "Movement", "Idle", "Core" }
+	for _, candidateName in priorityCandidates do
+		local enumOk, enumValue = pcall(function()
+			return (Enum :: any).AnimationPriority[candidateName]
+		end)
+		if enumOk and enumValue then
+			if trySet(ikControl, "Priority", enumValue) then
+				print(("[WeaponAimPose] IKControl.Priority succeeded with Enum.AnimationPriority.%s"):format(candidateName))
+				break
+			end
+		end
+	end
+
 	-- Delayed re-check: confirms the IKControl is STILL where we put
 	-- it a moment later, not silently un-parented/rejected by Roblox
 	-- after the fact despite the assignment itself not erroring.
@@ -229,6 +249,46 @@ local function createArmIK(character: Model, humanoid: Humanoid, chainRootPart: 
 	return ikControl, targetAnchor
 end
 
+--[[
+	DIAGNOSTIC: what animation is actually currently playing on this
+	character, and at what priority. If there's an active track (Idle/
+	Walk, from the default Animate script) at a priority IKControl
+	can't override, that would explain "IK computes correctly internally
+	(confirmed by the angle metric) but produces zero visible change" —
+	the base animation could simply be winning the per-frame blend every
+	time. This is a genuinely different kind of check than anything
+	tried so far — not another guessed property, but visibility into
+	what IK might be competing against.
+]]
+local function logPlayingAnimations(humanoid: Humanoid, label: string)
+	local ok, err = pcall(function()
+		local animator = humanoid:FindFirstChildOfClass("Animator")
+		if not animator then
+			print(("[WeaponAimPose] %s: no Animator found to inspect playing tracks."):format(label))
+			return
+		end
+		local tracks = animator:GetPlayingAnimationTracks()
+		if #tracks == 0 then
+			print(("[WeaponAimPose] %s: zero AnimationTracks currently playing."):format(label))
+			return
+		end
+		for _, track in tracks do
+			print(
+				("[WeaponAimPose] %s: playing track '%s', Priority=%s, Weight=%.2f, Speed=%.2f"):format(
+					label,
+					track.Name,
+					tostring(track.Priority),
+					track.WeightCurrent,
+					track.Speed
+				)
+			)
+		end
+	end)
+	if not ok then
+		warn(("[WeaponAimPose] logPlayingAnimations(%s) errored: %s"):format(label, tostring(err)))
+	end
+end
+
 local function setupR15IK(character: Model, humanoid: Humanoid)
 	rightIK = nil
 	leftIK = nil
@@ -245,11 +305,17 @@ local function setupR15IK(character: Model, humanoid: Humanoid)
 		return
 	end
 
+	logPlayingAnimations(humanoid, "Before IK setup")
+
 	rightIK, rightTargetAnchor = createArmIK(character, humanoid, upperTorso, rightHand, "RightArm")
 	leftIK, leftTargetAnchor = createArmIK(character, humanoid, upperTorso, leftHand, "LeftArm")
 
 	ikSetupSucceeded = (rightIK ~= nil) and (leftIK ~= nil)
 	print(("[WeaponAimPose] R15 IK setup complete. ikSetupSucceeded=%s"):format(tostring(ikSetupSucceeded)))
+
+	task.delay(2, function()
+		logPlayingAnimations(humanoid, "2s after IK setup")
+	end)
 end
 
 -- ===== Shared character setup =====
