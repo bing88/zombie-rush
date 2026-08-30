@@ -909,6 +909,14 @@ function UIController.SetDowned(isDowned: boolean, bleedOutSeconds: number)
 			task.wait(1)
 			remaining -= 1
 		end
+		-- Self-clearing fallback: hide the banner even if the server's
+		-- own "no longer downed" signal (SetDowned(false, ...)) is
+		-- delayed or never arrives for some reason — this previously
+		-- fell through and left the banner permanently stuck on its
+		-- last text ("...rescue (1s)") once the loop's countdown ran
+		-- out, regardless of what actually happened server-side.
+		downedBanner.Visible = false
+		downedCountdownThread = nil
 	end)
 end
 

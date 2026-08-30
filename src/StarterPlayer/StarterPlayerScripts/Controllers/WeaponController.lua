@@ -70,6 +70,31 @@ local function statsFor(weaponName: string)
 end
 
 --[[
+	Local (client-authoritative-for-visuals-only) muzzle world position.
+	Sent alongside the fire request so the server can use a fresh
+	position for the FX broadcast instead of its own replicated copy of
+	the character, which lags behind a moving player by roughly their
+	ping — see WeaponService's origin-tolerance check, which validates
+	this rather than trusting it outright. Mirrors the exact lookup
+	WeaponService itself does server-side (Tool -> Handle -> Muzzle),
+	just run locally where it's zero-latency for the shooter.
+]]
+local function getLocalMuzzlePosition(): Vector3?
+	local character = player.Character
+	if not character then
+		return nil
+	end
+	local tool = character:FindFirstChildOfClass("Tool")
+	local handle = tool and tool:FindFirstChild("Handle")
+	local muzzle = handle and handle:FindFirstChild("Muzzle")
+	if muzzle and muzzle:IsA("Attachment") then
+		return muzzle.WorldPosition
+	end
+	local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	return rootPart and rootPart.Position
+end
+
+--[[
 	Seeds both ammo and capacity with the weapon's BASE config values as a
 	reasonable guess before the server's first AmmoUpdated arrives for
 	this weapon. This is only ever a starting guess — maxAmmo gets
@@ -195,7 +220,7 @@ local function tryFire()
 	predictedAmmo[currentWeapon] -= 1
 	updateAmmoUI()
 
-	FireWeapon:FireServer(camera.CFrame.LookVector)
+	FireWeapon:FireServer(camera.CFrame.LookVector, getLocalMuzzlePosition())
 
 	if localFireCallback then
 		localFireCallback()

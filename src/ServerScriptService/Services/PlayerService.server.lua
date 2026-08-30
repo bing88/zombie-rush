@@ -187,6 +187,11 @@ local function enterDownedState(player: Player, character: Model, humanoid: Huma
 		cleanup()
 		DownedState.SetDowned(player, false)
 		humanoid.WalkSpeed = cachedWalkSpeed
+		-- Previously missing entirely: without this, the client never
+		-- learned bleed-out had expired (only the revive path fired
+		-- this event), leaving the downed banner's countdown stuck
+		-- forever on the client with no signal to clear it.
+		PlayerDownedChanged:FireClient(player, false, 0)
 		humanoid.Health = 0 -- now actually dies; see the Died handler below
 	end)
 end

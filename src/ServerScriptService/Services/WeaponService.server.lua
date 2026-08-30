@@ -169,6 +169,38 @@ local function getMuzzlePosition(character: Model, rootPart: BasePart): Vector3
 	return rootPart.Position + Vector3.new(0, 1, 0)
 end
 
+-- How far the client's self-reported muzzle position is allowed to
+-- diverge from the server's own (replication-lagged) copy of the
+-- character before it's rejected as implausible. Generous enough to
+-- cover legitimate movement during normal ping, nowhere near enough to
+-- let someone claim a shot originated somewhere they actually aren't.
+local MAX_CLAIMED_ORIGIN_DEVIATION_STUDS = 12
+
+--[[
+	Prefers the client's self-reported muzzle position over the server's
+	own replicated copy of the character, when it's present and passes a
+	plausibility check — this fixes visible effect lag while moving: the
+	server's own copy of a moving player's position is behind their
+	actual (client-predicted) position by roughly their ping, so effects
+	built from it visibly trail a moving shooter. This never affects
+	actual hit detection (the raycast below still runs server-side from
+	whatever origin is returned here, and damage is always the server's
+	own determination) — it only changes where the tracer/muzzle-flash
+	visually starts from. Falls back to the server-computed position if
+	the claim is missing, malformed, or too far from where the server
+	independently believes the character is.
+]]
+local function resolveFireOrigin(character: Model, rootPart: BasePart, claimedOrigin: unknown): Vector3
+	local serverOrigin = getMuzzlePosition(character, rootPart)
+	if typeof(claimedOrigin) ~= "Vector3" then
+		return serverOrigin
+	end
+	if (claimedOrigin - serverOrigin).Magnitude > MAX_CLAIMED_ORIGIN_DEVIATION_STUDS then
+		return serverOrigin
+	end
+	return claimedOrigin
+end
+
 --[[
 	Raycasts a single pellet and applies damage if a live zombie was hit.
 	Tags the zombie with LastHitPlayerId so ZombieService can credit the
@@ -256,7 +288,7 @@ local function startReload(player: Player, state: PlayerWeaponState, weaponName:
 	end)
 end
 
-FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
+FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3, claimedOrigin: unknown)
 	if typeof(aimDirection) ~= "Vector3" or aimDirection.Magnitude < 0.5 then
 		return
 	end
@@ -309,7 +341,7 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
 	syncAmmo(player, state)
 
 	local baseDamage = stats.Damage * getDamageMultiplier(player, weaponName)
-	local origin = getMuzzlePosition(character, rootPart)
+	local origin = resolveFireOrigin(character, rootPart, claimedOrigin)
 	local spreadRadians = math.rad(stats.Spread)
 
 	local hits = {}
