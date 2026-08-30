@@ -52,7 +52,11 @@ local toastHideThread: thread? = nil
 local downedCountdownThread: thread? = nil
 local hitmarkerHideThread: thread? = nil
 
-local AMMO_POSITION = UDim2.new(1, -20, 1, -200)
+-- Shifted well clear of Roblox's default touch jump button, which sits
+-- right in the bottom-right corner — the fire button used to occupy
+-- almost the exact same spot, so the jump button's arrow rendered
+-- visibly through/behind it.
+local AMMO_POSITION = UDim2.new(1, -150, 1, -200)
 
 --[[
 	Gapped tick-mark crosshair (four short lines + a center dot, with a
@@ -112,11 +116,12 @@ local function buildUI()
 
 	-- Uniformly scales every descendant's Size/Position offsets AND text
 	-- size — the whole HUD was sized for desktop and read as oversized on
-	-- narrower/mobile screens. 0.5 shrinks everything (buttons, labels,
+	-- narrower/mobile screens. This single number scales everything
+	-- (buttons, labels,
 	-- text) as one unit; retune this single number rather than touching
 	-- individual element sizes if it needs further adjustment.
 	local uiScale = Instance.new("UIScale")
-	uiScale.Scale = 0.5
+	uiScale.Scale = 0.7
 	uiScale.Parent = screenGui
 
 	buildCrosshair(screenGui)
@@ -284,7 +289,7 @@ local function buildUI()
 	reloadButton.Name = "ReloadButton"
 	reloadButton.AnchorPoint = Vector2.new(1, 1)
 	reloadButton.Size = UDim2.fromOffset(110, 40)
-	reloadButton.Position = UDim2.new(1, -20, 1, -150)
+	reloadButton.Position = UDim2.new(1, -150, 1, -150)
 	reloadButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	reloadButton.BackgroundTransparency = 0.2
 	reloadButton.TextColor3 = Color3.new(1, 1, 1)
@@ -295,13 +300,14 @@ local function buildUI()
 
 	-- Fire button: the ONLY manual firing trigger (see WeaponController —
 	-- generic screen-tap/click firing was removed). Works via mouse click
-	-- or touch hold on any platform. Positioned bottom-right for
-	-- thumb reach on mobile.
+	-- or touch hold on any platform. Positioned bottom-right for thumb
+	-- reach on mobile, offset left of the corner to clear Roblox's
+	-- default touch jump button (see AMMO_POSITION's comment).
 	fireButton = Instance.new("TextButton")
 	fireButton.Name = "FireButton"
 	fireButton.AnchorPoint = Vector2.new(1, 1)
 	fireButton.Size = UDim2.fromOffset(110, 110)
-	fireButton.Position = UDim2.new(1, -20, 1, -20)
+	fireButton.Position = UDim2.new(1, -150, 1, -20)
 	fireButton.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
 	fireButton.BackgroundTransparency = 0.25
 	fireButton.TextColor3 = Color3.new(1, 1, 1)

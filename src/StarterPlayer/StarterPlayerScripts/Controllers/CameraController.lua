@@ -47,8 +47,13 @@ local camera = workspace.CurrentCamera
 
 -- Shifts the camera's focus point right and slightly up so the character
 -- sits toward the left of the screen instead of dead-center, matching
--- standard over-the-shoulder third-person shooter framing.
-local SHOULDER_OFFSET = Vector3.new(1.75, 0.4, 0)
+-- standard over-the-shoulder third-person shooter framing. Kept modest
+-- (not a large offset) — a wider shift looks more "cinematic" but makes
+-- the visual gun barrel increasingly diverge from where the crosshair
+-- actually sits, since the crosshair marks camera.LookVector (always
+-- exact screen-center, which is what shots actually fire along) while
+-- the gun's held orientation doesn't bend to match an offset camera.
+local SHOULDER_OFFSET = Vector3.new(0.9, 0.3, 0)
 local FIRST_PERSON_TOGGLE_KEY = Enum.KeyCode.V
 
 -- Higher = snappier lock-on (reaches ~63% of the way to the target's

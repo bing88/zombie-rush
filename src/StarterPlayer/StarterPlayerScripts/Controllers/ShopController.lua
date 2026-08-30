@@ -94,7 +94,7 @@ local function buildUI()
 	-- Matches UIController's HUD scaling so the upgrade panel doesn't
 	-- look oversized relative to the rest of the shrunk-down HUD.
 	local uiScale = Instance.new("UIScale")
-	uiScale.Scale = 0.5
+	uiScale.Scale = 0.7
 	uiScale.Parent = screenGui
 
 	-- Tab button: always visible, toggles the panel. Bottom-left, clear

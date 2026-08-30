@@ -2,9 +2,13 @@
 	MapBootstrap.server.lua
 
 	Tier 1 map: Lobby (shop + upgrade stalls, teleport pad, safe — no
-	zombies) -> Corridor -> Arena (cover crates/barrels + dividing walls
-	carving sub-corridors + a raised catwalk for verticality), per the
-	Tier 1 checklist ("1 map... cover, corridors, shop area"). Still
+	zombies) and Arena (cover crates/barrels + dividing walls carving
+	sub-corridors + a raised catwalk for verticality), per the Tier 1
+	checklist ("1 map... cover, corridors, shop area"). The two are
+	sealed off from each other — no walkable path between them — since
+	the teleport pad (see WaveService) is the only way a match actually
+	starts; a corridor connecting them physically was removed once that
+	became true, since nothing ever needed to walk through it. Still
 	placeholder blocky geometry — no art pipeline exists yet, same
 	rationale as Tier 0's baseplate — but laid out with actual
 	level-design intent instead of one flat slab, plus basic
@@ -84,7 +88,13 @@ local function addLabel(part: BasePart, text: string, subText: string?)
 	billboard.Name = "Label"
 	billboard.Size = UDim2.fromOffset(200, 60)
 	billboard.StudsOffset = Vector3.new(0, 2.5, 0)
-	billboard.AlwaysOnTop = true
+	-- AlwaysOnTop=false (respects wall occlusion) + a distance cap: these
+	-- were previously rendering through walls and from clear across the
+	-- map (every stall/monument label visible simultaneously, all
+	-- crammed into the same screen space at long range) — this ties
+	-- every label to actually being near, and able to see, its own part.
+	billboard.AlwaysOnTop = false
+	billboard.MaxDistance = 45
 	billboard.Parent = part
 
 	local title = Instance.new("TextLabel")
@@ -204,39 +214,25 @@ addPrompt(teleportPad, "StartMatch", "Start Match", "Teleporter")
 addPointLight(teleportPad, Color3.fromRGB(60, 200, 220), 4, 20)
 
 -- Perimeter walls flush with the lobby floor's actual edges (X ±25,
--- Z -25) — solid on 3 sides, with a 10-stud gap on the north (Z 25)
--- side exactly matching the corridor's width so it reads as a doorway
--- rather than a wall players can just walk past into open air.
+-- Z -25). Fully solid on all 4 sides — no corridor to leave a doorway
+-- gap for anymore (see below): the lobby and arena are only connected
+-- via the teleport pad now, not a walkable path, so there's nothing to
+-- physically open a wall for.
 local LOBBY_WALL_HEIGHT = 12
 local lobbyWallColor = Color3.fromRGB(50, 50, 58)
 makePart("LobbyWallSouth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, -25), lobbyWallColor)
 makePart("LobbyWallWest", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(-25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
 makePart("LobbyWallEast", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
-makePart("LobbyWallNorthWest", Vector3.new(20, LOBBY_WALL_HEIGHT, 1), Vector3.new(-15, LOBBY_WALL_HEIGHT / 2, 25), lobbyWallColor)
-makePart("LobbyWallNorthEast", Vector3.new(20, LOBBY_WALL_HEIGHT, 1), Vector3.new(15, LOBBY_WALL_HEIGHT / 2, 25), lobbyWallColor)
+makePart("LobbyWallNorth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, 25), lobbyWallColor)
 
--- ============================== CORRIDOR ==============================
--- Runs from the lobby's north wall opening (Z 25) to the arena's south
--- wall opening (Z 95) — length picked to exactly meet the arena floor's
--- edge below, with no gap between them (a previous version stopped 20
--- studs short of the arena, leaving an open pit players fell into
--- walking from one to the other).
-
-local CORRIDOR_Z_MIN, CORRIDOR_Z_MAX = 25, 95
-local corridorLength = CORRIDOR_Z_MAX - CORRIDOR_Z_MIN
-local corridorCenterZ = (CORRIDOR_Z_MIN + CORRIDOR_Z_MAX) / 2
-
-makePart("CorridorFloor", Vector3.new(10, 2, corridorLength), Vector3.new(0, 0, corridorCenterZ), Color3.fromRGB(55, 55, 60))
-makePart("CorridorWallLeft", Vector3.new(1, 8, corridorLength), Vector3.new(-5, 4, corridorCenterZ), Color3.fromRGB(45, 45, 50))
-makePart("CorridorWallRight", Vector3.new(1, 8, corridorLength), Vector3.new(5, 4, corridorCenterZ), Color3.fromRGB(45, 45, 50))
-
--- A few overhead light fixtures so the corridor isn't a dark tunnel
--- between the lit lobby and arena.
-local corridorLightPositions = { Vector3.new(0, 7.5, 30), Vector3.new(0, 7.5, 60), Vector3.new(0, 7.5, 90) }
-for i, position in corridorLightPositions do
-	local fixture = makePart("CorridorLight" .. i, Vector3.new(2, 0.5, 2), position, Color3.fromRGB(255, 240, 200), { Material = Enum.Material.Neon })
-	addPointLight(fixture, Color3.fromRGB(255, 235, 190), 2, 18)
-end
+-- Match starts via the teleport pad now (see WaveService), not by
+-- walking from the lobby into the arena — the corridor that used to
+-- physically connect them served no purpose once that changed and was
+-- removed. LOBBY_ARENA_BOUNDARY_Z is kept as a plain reference value
+-- (not real geometry) purely because the fall-safety-net recovery logic
+-- further down still needs a Z threshold to guess "were they in the
+-- lobby or the arena" when someone falls through the map.
+local LOBBY_ARENA_BOUNDARY_Z = 95
 
 -- ============================== ARENA ==============================
 -- X range widened east (-55..80, vs. a symmetric -55..55) to actually
@@ -380,13 +376,13 @@ for i = 1, SPAWN_COUNT do
 end
 
 -- Perimeter walls flush with the (widened) arena floor's actual edges —
--- solid on the north/east/west sides, with a 10-stud gap on the south
--- (Z 95) side exactly matching the corridor's width so it lines up with
--- that doorway instead of sealing the arena off entirely.
+-- fully solid on all 4 sides now. The south wall used to split into two
+-- parts with a doorway-width gap for the corridor; with the corridor
+-- gone (see the lobby section above — teleport pad is the only
+-- lobby<->arena connection now), that gap serves no purpose.
 local ARENA_WALL_HEIGHT = 16
 local arenaWallColor = Color3.fromRGB(55, 50, 55)
-makePart("ArenaWallSouthWest", Vector3.new(50, ARENA_WALL_HEIGHT, 1), Vector3.new(-30, ARENA_WALL_HEIGHT / 2, 95), arenaWallColor)
-makePart("ArenaWallSouthEast", Vector3.new(75, ARENA_WALL_HEIGHT, 1), Vector3.new(42.5, ARENA_WALL_HEIGHT / 2, 95), arenaWallColor)
+makePart("ArenaWallSouth", Vector3.new(arenaWidth, ARENA_WALL_HEIGHT, 1), Vector3.new(arenaCenterX, ARENA_WALL_HEIGHT / 2, LOBBY_ARENA_BOUNDARY_Z), arenaWallColor)
 makePart("ArenaWallNorth", Vector3.new(arenaWidth, ARENA_WALL_HEIGHT, 1), Vector3.new(arenaCenterX, ARENA_WALL_HEIGHT / 2, ARENA_Z_MAX), arenaWallColor)
 makePart("ArenaWallWest", Vector3.new(1, ARENA_WALL_HEIGHT, arenaDepth), Vector3.new(ARENA_X_MIN, ARENA_WALL_HEIGHT / 2, arenaCenterZ), arenaWallColor)
 makePart("ArenaWallEast", Vector3.new(1, ARENA_WALL_HEIGHT, arenaDepth), Vector3.new(ARENA_X_MAX, ARENA_WALL_HEIGHT / 2, arenaCenterZ), arenaWallColor)
@@ -449,7 +445,7 @@ fallSafetyNet.Touched:Connect(function(hit: BasePart)
 	-- before hitting the net (X/Z barely drift during a straight fall) —
 	-- good enough since this is only ever expected to fire as a last
 	-- resort, not something normal play should ever actually trigger.
-	local recoveryPosition = if rootPart.Position.Z < CORRIDOR_Z_MAX then LOBBY_RECOVERY_POSITION else ARENA_RECOVERY_POSITION
+	local recoveryPosition = if rootPart.Position.Z < LOBBY_ARENA_BOUNDARY_Z then LOBBY_RECOVERY_POSITION else ARENA_RECOVERY_POSITION
 
 	rootPart.AssemblyLinearVelocity = Vector3.zero
 	character:PivotTo(CFrame.new(recoveryPosition))
