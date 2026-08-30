@@ -139,6 +139,57 @@ end
 local hasLoggedNoTool = false
 local hasLoggedError = false
 local lastDiagnosticPrintTime = 0
+local dumpedStructureForTool: Tool? = nil
+
+--[[
+	DIAGNOSTIC: dumps the FULL descendant tree of the equipped Tool
+	(every instance, class, and — for parts/welds/motors — their key
+	properties) the first time each distinct Tool is seen. Three
+	completely different techniques (IKControl, direct Grip assignment,
+	tweened Grip assignment) have now all shown the identical pattern:
+	every layer of data provably correct, zero visual effect. That
+	consistency itself is the signal — the problem is very unlikely to
+	be "how we're setting Grip" at this point, and much more likely to
+	be "Grip isn't controlling what we think it's controlling." This is
+	the same "stop guessing, dump the real structure" approach that
+	found the actual AnimationConstraint-vs-Motor6D issue earlier in
+	this investigation — applying it here now instead of trying a
+	fourth technique blind. Specifically looking for: is there a
+	SEPARATE visible mesh/model welded to Handle with an offset that
+	doesn't move when Handle's Grip-relative position changes, or some
+	other structure where Handle itself isn't what's actually rendered?
+]]
+local function dumpToolStructure(tool: Tool)
+	local ok, err = pcall(function()
+		print(("[WeaponView] === Dumping structure of equipped Tool '%s' ==="):format(tool.Name))
+		print(("[WeaponView] Tool.Grip = %s"):format(tostring(tool.Grip)))
+		for _, descendant in tool:GetDescendants() do
+			local extra = ""
+			if descendant:IsA("BasePart") then
+				extra = (" [Anchored=%s, Transparency=%.2f, CanCollide=%s]"):format(
+					tostring(descendant.Anchored),
+					descendant.Transparency,
+					tostring(descendant.CanCollide)
+				)
+			elseif descendant:IsA("Motor6D") or descendant:IsA("Weld") then
+				local d = descendant :: Motor6D
+				extra = (" [Part0=%s, Part1=%s, C0=%s]"):format(
+					d.Part0 and d.Part0.Name or "nil",
+					d.Part1 and d.Part1.Name or "nil",
+					tostring(d.C0)
+				)
+			elseif descendant:IsA("WeldConstraint") then
+				local d = descendant :: WeldConstraint
+				extra = (" [Part0=%s, Part1=%s]"):format(d.Part0 and d.Part0.Name or "nil", d.Part1 and d.Part1.Name or "nil")
+			end
+			print(("[WeaponView]   %s : %s%s"):format(descendant:GetFullName(), descendant.ClassName, extra))
+		end
+		print("[WeaponView] === End dump ===")
+	end)
+	if not ok then
+		warn("[WeaponView] dumpToolStructure errored: " .. tostring(err))
+	end
+end
 
 -- Reused across frames rather than creating a brand-new Tween every
 -- single frame (cheaper, and avoids any risk of tween-creation churn
@@ -173,6 +224,75 @@ local function updatePitchFollow()
 			print("[WeaponView] updatePitchFollow: no equipped Tool found — skipping every frame.")
 		end
 		return
+	end
+
+	if dumpedStructureForTool ~= tool then
+		dumpedStructureForTool = tool
+		dumpToolStructure(tool)
+
+		-- DIAGNOSTIC: also dump the character's hand-side of the
+		-- connection. Roblox creates an internal joint linking the
+		-- Tool to the hand when equipped (often a Motor6D/Weld under
+		-- the hand part itself, separate from anything under the Tool)
+		-- — if THAT joint's transform is computed once at equip time
+		-- from Grip's value then and never re-reads Grip afterward,
+		-- that would explain everything seen so far: every property we
+		-- touch reports correct, nothing downstream ever changes.
+		local ok, err = pcall(function()
+			local character = player.Character
+			local hand = character and character:FindFirstChild("RightHand")
+			if hand then
+				print(("[WeaponView] === Dumping character.RightHand children ==="))
+				for _, child in hand:GetChildren() do
+					local extra = ""
+					if child:IsA("Motor6D") or child:IsA("Weld") then
+						local d = child :: Motor6D
+						extra = (" [Part0=%s, Part1=%s, C0=%s]"):format(
+							d.Part0 and d.Part0.Name or "nil",
+							d.Part1 and d.Part1.Name or "nil",
+							tostring(d.C0)
+						)
+					end
+					print(("[WeaponView]   %s : %s%s"):format(child.Name, child.ClassName, extra))
+				end
+				print("[WeaponView] === End RightHand dump ===")
+			else
+				print("[WeaponView] No RightHand found on character to dump.")
+			end
+		end)
+		if not ok then
+			warn("[WeaponView] RightHand dump errored: " .. tostring(err))
+		end
+
+		-- Delayed re-dump: in case that internal joint gets created a
+		-- moment after equip rather than instantly (same kind of
+		-- population race seen earlier in this investigation with
+		-- character body parts).
+		task.delay(1, function()
+			local delayedOk, delayedErr = pcall(function()
+				local character = player.Character
+				local hand = character and character:FindFirstChild("RightHand")
+				if hand then
+					print("[WeaponView] === RightHand children, 1s after equip ===")
+					for _, child in hand:GetChildren() do
+						local extra = ""
+						if child:IsA("Motor6D") or child:IsA("Weld") then
+							local d = child :: Motor6D
+							extra = (" [Part0=%s, Part1=%s, C0=%s]"):format(
+								d.Part0 and d.Part0.Name or "nil",
+								d.Part1 and d.Part1.Name or "nil",
+								tostring(d.C0)
+							)
+						end
+						print(("[WeaponView]   %s : %s%s"):format(child.Name, child.ClassName, extra))
+					end
+					print("[WeaponView] === End 1s-later dump ===")
+				end
+			end)
+			if not delayedOk then
+				warn("[WeaponView] Delayed RightHand dump errored: " .. tostring(delayedErr))
+			end
+		end)
 	end
 
 	local defaultGrip = getDefaultGrip(tool)
