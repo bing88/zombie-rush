@@ -10,9 +10,10 @@
 	the interact key; everything about whether the purchase is valid and
 	what it costs is decided here.
 
-	Also owns the one secret in the Tier 1 map: a hidden button that
-	opens a door to a stash granting a one-time coin bonus per player
-	(persisted via DataService.FoundSecret so it can't be re-farmed).
+	Weapon upgrades are ALSO purchasable anytime via ShopController's
+	client-side panel (PurchaseUpgradeRequest below) — both paths call
+	the exact same tryBuyUpgrade validation, so server-side trust is
+	identical either way; only the trigger differs.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23,13 +24,12 @@ local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local WeaponModelFactory = require(ReplicatedStorage.Shared.WeaponModelFactory)
 local DataService = require(script.Parent.DataService)
+local InternalSignals = require(script.Parent.InternalSignals)
 
 local CoinsUpdated = Remotes.CoinsUpdated
 local WeaponsOwned = Remotes.WeaponsOwned
 local ShopResult = Remotes.ShopResult
 local PurchaseUpgradeRequest = Remotes.PurchaseUpgradeRequest
-
-local SECRET_REWARD_COINS = 250
 
 local function syncPlayer(player: Player)
 	local profile = DataService.Get(player)
@@ -99,27 +99,11 @@ local function tryBuyUpgrade(player: Player, weaponName: string)
 	DataService.SetWeaponLevel(player, weaponName, nextLevel)
 	ShopResult:FireClient(player, true, weaponName .. " upgraded to level " .. nextLevel .. "!")
 	syncPlayer(player)
-end
 
-local function trySecretButton(_player: Player)
-	local door = Workspace.Map:FindFirstChild("SecretDoor")
-	if door then
-		door.Transparency = 1
-		door.CanCollide = false
-	end
-end
-
-local function trySecretCache(player: Player)
-	if DataService.HasFoundSecret(player) then
-		ShopResult:FireClient(player, true, "You already claimed this stash.")
-		return
-	end
-	DataService.MarkSecretFound(player)
-	local newBalance = DataService.AddCoins(player, SECRET_REWARD_COINS)
-	if newBalance then
-		CoinsUpdated:FireClient(player, newBalance)
-	end
-	ShopResult:FireClient(player, true, "Secret stash found! +" .. SECRET_REWARD_COINS .. " coins")
+	-- Magazine capacity scales with level too (see UpgradeConfig) —
+	-- refresh the ammo display immediately so a level-up shows the new
+	-- max right away instead of waiting for the next reload/switch.
+	InternalSignals.RequestAmmoRefresh(player)
 end
 
 local function connectStall(stallName: string, handler: (Player) -> ())
@@ -154,8 +138,6 @@ end)
 connectStall("Stall_UpgradeShotgun", function(player)
 	tryBuyUpgrade(player, "Shotgun")
 end)
-connectStall("Stall_SecretButton", trySecretButton)
-connectStall("Stall_SecretCache", trySecretCache)
 
 --[[
 	Anytime upgrade path: same tryBuyUpgrade validation as the physical

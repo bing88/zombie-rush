@@ -30,6 +30,10 @@ local bossHPFill: Frame
 local bossHPLabel: TextLabel
 local stateBanner: TextLabel
 local toastLabel: TextLabel
+local confirmBackdrop: Frame
+local confirmDialog: Frame
+local confirmYesButton: TextButton
+local confirmNoButton: TextButton
 
 local toastHideThread: thread? = nil
 
@@ -278,6 +282,73 @@ local function buildUI()
 	toastLabel.Text = ""
 	toastLabel.Visible = false
 	toastLabel.Parent = screenGui
+
+	-- Start-match confirmation dialog (hidden until the teleport pad
+	-- prompts it). Modal-style: dims the background so it's clearly not
+	-- part of the regular HUD.
+	confirmBackdrop = Instance.new("Frame")
+	confirmBackdrop.Name = "StartConfirmBackdrop"
+	confirmBackdrop.Size = UDim2.fromScale(1, 1)
+	confirmBackdrop.BackgroundColor3 = Color3.new(0, 0, 0)
+	confirmBackdrop.BackgroundTransparency = 0.5
+	confirmBackdrop.Visible = false
+	confirmBackdrop.ZIndex = 10
+	confirmBackdrop.Parent = screenGui
+
+	confirmDialog = Instance.new("Frame")
+	confirmDialog.Name = "StartConfirmDialog"
+	confirmDialog.AnchorPoint = Vector2.new(0.5, 0.5)
+	confirmDialog.Position = UDim2.fromScale(0.5, 0.5)
+	confirmDialog.Size = UDim2.fromOffset(320, 150)
+	confirmDialog.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	confirmDialog.ZIndex = 11
+	confirmDialog.Parent = confirmBackdrop
+
+	local dialogCorner = Instance.new("UICorner")
+	dialogCorner.CornerRadius = UDim.new(0, 8)
+	dialogCorner.Parent = confirmDialog
+
+	local dialogTitle = Instance.new("TextLabel")
+	dialogTitle.Size = UDim2.new(1, -20, 0, 50)
+	dialogTitle.Position = UDim2.new(0, 10, 0, 15)
+	dialogTitle.BackgroundTransparency = 1
+	dialogTitle.TextColor3 = Color3.new(1, 1, 1)
+	dialogTitle.Font = Enum.Font.GothamBold
+	dialogTitle.TextSize = 18
+	dialogTitle.TextWrapped = true
+	dialogTitle.Text = "Start the match now?"
+	dialogTitle.ZIndex = 11
+	dialogTitle.Parent = confirmDialog
+
+	confirmYesButton = Instance.new("TextButton")
+	confirmYesButton.Size = UDim2.fromOffset(130, 44)
+	confirmYesButton.Position = UDim2.new(0, 20, 1, -60)
+	confirmYesButton.BackgroundColor3 = Color3.fromRGB(60, 150, 70)
+	confirmYesButton.TextColor3 = Color3.new(1, 1, 1)
+	confirmYesButton.Font = Enum.Font.GothamBold
+	confirmYesButton.TextSize = 16
+	confirmYesButton.Text = "YES, START"
+	confirmYesButton.ZIndex = 11
+	confirmYesButton.Parent = confirmDialog
+
+	local yesCorner = Instance.new("UICorner")
+	yesCorner.CornerRadius = UDim.new(0, 6)
+	yesCorner.Parent = confirmYesButton
+
+	confirmNoButton = Instance.new("TextButton")
+	confirmNoButton.Size = UDim2.fromOffset(130, 44)
+	confirmNoButton.Position = UDim2.new(1, -150, 1, -60)
+	confirmNoButton.BackgroundColor3 = Color3.fromRGB(90, 40, 40)
+	confirmNoButton.TextColor3 = Color3.new(1, 1, 1)
+	confirmNoButton.Font = Enum.Font.GothamBold
+	confirmNoButton.TextSize = 16
+	confirmNoButton.Text = "NOT YET"
+	confirmNoButton.ZIndex = 11
+	confirmNoButton.Parent = confirmDialog
+
+	local noCorner = Instance.new("UICorner")
+	noCorner.CornerRadius = UDim.new(0, 6)
+	noCorner.Parent = confirmNoButton
 end
 
 function UIController.Init()
@@ -472,6 +543,40 @@ function UIController.ShowDeath()
 			deathLabel.Visible = false
 		end
 	end)
+end
+
+--[[
+	Shows the Yes/No "start the match?" dialog triggered by stepping on
+	the lobby teleport pad. onAnswer is called exactly once with true or
+	false, then the dialog hides itself — callers don't need to hide it
+	manually. Re-connects fresh button listeners each call rather than
+	keeping one persistent connection, since Activated doesn't carry
+	arguments and this is simpler than plumbing a mutable callback
+	reference through a single long-lived connection.
+]]
+function UIController.ShowStartConfirmation(onAnswer: (boolean) -> ())
+	if not confirmBackdrop then
+		return
+	end
+
+	local yesConnection: RBXScriptConnection
+	local noConnection: RBXScriptConnection
+
+	local function respond(answer: boolean)
+		confirmBackdrop.Visible = false
+		yesConnection:Disconnect()
+		noConnection:Disconnect()
+		onAnswer(answer)
+	end
+
+	yesConnection = confirmYesButton.Activated:Connect(function()
+		respond(true)
+	end)
+	noConnection = confirmNoButton.Activated:Connect(function()
+		respond(false)
+	end)
+
+	confirmBackdrop.Visible = true
 end
 
 return UIController

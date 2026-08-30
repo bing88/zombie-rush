@@ -28,9 +28,17 @@ local WaveStateChanged = Remotes.WaveStateChanged
 local GameStateChanged = Remotes.GameStateChanged
 local BossHPChanged = Remotes.BossHPChanged
 local CoinsUpdated = Remotes.CoinsUpdated
+local ShowStartConfirmation = Remotes.ShowStartConfirmation
+local ConfirmStartGame = Remotes.ConfirmStartGame
 
 local DEFAULT_ARENA_SPAWN = Vector3.new(0, 5, 105)
 local DEFAULT_LOBBY_SPAWN = Vector3.new(0, 3, -18)
+
+-- Set true by a confirmed "yes" on the lobby teleport pad; consumed (and
+-- reset) by runLobbyPhase once it moves the match into the countdown.
+-- The lobby no longer auto-starts just because a player is present —
+-- someone has to explicitly opt in via the pad.
+local startRequested = false
 
 local function getMarkerPosition(name: string, fallback: Vector3): Vector3
 	local marker = Workspace:FindFirstChild(name, true)
@@ -141,9 +149,13 @@ end
 
 local function runLobbyPhase()
 	MatchState.Set("Lobby")
+	startRequested = false
 	GameStateChanged:FireAllClients("Lobby", 0)
-	while not anyPlayersPresent() do
-		task.wait(1)
+	while not anyPlayersPresent() or not startRequested do
+		if not anyPlayersPresent() then
+			startRequested = false
+		end
+		task.wait(0.5)
 	end
 end
 
@@ -223,6 +235,38 @@ local function runVictory()
 
 	teleportAllPlayersTo(getLobbySpawnPosition())
 end
+
+--[[
+	Teleport pad wiring: stepping on Stall_TeleportPad and holding the
+	interact key asks THAT player (not everyone) whether to start the
+	match. A single "yes" is all it takes — this isn't a multiplayer vote/
+	quorum system, just an explicit opt-in gate instead of auto-starting
+	the moment any player is present. Only meaningful while still in the
+	Lobby state; triggering it mid-match (or during the countdown) is a
+	no-op since MatchState won't be "Lobby" then.
+]]
+local function connectTeleportPad()
+	local mapFolder = Workspace:WaitForChild("Map", 10)
+	local pad = mapFolder and mapFolder:WaitForChild("Stall_TeleportPad", 10)
+	local prompt = pad and pad:FindFirstChildOfClass("ProximityPrompt")
+	if not prompt then
+		warn("WaveService: teleport pad or its ProximityPrompt not found")
+		return
+	end
+	prompt.Triggered:Connect(function(player: Player)
+		if MatchState.Get() ~= "Lobby" then
+			return
+		end
+		ShowStartConfirmation:FireClient(player)
+	end)
+end
+connectTeleportPad()
+
+ConfirmStartGame.OnServerEvent:Connect(function(player: Player, confirmed: boolean)
+	if confirmed and MatchState.Get() == "Lobby" then
+		startRequested = true
+	end
+end)
 
 task.spawn(function()
 	while true do

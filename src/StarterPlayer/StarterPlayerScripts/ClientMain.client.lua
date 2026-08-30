@@ -75,6 +75,12 @@ Remotes.WeaponsOwned.OnClientEvent:Connect(function(owned: { [string]: boolean }
 	ShopController.SetOwnedWeapons(owned, levels)
 end)
 
+Remotes.ShowStartConfirmation.OnClientEvent:Connect(function()
+	UIController.ShowStartConfirmation(function(confirmed: boolean)
+		Remotes.ConfirmStartGame:FireServer(confirmed)
+	end)
+end)
+
 Remotes.GameStateChanged.OnClientEvent:Connect(function(state: string, secondsLeft: number, nextWaveNumber: number?)
 	if state == "Lobby" then
 		UIController.SetGameStateBanner("Waiting for players...")

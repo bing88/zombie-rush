@@ -30,7 +30,6 @@ local function defaultProfile()
 		Coins = 0,
 		UnlockedWeapons = { Pistol = true },
 		WeaponUpgrades = {},
-		FoundSecret = false,
 	}
 end
 
@@ -143,18 +142,6 @@ function DataService.SetWeaponLevel(player: Player, weaponName: string, level: n
 	local profile = profiles[player]
 	if profile then
 		profile.WeaponUpgrades[weaponName] = level
-	end
-end
-
-function DataService.HasFoundSecret(player: Player): boolean
-	local profile = profiles[player]
-	return profile ~= nil and profile.FoundSecret == true
-end
-
-function DataService.MarkSecretFound(player: Player)
-	local profile = profiles[player]
-	if profile then
-		profile.FoundSecret = true
 	end
 end
 

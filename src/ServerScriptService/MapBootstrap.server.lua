@@ -1,26 +1,40 @@
 --[[
 	MapBootstrap.server.lua
 
-	Tier 1 map: Lobby (shop + upgrade stalls, safe — no zombies) ->
-	Corridor -> Arena (cover crates + dividing walls carving sub-corridors
-	+ a hidden secret room), per the Tier 1 checklist ("1 map... cover,
-	corridors, shop area, 1 secret"). Still placeholder blocky geometry —
-	no art pipeline exists yet, same rationale as Tier 0's baseplate — but
-	now laid out with actual level-design intent instead of one flat slab.
+	Tier 1 map: Lobby (shop + upgrade stalls, teleport pad, safe — no
+	zombies) -> Corridor -> Arena (cover crates/barrels + dividing walls
+	carving sub-corridors + a raised catwalk for verticality), per the
+	Tier 1 checklist ("1 map... cover, corridors, shop area"). Still
+	placeholder blocky geometry — no art pipeline exists yet, same
+	rationale as Tier 0's baseplate — but laid out with actual
+	level-design intent instead of one flat slab, plus basic
+	Lighting-service atmosphere (dusk, fog, ambient tint).
 
 	Idempotent: skips building if the "Map" folder already exists (e.g. a
 	server soft-restart without a full place reload).
 
 	Everything here is just static geometry + labels/ProximityPrompts.
-	Purchase/secret *logic* lives in ShopService, which finds these parts
-	by name (Stall_*, SecretDoor) and wires up Triggered handlers.
+	Purchase logic lives in ShopService; match-start logic (the teleport
+	pad) lives in WaveService — both find these parts by name (Stall_*)
+	and wire up Triggered handlers.
 ]]
 
 local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
 
 if Workspace:FindFirstChild("Map") then
 	return
 end
+
+-- Atmosphere: a bit darker/moodier than default Roblox daylight, matching
+-- a "zombie outbreak at dusk" tone without needing any custom skybox
+-- assets. Cheap and safe — purely Lighting-service property tweaks.
+Lighting.Brightness = 1.4
+Lighting.OutdoorAmbient = Color3.fromRGB(45, 48, 60)
+Lighting.Ambient = Color3.fromRGB(35, 35, 42)
+Lighting.ClockTime = 19.5 -- dusk
+Lighting.FogEnd = 400
+Lighting.FogColor = Color3.fromRGB(40, 42, 55)
 
 local map = Instance.new("Folder")
 map.Name = "Map"
@@ -106,6 +120,14 @@ local function addPrompt(part: BasePart, name: string, actionText: string, objec
 	prompt.Parent = part
 end
 
+local function addPointLight(part: BasePart, color: Color3, brightness: number?, range: number?)
+	local light = Instance.new("PointLight")
+	light.Color = color
+	light.Brightness = brightness or 2
+	light.Range = range or 16
+	light.Parent = part
+end
+
 -- ============================== LOBBY ==============================
 -- Safe zone: no zombies ever spawn here (WaveService only spawns in Wave/Boss states, always in the arena).
 
@@ -123,6 +145,24 @@ playerSpawn.Parent = map
 
 makeMarker("LobbySpawnPoint", Vector3.new(0, 3, -18))
 
+-- Lobby landmark: a simple abstract monument between spawn and the
+-- teleport pad, purely decorative — gives the lobby a focal point
+-- instead of just being a flat room with stalls around the edges.
+-- Small footprint so it doesn't block the walk path in a 50x50 room.
+local monumentBase = makePart("MonumentBase", Vector3.new(4, 1, 4), Vector3.new(0, 0.5, -6), Color3.fromRGB(50, 50, 55))
+local monumentPillar = makePart("MonumentPillar", Vector3.new(1.5, 6, 1.5), Vector3.new(0, 4, -6), Color3.fromRGB(80, 80, 88))
+local monumentTop = Instance.new("Part")
+monumentTop.Name = "MonumentTop"
+monumentTop.Shape = Enum.PartType.Ball
+monumentTop.Anchored = true
+monumentTop.Size = Vector3.new(2.5, 2.5, 2.5)
+monumentTop.Position = Vector3.new(0, 8.5, -6)
+monumentTop.Material = Enum.Material.Neon
+monumentTop.Color = Color3.fromRGB(90, 220, 130)
+monumentTop.Parent = map
+addPointLight(monumentTop, Color3.fromRGB(90, 220, 130), 3, 24)
+addLabel(monumentPillar, "ZOMBIE RUSH")
+
 local weaponStalls = {
 	{ Name = "Stall_BuyAssaultRifle", Position = Vector3.new(-18, 2.5, -20), Title = "Assault Rifle", Price = 150 },
 	{ Name = "Stall_BuyShotgun", Position = Vector3.new(-18, 2.5, -8), Title = "Shotgun", Price = 300 },
@@ -131,6 +171,7 @@ for _, data in weaponStalls do
 	local podium = makePart(data.Name, Vector3.new(4, 3, 4), data.Position, Color3.fromRGB(60, 90, 140))
 	addLabel(podium, data.Title, data.Price .. " coins")
 	addPrompt(podium, "Buy", "Buy", data.Title .. " — " .. data.Price .. " coins")
+	addPointLight(podium, Color3.fromRGB(100, 150, 255), 2, 14)
 end
 
 local upgradeStalls = {
@@ -142,13 +183,37 @@ for _, data in upgradeStalls do
 	local podium = makePart(data.Name, Vector3.new(4, 3, 4), data.Position, Color3.fromRGB(140, 110, 40))
 	addLabel(podium, data.Title, "Upgrade")
 	addPrompt(podium, "Upgrade", "Upgrade", data.Title)
+	addPointLight(podium, Color3.fromRGB(255, 200, 100), 2, 14)
 end
+
+-- Teleport pad: stepping up and confirming is what actually starts a
+-- match (see WaveService) — the lobby no longer auto-starts just because
+-- a player is present. Glowing neon disc, hard to miss, center of the
+-- lobby a short walk from the stalls.
+local teleportPad = makePart(
+	"Stall_TeleportPad",
+	Vector3.new(10, 1, 10),
+	Vector3.new(0, 0.5, 5),
+	Color3.fromRGB(60, 200, 220),
+	{ Material = Enum.Material.Neon }
+)
+addLabel(teleportPad, "START MATCH", "Step here")
+addPrompt(teleportPad, "StartMatch", "Start Match", "Teleporter")
+addPointLight(teleportPad, Color3.fromRGB(60, 200, 220), 4, 20)
 
 -- ============================== CORRIDOR ==============================
 
 makePart("CorridorFloor", Vector3.new(10, 2, 50), Vector3.new(0, 0, 50), Color3.fromRGB(55, 55, 60))
 makePart("CorridorWallLeft", Vector3.new(1, 8, 50), Vector3.new(-5, 4, 50), Color3.fromRGB(45, 45, 50))
 makePart("CorridorWallRight", Vector3.new(1, 8, 50), Vector3.new(5, 4, 50), Color3.fromRGB(45, 45, 50))
+
+-- A few overhead light fixtures so the corridor isn't a dark tunnel
+-- between the lit lobby and arena.
+local corridorLightPositions = { Vector3.new(0, 7.5, 25), Vector3.new(0, 7.5, 50), Vector3.new(0, 7.5, 75) }
+for i, position in corridorLightPositions do
+	local fixture = makePart("CorridorLight" .. i, Vector3.new(2, 0.5, 2), position, Color3.fromRGB(255, 240, 200), { Material = Enum.Material.Neon })
+	addPointLight(fixture, Color3.fromRGB(255, 235, 190), 2, 18)
+end
 
 -- ============================== ARENA ==============================
 
@@ -172,6 +237,57 @@ makePart("ArenaWall1", Vector3.new(2, 6, 30), Vector3.new(-30, 3, 150), Color3.f
 makePart("ArenaWall2", Vector3.new(2, 6, 30), Vector3.new(30, 3, 170), Color3.fromRGB(60, 55, 60))
 makePart("ArenaWall3", Vector3.new(30, 6, 2), Vector3.new(0, 3, 195), Color3.fromRGB(60, 55, 60))
 
+-- Extra cover reclaiming the space east of the arena (previously a
+-- secret room) — barrels instead of crates for visual variety, plus a
+-- couple of stacked pairs for partial cover you can peek over.
+local barrelPositions = {
+	Vector3.new(60, 3, 130), Vector3.new(70, 3, 145), Vector3.new(55, 3, 160),
+	Vector3.new(68, 3, 175), Vector3.new(48, 3, 185), Vector3.new(75, 3, 120),
+}
+for i, position in barrelPositions do
+	local barrel = Instance.new("Part")
+	barrel.Name = "CoverBarrel" .. i
+	barrel.Shape = Enum.PartType.Cylinder
+	barrel.Anchored = true
+	barrel.Size = Vector3.new(4, 3, 3)
+	barrel.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
+	barrel.Color = Color3.fromRGB(120, 90, 40)
+	barrel.Material = Enum.Material.Metal
+	barrel.Parent = map
+end
+
+-- Catwalk: a raised platform reachable by ramps on both ends, giving the
+-- arena a vertical option (per the original plan's "vertical areas"
+-- design goal) instead of everything happening at ground level. High
+-- ground for players, and a longer sightline for picking off zombies
+-- approaching from the north spawn ring.
+local CATWALK_HEIGHT = 10
+makePart("CatwalkPlatform", Vector3.new(16, 1, 10), Vector3.new(0, CATWALK_HEIGHT, 175), Color3.fromRGB(70, 70, 78))
+makePart("CatwalkRailingLeft", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 170.25), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
+makePart("CatwalkRailingRight", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 179.75), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
+
+local function makeRamp(name: string, position: Vector3, rotationY: number)
+	-- NOTE: WedgePart's slope direction depends on Roblox's default local
+	-- axis convention, which isn't something I can visually verify from
+	-- here. This is a best-effort placement — if the ramp looks inverted
+	-- or players can't actually walk up it in Studio, try rotationY + 180
+	-- for that ramp, or swap which face Size.Z faces.
+	local ramp = Instance.new("WedgePart")
+	ramp.Name = name
+	ramp.Anchored = true
+	ramp.Size = Vector3.new(6, CATWALK_HEIGHT, 12)
+	ramp.CFrame = CFrame.new(position) * CFrame.Angles(0, math.rad(rotationY), 0)
+	ramp.Color = Color3.fromRGB(70, 70, 78)
+	ramp.Material = Enum.Material.Concrete
+	ramp.Parent = map
+end
+
+-- One ramp up from the south (near ArenaWall3) so it's reachable while
+-- fighting through that sub-corridor, one from the north for a second
+-- approach so it's not a single-file chokepoint.
+makeRamp("CatwalkRampSouth", Vector3.new(0, CATWALK_HEIGHT / 2, 187), 180)
+makeRamp("CatwalkRampNorth", Vector3.new(0, CATWALK_HEIGHT / 2, 163), 0)
+
 -- Zombie spawn ring around the arena perimeter.
 local zombieSpawns = Instance.new("Folder")
 zombieSpawns.Name = "ZombieSpawns"
@@ -190,24 +306,6 @@ for i = 1, SPAWN_COUNT do
 	point.Position = position
 	point.Parent = zombieSpawns
 end
-
--- ============================== SECRET ==============================
--- A hidden button (behind a crate, easy to miss) opens SecretDoor, revealing a one-time coin stash.
-
-makePart("SecretRoomFloor", Vector3.new(20, 2, 20), Vector3.new(65, 0, 150), Color3.fromRGB(40, 35, 60))
-makePart("SecretRoomWallBack", Vector3.new(2, 8, 20), Vector3.new(75, 4, 150), Color3.fromRGB(35, 30, 50))
-makePart("SecretRoomWallLeft", Vector3.new(20, 8, 2), Vector3.new(65, 4, 140), Color3.fromRGB(35, 30, 50))
-makePart("SecretRoomWallRight", Vector3.new(20, 8, 2), Vector3.new(65, 4, 160), Color3.fromRGB(35, 30, 50))
-
-makePart("SecretDoor", Vector3.new(2, 8, 16), Vector3.new(55, 4, 150), Color3.fromRGB(90, 40, 40))
-
-local secretButton = makePart("Stall_SecretButton", Vector3.new(1.5, 1.5, 1.5), Vector3.new(-40, 3, 128), Color3.fromRGB(30, 30, 35))
-addLabel(secretButton, "???")
-addPrompt(secretButton, "Investigate", "Investigate", "A strange button, half-buried behind the crate.")
-
-local secretCache = makePart("Stall_SecretCache", Vector3.new(3, 3, 3), Vector3.new(70, 2.5, 150), Color3.fromRGB(220, 180, 40), { Material = Enum.Material.Neon })
-addLabel(secretCache, "Secret Stash")
-addPrompt(secretCache, "Claim", "Claim", "Secret Stash")
 
 -- ============================== BOUNDARY ==============================
 -- Invisible walls around the whole level so players/zombies can't wander off the edge into the void.

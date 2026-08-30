@@ -45,7 +45,7 @@ local WeaponConfig: { [string]: WeaponStats } = {
 	},
 	Shotgun = {
 		Damage = 14, -- per pellet; multiple pellets per shot make this hit hard up close and fall off fast at range
-		FireRate = 0.75,
+		FireRate = 0.45, -- was 0.75; noticeably punchier pump/semi-auto feel
 		MagazineSize = 6,
 		ReloadTime = 2.4,
 		Range = 40,

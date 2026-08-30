@@ -21,6 +21,7 @@ local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local DataService = require(script.Parent.DataService)
+local InternalSignals = require(script.Parent.InternalSignals)
 
 local FireWeapon = Remotes.FireWeapon
 local ReloadWeapon = Remotes.ReloadWeapon
@@ -53,15 +54,55 @@ local function getOrCreateState(player: Player): PlayerWeaponState
 	return state
 end
 
+local function getDamageMultiplier(player: Player, weaponName: string): number
+	local level = DataService.GetWeaponLevel(player, weaponName)
+	if level <= 0 then
+		return 1
+	end
+	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
+	local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
+	return (levelData and levelData.DamageMultiplier) or 1
+end
+
+--[[
+	Upgrade levels scale magazine capacity too, not just damage — see
+	UpgradeConfig's MagazineBonus. This is the ONLY place "current max
+	magazine size" should be computed from; every other function below
+	calls this rather than reading stats.MagazineSize directly, so a
+	level-up is reflected everywhere consistently.
+]]
+local function getMagazineCapacity(player: Player, weaponName: string): number
+	local stats = WeaponConfig[weaponName]
+	if not stats then
+		return 0
+	end
+	local level = DataService.GetWeaponLevel(player, weaponName)
+	if level <= 0 then
+		return stats.MagazineSize
+	end
+	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
+	local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
+	local bonus = (levelData and levelData.MagazineBonus) or 0
+	return stats.MagazineSize + bonus
+end
+
 local function syncAmmo(player: Player, state: PlayerWeaponState)
 	local weaponName = state.EquippedWeapon
 	local stats = WeaponConfig[weaponName]
 	if not stats then
 		return
 	end
-	local ammo = state.Ammo[weaponName] or stats.MagazineSize
-	AmmoUpdated:FireClient(player, weaponName, ammo, stats.MagazineSize, state.Reloading[weaponName] == true)
+	local capacity = getMagazineCapacity(player, weaponName)
+	local ammo = state.Ammo[weaponName] or capacity
+	AmmoUpdated:FireClient(player, weaponName, ammo, capacity, state.Reloading[weaponName] == true)
 end
+
+InternalSignals.SetAmmoRefreshHandler(function(player: Player)
+	local state = playerStates[player]
+	if state then
+		syncAmmo(player, state)
+	end
+end)
 
 --[[
 	Connects Tool.Equipped so we always know the *actual* equipped weapon
@@ -79,7 +120,7 @@ local function trackTool(player: Player, state: PlayerWeaponState, tool: Instanc
 		local weaponName = tool.Name
 		state.EquippedWeapon = weaponName
 		if state.Ammo[weaponName] == nil then
-			state.Ammo[weaponName] = WeaponConfig[weaponName].MagazineSize
+			state.Ammo[weaponName] = getMagazineCapacity(player, weaponName)
 		end
 		syncAmmo(player, state)
 	end)
@@ -125,16 +166,6 @@ local function getMuzzlePosition(character: Model, rootPart: BasePart): Vector3
 	return rootPart.Position + Vector3.new(0, 1, 0)
 end
 
-local function getDamageMultiplier(player: Player, weaponName: string): number
-	local level = DataService.GetWeaponLevel(player, weaponName)
-	if level <= 0 then
-		return 1
-	end
-	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
-	local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
-	return (levelData and levelData.DamageMultiplier) or 1
-end
-
 --[[
 	Raycasts a single pellet and applies damage if a live zombie was hit.
 	Tags the zombie with LastHitPlayerId so ZombieService can credit the
@@ -178,7 +209,8 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 end
 
 local function startReload(player: Player, state: PlayerWeaponState, weaponName: string, stats)
-	if state.Reloading[weaponName] or (state.Ammo[weaponName] or stats.MagazineSize) >= stats.MagazineSize then
+	local capacity = getMagazineCapacity(player, weaponName)
+	if state.Reloading[weaponName] or (state.Ammo[weaponName] or capacity) >= capacity then
 		return
 	end
 
@@ -191,7 +223,10 @@ local function startReload(player: Player, state: PlayerWeaponState, weaponName:
 		if playerStates[player] ~= state or not state.Reloading[weaponName] then
 			return
 		end
-		state.Ammo[weaponName] = stats.MagazineSize
+		-- Recompute capacity at completion time rather than reusing the
+		-- value captured at reload-start, in case the player upgraded
+		-- this weapon mid-reload (rare, but cheap to get right).
+		state.Ammo[weaponName] = getMagazineCapacity(player, weaponName)
 		state.Reloading[weaponName] = false
 		if state.EquippedWeapon == weaponName then
 			syncAmmo(player, state)
@@ -238,7 +273,7 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
 		return
 	end
 
-	local ammo = state.Ammo[weaponName] or stats.MagazineSize
+	local ammo = state.Ammo[weaponName] or getMagazineCapacity(player, weaponName)
 	if state.Reloading[weaponName] or ammo <= 0 then
 		return
 	end

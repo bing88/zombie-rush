@@ -25,6 +25,8 @@ local remoteNames = {
 	"BossHPChanged", -- server -> all clients: boss health bar
 	"ShopResult", -- server -> owning client: toast feedback for a purchase/upgrade/secret attempt
 	"PurchaseUpgradeRequest", -- client -> server: player wants to upgrade a weapon from the anytime UI panel (not a physical stall)
+	"ShowStartConfirmation", -- server -> client: player stepped on the lobby teleport pad, show a Yes/No prompt
+	"ConfirmStartGame", -- client -> server: player's answer to the above
 }
 
 local Remotes = {}
