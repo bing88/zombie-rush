@@ -2,42 +2,40 @@
 	WeaponAimPoseController.lua (ModuleScript)
 
 	Makes the LOCAL player's own held weapon always point toward wherever
-	the camera is aiming — third-person "held with both hands, pointing
-	forward, not swinging with the walk/run cycle" and first-person "gun
-	visibly tilts up/down as you look up/down" — instead of the default
-	walk/run/idle animation's arm-swing pose, which doesn't track aim
-	direction at all.
+	the camera is aiming, instead of the default walk/run/idle animation
+	(which doesn't track aim direction at all).
 
-	READ THIS BEFORE ASSUMING IT "JUST WORKS":
+	MAJOR REVISION: the original version of this controller manipulated
+	Motor6D.C0 directly, which is how classic Roblox R15/R6 rigs work.
+	Diagnostics (logged in earlier iterations, kept in git history)
+	proved that assumption wrong for at least some avatars — this
+	specific rig has NO Motor6D on its arms at all. Instead its joints
+	are Attachment + BallSocketConstraint (the physical/ragdoll-capable
+	joint) + AnimationConstraint (drives the animated pose) — Roblox's
+	newer constraint-based avatar rig system. AnimationConstraint isn't
+	meant for direct scripted posing the way Motor6D.C0 was.
 
-	- LOCAL ONLY. This overrides Motor6D.C0 directly from a LocalScript
-	  context, which only affects what THIS client renders. Motor6D pose
-	  changes made client-side do NOT automatically replicate to other
-	  players — everyone else watching you will still see the default
-	  walk-animation arm pose, not this aim pose. Making this visible to
-	  everyone would need either a real uploaded Animation asset (not
-	  something this text-only environment can author — that needs
-	  Studio's Animation Editor) or a continuously server-synced pose
-	  system (real added complexity and bandwidth). Out of scope here;
-	  this fixes what YOU see when you look at your own character.
+	This version uses Roblox's IKControl instead — the modern, actually-
+	intended tool for "aim a limb toward a target at runtime", designed
+	to work with either rig system. HOWEVER: I have meaningfully LOWER
+	confidence in IKControl's exact API (property names, required enum
+	values, where it needs to be parented to take effect) than I had in
+	Motor6D, which itself took multiple diagnostic rounds to get right.
+	Expect this to need further iteration too. Every property this sets
+	is wrapped in its own pcall with pass/fail logging specifically so
+	the NEXT round of Output-log evidence can pinpoint exactly which
+	assumptions are wrong, rather than another all-or-nothing guess.
 
-	- Angle values below are estimates, not verified visually in Studio.
-	  Rotations are applied RELATIVE to each joint's own captured rest
-	  C0 (read once at spawn) rather than as hardcoded absolute poses,
-	  specifically so this adapts to whatever that avatar's natural rest
-	  pose already is — but whether the result actually reads as a
-	  convincing two-handed rifle grip needs real playtesting to
-	  confirm/tune. Retune the *_POSE tables below; nothing else needs
-	  to change to adjust the look.
+	R6 rigs still use the OLD Motor6D path below (untested against a
+	constraint-based R6 avatar — R6 is Roblox's older/simpler avatar
+	type and may not have been migrated to the constraint system the
+	same way R15 has; kept as the best available fallback rather than
+	confirmed working).
 
-	- Supports both R15 (Shoulder + Elbow per arm) and R6 (Shoulder
-	  only) rigs, detected per-character via `Humanoid.RigType` (not by
-	  guessing from which body parts happen to exist — see
-	  setupCharacter's comments for why that mattered), since a
-	  player's avatar type depends on their own account settings, not
-	  something this game controls. R6's single-joint arm can
-	  approximate "raised toward camera" but not as convincing a
-	  two-handed grip as R15's.
+	LOCAL ONLY regardless of rig type or technique: changes made from a
+	LocalScript are never visible to other players watching you — see
+	further down for why a fully shared version needs either a real
+	authored Animation asset or a server-synced system.
 ]]
 
 local Players = game:GetService("Players")
@@ -48,76 +46,27 @@ local WeaponAimPoseController = {}
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- Rotation OFFSETS applied on top of each joint's captured rest C0 (not
--- absolute poses) — a "raise into a two-handed rifle grip" shape.
-local R15_POSE: { [string]: CFrame } = {
-	RightShoulder = CFrame.Angles(math.rad(-70), 0, math.rad(-8)),
-	RightElbow = CFrame.Angles(math.rad(-35), 0, 0),
-	LeftShoulder = CFrame.Angles(math.rad(-75), 0, math.rad(15)),
-	LeftElbow = CFrame.Angles(math.rad(-45), 0, 0),
-}
+local IK_TARGET_DISTANCE = 6 -- studs in front of the shoulder the hand should reach toward
+local MAX_PITCH_DEGREES = 55
+
+-- ===== R6 fallback path (Motor6D-based, unchanged from the earlier version) =====
+
 local R6_POSE: { [string]: CFrame } = {
 	["Right Shoulder"] = CFrame.Angles(math.rad(-75), 0, math.rad(-5)),
 	["Left Shoulder"] = CFrame.Angles(math.rad(-80), 0, math.rad(10)),
 }
 
--- Only these joints (the shoulders) directly track camera pitch; elbows
--- keep a fixed bend regardless — reads more like a rigid two-handed
--- grip rotating from the shoulder than every joint independently
--- chasing the camera.
-local PITCH_TRACKING_MOTOR_NAMES = {
-	RightShoulder = true,
-	LeftShoulder = true,
-	["Right Shoulder"] = true,
-	["Left Shoulder"] = true,
-}
-
-local MAX_PITCH_DEGREES = 55 -- clamps how far the pose tilts at extreme up/down look
-
-local restPoses: { [Motor6D]: CFrame } = {}
-local trackedMotors: { Motor6D } = {}
-local currentRigType: string? = nil -- "R15" | "R6" | nil
-local hasLoggedNoWeaponSkip = false
-local hasLoggedFirstApply = false
-local hasLoggedError = false
+local r6RestPoses: { [Motor6D]: CFrame } = {}
+local r6TrackedMotors: { Motor6D } = {}
 
 local function findMotor(parent: Instance, name: string): Motor6D?
-	-- WaitForChild here too, not just for the arm parts one level up —
-	-- the joint can attach to its part slightly after the part itself
-	-- appears, the same population race, just one level deeper.
 	local motor = parent:WaitForChild(name, 5)
 	if motor and motor:IsA("Motor6D") then
 		return motor
 	end
-
-	-- DIAGNOSTIC: something with the expected name exists but isn't a
-	-- Motor6D (this avatar may be using Roblox's newer constraint/IK
-	-- rig system instead of classic Motor6D joints) — or nothing at all
-	-- exists with that name and there's a genuinely different Motor6D
-	-- name to find. Either way, dump EVERY child of the parent part so
-	-- we can see the real structure directly instead of guessing at
-	-- another specific name to try next.
-	local childList = {}
-	for _, child in parent:GetChildren() do
-		table.insert(childList, ("%s (%s)"):format(child.Name, child.ClassName))
-	end
-	warn(
-		("[WeaponAimPose] Looking for '%s' under %s — %s. All children of %s: %s"):format(
-			name,
-			parent:GetFullName(),
-			motor and ("found a " .. motor.ClassName .. " instead of a Motor6D") or "found nothing with that name",
-			parent.Name,
-			#childList > 0 and table.concat(childList, ", ") or "(no children)"
-		)
-	)
 	return nil
 end
 
---[[
-	Same WaitForChild treatment as findMotor, plus an explicit warning
-	naming exactly which part failed to appear — this is what turns
-	"0 motors found" into an actual answer instead of another guess.
-]]
 local function waitForPart(character: Model, name: string): Instance?
 	local part = character:WaitForChild(name, 5)
 	if not part then
@@ -126,79 +75,168 @@ local function waitForPart(character: Model, name: string): Instance?
 	return part
 end
 
+-- ===== R15 IKControl path (new) =====
+
+local rightIK: Instance? = nil
+local leftIK: Instance? = nil
+local rightTargetAnchor: BasePart? = nil
+local leftTargetAnchor: BasePart? = nil
+local ikSetupSucceeded = false
+
+--[[
+	Tries to set a property on an Instance via pcall, logging pass/fail
+	individually — this is the actual diagnostic value here: rather than
+	one all-or-nothing attempt, we find out exactly which of our
+	assumptions about IKControl's API are right and which aren't.
+]]
+local function trySet(instance: Instance, propertyName: string, value: any): boolean
+	local ok, err = pcall(function()
+		(instance :: any)[propertyName] = value
+	end)
+	if ok then
+		print(("[WeaponAimPose] IKControl.%s = %s (OK)"):format(propertyName, tostring(value)))
+	else
+		warn(("[WeaponAimPose] IKControl.%s FAILED: %s"):format(propertyName, tostring(err)))
+	end
+	return ok
+end
+
+--[[
+	Tries several plausible values for IKControl.Type until one is
+	accepted — I'm not confident which enum member name/value Roblox
+	actually uses here, so this probes rather than guessing once.
+]]
+local function trySetType(ikControl: Instance): boolean
+	local candidates = { "LookAt", "Position", "Rotation", "Transform" }
+	for _, candidateName in candidates do
+		local ok, enumValue = pcall(function()
+			return (Enum :: any).IKControlType[candidateName]
+		end)
+		if ok and enumValue then
+			local setOk = trySet(ikControl, "Type", enumValue)
+			if setOk then
+				print(("[WeaponAimPose] IKControl.Type succeeded with Enum.IKControlType.%s"):format(candidateName))
+				return true
+			end
+		else
+			print(("[WeaponAimPose] Enum.IKControlType.%s does not exist."):format(candidateName))
+		end
+	end
+	warn("[WeaponAimPose] No candidate IKControlType enum value worked.")
+	return false
+end
+
+--[[
+	Builds one IKControl for one arm. chainRootPart is where the chain
+	starts (shoulder-side), endEffectorPart is what should move/orient
+	toward the target (the hand). Returns (ikControl, targetAnchorPart)
+	or (nil, nil) if IKControl isn't usable at all on this character.
+]]
+local function createArmIK(character: Model, humanoid: Humanoid, chainRootPart: BasePart, endEffectorPart: BasePart, label: string): (Instance?, BasePart?)
+	local ok, ikControl = pcall(function()
+		return Instance.new("IKControl")
+	end)
+	if not ok then
+		warn(("[WeaponAimPose] Instance.new(\"IKControl\") failed for %s: %s"):format(label, tostring(ikControl)))
+		return nil, nil
+	end
+	print(("[WeaponAimPose] Created IKControl for %s."):format(label))
+
+	local targetAnchor = Instance.new("Part")
+	targetAnchor.Name = "IKTargetAnchor_" .. label
+	targetAnchor.Anchored = true
+	targetAnchor.CanCollide = false
+	targetAnchor.CanQuery = false
+	targetAnchor.Transparency = 1
+	targetAnchor.Size = Vector3.new(0.2, 0.2, 0.2)
+	targetAnchor.Parent = character
+
+	trySet(ikControl, "ChainRoot", chainRootPart)
+	trySet(ikControl, "EndEffector", endEffectorPart)
+	trySet(ikControl, "Target", targetAnchor)
+	trySetType(ikControl)
+	trySet(ikControl, "Weight", 1)
+	trySet(ikControl, "Enabled", true)
+
+	-- Uncertain where this actually needs to live to take effect —
+	-- trying Humanoid first as the most likely candidate. If nothing
+	-- visibly happens even with all properties above reporting success,
+	-- this parenting choice is the next thing to question.
+	local parentOk, parentErr = pcall(function()
+		ikControl.Parent = humanoid
+	end)
+	if parentOk then
+		print(("[WeaponAimPose] IKControl for %s parented under Humanoid successfully."):format(label))
+	else
+		warn(("[WeaponAimPose] Failed to parent IKControl for %s under Humanoid: %s"):format(label, tostring(parentErr)))
+	end
+
+	return ikControl, targetAnchor
+end
+
+local function setupR15IK(character: Model, humanoid: Humanoid)
+	rightIK = nil
+	leftIK = nil
+	rightTargetAnchor = nil
+	leftTargetAnchor = nil
+	ikSetupSucceeded = false
+
+	local upperTorso = waitForPart(character, "UpperTorso") :: BasePart?
+	local rightHand = waitForPart(character, "RightHand") :: BasePart?
+	local leftHand = waitForPart(character, "LeftHand") :: BasePart?
+
+	if not upperTorso or not rightHand or not leftHand then
+		warn("[WeaponAimPose] Missing UpperTorso/RightHand/LeftHand — cannot set up IK.")
+		return
+	end
+
+	rightIK, rightTargetAnchor = createArmIK(character, humanoid, upperTorso, rightHand, "RightArm")
+	leftIK, leftTargetAnchor = createArmIK(character, humanoid, upperTorso, leftHand, "LeftArm")
+
+	ikSetupSucceeded = (rightIK ~= nil) and (leftIK ~= nil)
+	print(("[WeaponAimPose] R15 IK setup complete. ikSetupSucceeded=%s"):format(tostring(ikSetupSucceeded)))
+end
+
+-- ===== Shared character setup =====
+
+local currentRigType: string? = nil
+local hasLoggedNoWeaponSkip = false
+local hasLoggedFirstApply = false
+local hasLoggedUpdateError = false
+
 local function setupCharacter(character: Model)
-	restPoses = {}
-	trackedMotors = {}
 	currentRigType = nil
+	r6RestPoses = {}
+	r6TrackedMotors = {}
 	hasLoggedNoWeaponSkip = false
 	hasLoggedFirstApply = false
-	hasLoggedError = false
+	hasLoggedUpdateError = false
 
-	-- WaitForChild (which actually yields until the part appears, up to
-	-- the timeout), not FindFirstChild (which returns nil immediately if
-	-- the part isn't there YET). This is the actual bug the diagnostics
-	-- caught: CharacterAdded fires as soon as the character Model exists,
-	-- but body parts can still be populating for a moment after that —
-	-- a synchronous FindFirstChild right then reliably missed them,
-	-- which is exactly why rig detection was finding nothing. This
-	-- yields inside its own coroutine (Roblox runs each CharacterAdded
-	-- connection callback in its own thread), so it's safe and doesn't
-	-- block anything else.
 	local humanoid = character:WaitForChild("Humanoid", 10) :: Humanoid?
 	if not humanoid then
 		warn("[WeaponAimPose] No Humanoid appeared within 10s — aborting setup for this character.")
 		return
 	end
 
-	-- Humanoid.RigType is a reliable enum the moment the Humanoid exists
-	-- — checking it directly avoids re-guessing rig type from which body
-	-- parts happen to exist yet, which was the unreliable part before.
-	local motorsToCapture: { Motor6D? } = {}
-
 	if humanoid.RigType == Enum.HumanoidRigType.R15 then
 		currentRigType = "R15"
-		local rightUpperArm = waitForPart(character, "RightUpperArm")
-		local leftUpperArm = waitForPart(character, "LeftUpperArm")
-		local rightLowerArm = waitForPart(character, "RightLowerArm")
-		local leftLowerArm = waitForPart(character, "LeftLowerArm")
-
-		table.insert(motorsToCapture, rightUpperArm and findMotor(rightUpperArm, "RightShoulder"))
-		table.insert(motorsToCapture, leftUpperArm and findMotor(leftUpperArm, "LeftShoulder"))
-		table.insert(motorsToCapture, rightLowerArm and findMotor(rightLowerArm, "RightElbow"))
-		table.insert(motorsToCapture, leftLowerArm and findMotor(leftLowerArm, "LeftElbow"))
+		setupR15IK(character, humanoid)
 	elseif humanoid.RigType == Enum.HumanoidRigType.R6 then
 		currentRigType = "R6"
 		local torso = waitForPart(character, "Torso")
 		if torso then
-			table.insert(motorsToCapture, findMotor(torso, "Right Shoulder"))
-			table.insert(motorsToCapture, findMotor(torso, "Left Shoulder"))
+			local rightMotor = findMotor(torso, "Right Shoulder")
+			local leftMotor = findMotor(torso, "Left Shoulder")
+			for _, motor in { rightMotor, leftMotor } do
+				if motor then
+					r6RestPoses[motor] = motor.C0
+					table.insert(r6TrackedMotors, motor)
+				end
+			end
 		end
-	end
-
-	for _, motor in motorsToCapture do
-		if motor then
-			restPoses[motor] = motor.C0
-			table.insert(trackedMotors, motor)
-		end
-	end
-
-	-- DIAGNOSTIC: confirms setup actually found what it expects. If this
-	-- still prints "rig=NONE" or 0 motors after this fix, the problem is
-	-- something else entirely (e.g. a genuinely nonstandard rig) — worth
-	-- keeping this in until it's confirmed fixed.
-	local motorNames = {}
-	for _, motor in trackedMotors do
-		table.insert(motorNames, motor.Name)
-	end
-	print(
-		("[WeaponAimPose] setupCharacter: rig=%s, tracked %d motor(s): %s"):format(
-			currentRigType or "NONE",
-			#trackedMotors,
-			#motorNames > 0 and table.concat(motorNames, ", ") or "(none found)"
-		)
-	)
-	if #trackedMotors == 0 then
-		warn("[WeaponAimPose] Found zero arm motors — character structure didn't match either R15 or R6 expectations. This controller will do nothing for this character.")
+		print(("[WeaponAimPose] R6 path: tracked %d motor(s)."):format(#r6TrackedMotors))
+	else
+		warn("[WeaponAimPose] Unrecognized RigType: " .. tostring(humanoid.RigType))
 	end
 end
 
@@ -206,24 +244,87 @@ local function hasEquippedWeapon(character: Model): boolean
 	return character:FindFirstChildOfClass("Tool") ~= nil
 end
 
+--[[
+	World-space point the hand should reach toward: out along the
+	camera's look direction from the shoulder, roughly where a
+	two-handed rifle grip would naturally sit.
+]]
+local function computeHandTargetPosition(originPart: BasePart): Vector3
+	local lookVector = camera.CFrame.LookVector
+	return originPart.Position + lookVector * IK_TARGET_DISTANCE
+end
+
+local function updateR15(character: Model)
+	if not ikSetupSucceeded then
+		return
+	end
+	local upperTorso = character:FindFirstChild("UpperTorso") :: BasePart?
+	if not upperTorso or not rightTargetAnchor or not leftTargetAnchor then
+		return
+	end
+
+	local ok, err = pcall(function()
+		local targetPosition = computeHandTargetPosition(upperTorso)
+		rightTargetAnchor.CFrame = CFrame.new(targetPosition)
+		leftTargetAnchor.CFrame = CFrame.new(targetPosition)
+	end)
+
+	if not ok then
+		if not hasLoggedUpdateError then
+			hasLoggedUpdateError = true
+			warn("[WeaponAimPose] updateR15 errored: " .. tostring(err))
+		end
+		return
+	end
+
+	if not hasLoggedFirstApply then
+		hasLoggedFirstApply = true
+		print("[WeaponAimPose] First R15 IK target update this life (does not confirm the arm visually moved — only that no error occurred).")
+	end
+end
+
 local function getPitchOffset(): CFrame
 	local lookVector = camera.CFrame.LookVector
 	local pitch = math.asin(math.clamp(lookVector.Y, -1, 1))
 	pitch = math.clamp(pitch, -math.rad(MAX_PITCH_DEGREES), math.rad(MAX_PITCH_DEGREES))
-	-- Looking up (positive pitch) raises the gun to match.
 	return CFrame.Angles(pitch, 0, 0)
+end
+
+local function updateR6(character: Model)
+	if #r6TrackedMotors == 0 then
+		return
+	end
+	local pitchOffset = getPitchOffset()
+
+	local ok, err = pcall(function()
+		for _, motor in r6TrackedMotors do
+			local baseOffset = R6_POSE[motor.Name]
+			if baseOffset then
+				motor.C0 = r6RestPoses[motor] * pitchOffset * baseOffset
+			end
+		end
+	end)
+
+	if not ok then
+		if not hasLoggedUpdateError then
+			hasLoggedUpdateError = true
+			warn("[WeaponAimPose] updateR6 errored: " .. tostring(err))
+		end
+		return
+	end
+
+	if not hasLoggedFirstApply then
+		hasLoggedFirstApply = true
+		print("[WeaponAimPose] First R6 pose apply this life.")
+	end
 end
 
 local function update()
 	local character = player.Character
-	if not character or #trackedMotors == 0 then
+	if not character then
 		return
 	end
 	if not hasEquippedWeapon(character) then
-		-- DIAGNOSTIC (temporary): only logs once so it doesn't spam —
-		-- confirms whether "no Tool found on the character" is why
-		-- nothing is happening (e.g. the Tool isn't actually parented
-		-- directly under the character the way this expects).
 		if not hasLoggedNoWeaponSkip then
 			hasLoggedNoWeaponSkip = true
 			print("[WeaponAimPose] Skipping: no equipped Tool found as a direct child of the character.")
@@ -236,37 +337,10 @@ local function update()
 		return
 	end
 
-	local pose = currentRigType == "R15" and R15_POSE or R6_POSE
-	local pitchOffset = getPitchOffset()
-
-	local ok, err = pcall(function()
-		for _, motor in trackedMotors do
-			local baseOffset = pose[motor.Name]
-			if baseOffset then
-				local restC0 = restPoses[motor]
-				if PITCH_TRACKING_MOTOR_NAMES[motor.Name] then
-					motor.C0 = restC0 * pitchOffset * baseOffset
-				else
-					motor.C0 = restC0 * baseOffset
-				end
-			end
-		end
-	end)
-
-	if not ok then
-		-- DIAGNOSTIC (temporary): if the pose math itself is erroring
-		-- every frame, a silently-failing BindToRenderStep callback
-		-- could look identical to "doing nothing" from the outside.
-		if not hasLoggedError then
-			hasLoggedError = true
-			warn("[WeaponAimPose] update() errored: " .. tostring(err))
-		end
-		return
-	end
-
-	if not hasLoggedFirstApply then
-		hasLoggedFirstApply = true
-		print("[WeaponAimPose] First successful pose apply this life.")
+	if currentRigType == "R15" then
+		updateR15(character)
+	elseif currentRigType == "R6" then
+		updateR6(character)
 	end
 end
 
@@ -280,22 +354,6 @@ function WeaponAimPoseController.Init()
 	end
 	player.CharacterAdded:Connect(onCharacterAdded)
 
-	-- BindToRenderStep (not a plain RenderStepped:Connect) so this is
-	-- guaranteed to run AFTER Roblox's own animation system applies that
-	-- frame's walk/idle pose. Bound at Last (not just "after Camera") —
-	-- character animation appears to apply at a priority later than
-	-- Camera, which meant an earlier version of this bound too early
-	-- and was silently overwritten every frame, producing no visible
-	-- effect at all. Last is the latest priority tier RenderStepped
-	-- exposes, giving this the final say each frame.
-	--
-	-- Wrapped in pcall: this call sits near the END of ClientMain's
-	-- Init() sequence — if it ever threw unprotected (e.g. a
-	-- BindToRenderStep name collision with something else), Lua halts
-	-- the REST of that script's execution too, which would have
-	-- silently broken every remote-wiring line still below it in
-	-- ClientMain, not just this feature. This print/warn pair also
-	-- confirms whether registration itself is the actual failure point.
 	local ok, err = pcall(function()
 		RunService:BindToRenderStep("WeaponAimPose", Enum.RenderPriority.Last.Value + 1, update)
 	end)
