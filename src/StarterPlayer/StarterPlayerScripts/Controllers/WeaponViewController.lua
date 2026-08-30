@@ -1,38 +1,44 @@
 --[[
 	WeaponViewController.lua (ModuleScript)
 
-	Purely cosmetic, local-only tool animation. Tweens the equipped Tool's
-	Grip CFrame to fake a reload motion (weapon dips down and tilts, then
-	returns) without touching the character's body Motor6Ds.
+	Purely cosmetic, local-only tool animation via Tool.Grip — never
+	touches the character's body rig at all (no Motor6D, no IKControl).
 
-	Why Grip and not a real animation: a proper reload animation needs an
-	authored KeyframeSequence published as an Animation asset (via Studio's
-	Animation Editor), which isn't something this script environment can
-	produce. Tweening Grip is a placeholder that reads reasonably as "doing
-	something with the weapon" without needing an asset ID, and it doesn't
-	fight Roblox's default Animate script — that script continuously drives
-	the arm's idle/walk/run poses via the body's Motor6Ds, and manually
-	overriding those directly would visibly stutter against it. Grip only
-	affects how the Handle sits relative to the hand, so it layers on top
-	cleanly regardless of whatever the arm is currently doing.
+	Two things live here now:
+	1. Reload dip/return tween (unchanged from before).
+	2. Continuous camera-pitch tracking: tilts the weapon's Grip to
+	   follow the camera looking up/down, so the gun visibly responds
+	   to aim direction in both first- and third-person.
 
-	Each Tool carries its own "DefaultGrip" attribute (set by
-	WeaponModelFactory) rather than this script assuming one shared grip
-	CFrame for every weapon — real toolbox weapon assets each have their
-	own Grip already tuned by their original author, which would look
-	wrong if we snapped back to the placeholder's grip after reloading.
+	WHY GRIP AND NOT THE ARM RIG: an earlier, much more ambitious
+	attempt tried to make the character's actual ARM visibly track aim
+	direction via the body rig (first Motor6D, then — once diagnostics
+	revealed this specific avatar type uses Roblox's newer constraint-
+	based rig with no Motor6D at all — IKControl). Ten diagnostic
+	rounds of genuinely verified-correct configuration (confirmed
+	parenting, confirmed property values, confirmed animation-priority
+	settings) never produced a single visible change in-game, and one
+	round actively regressed. That approach is not used anymore.
 
-	Also plays the equipped Tool's own bundled "Reload" Sound (see
-	https://create.roblox.com/docs/resources/weapons-kit#weapon-model) if
-	it has one, instead of a generic placeholder.
+	Grip is a much smaller, more reliable target: it's a plain CFrame
+	property with no rig-compatibility questions, and this exact
+	mechanism (tweening Grip) was already proven to work for the reload
+	animation before any of that IK work started. The tradeoff: this
+	tilts the WEAPON itself, not the arm/hand holding it — the arm still
+	follows Roblox's default walk/idle animation and can still swing
+	somewhat with footsteps. It does NOT fully solve "the arm never
+	shakes while walking," only "the gun visibly follows where you're
+	looking," which is a smaller but far more achievable claim given
+	what's actually been possible to get working.
 
-	This is local-only — it doesn't replicate to other clients (AmmoUpdated,
-	which drives this, is only ever sent to the reloading player — see
-	WeaponService). Worth revisiting with a real animation asset once
-	art/animation exists.
+	LOCAL ONLY regardless: Grip changes made client-side aren't visible
+	to other players watching you — same limitation as everything else
+	client-side in this codebase; a shared version needs either a real
+	authored Animation asset or a server-synced system.
 ]]
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -41,8 +47,17 @@ local WeaponModelFactory = require(ReplicatedStorage.Shared.WeaponModelFactory)
 local WeaponViewController = {}
 
 local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
 
 local RELOAD_GRIP = CFrame.new(0, -0.6, 0.3) * CFrame.Angles(math.rad(35), 0, 0)
+
+-- Kept modest so the barrel tilt reads as "following your aim" rather
+-- than an exaggerated/cartoonish swing.
+local MAX_PITCH_DEGREES = 35
+
+-- Pitch-follow backs off until this os.clock() timestamp passes, so it
+-- doesn't fight the reload dip/return tween below for control of Grip.
+local reloadingUntilClock = 0
 
 local function getEquippedTool(): Tool?
 	local character = player.Character
@@ -88,6 +103,11 @@ function WeaponViewController.PlayReloadAnimation(durationSeconds: number)
 	local dipTime = math.clamp(durationSeconds * 0.35, 0.1, 0.6)
 	local returnTime = math.max(durationSeconds - dipTime, 0.15)
 
+	-- Pitch-follow yields Grip control for the whole reload sequence
+	-- (plus a small buffer) so it doesn't immediately overwrite
+	-- whichever tween is currently running.
+	reloadingUntilClock = os.clock() + dipTime + returnTime + 0.1
+
 	TweenService:Create(
 		tool,
 		TweenInfo.new(dipTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
@@ -107,6 +127,36 @@ function WeaponViewController.PlayReloadAnimation(durationSeconds: number)
 			{ Grip = getDefaultGrip(currentTool) }
 		):Play()
 	end)
+end
+
+local function getPitchOffset(): CFrame
+	local lookVector = camera.CFrame.LookVector
+	local pitch = math.asin(math.clamp(lookVector.Y, -1, 1))
+	pitch = math.clamp(pitch, -math.rad(MAX_PITCH_DEGREES), math.rad(MAX_PITCH_DEGREES))
+	return CFrame.Angles(pitch, 0, 0)
+end
+
+local function updatePitchFollow()
+	if os.clock() < reloadingUntilClock then
+		return -- the reload tween currently owns Grip
+	end
+	local tool = getEquippedTool()
+	if not tool then
+		return
+	end
+	local ok = pcall(function()
+		tool.Grip = getDefaultGrip(tool) * getPitchOffset()
+	end)
+	-- Deliberately silent on failure (no diagnostic spam) — this is a
+	-- simple, low-risk operation on a plain CFrame property; if it
+	-- somehow fails it's not worth interrupting every frame over.
+	if not ok then
+		return
+	end
+end
+
+function WeaponViewController.Init()
+	RunService.RenderStepped:Connect(updatePitchFollow)
 end
 
 return WeaponViewController

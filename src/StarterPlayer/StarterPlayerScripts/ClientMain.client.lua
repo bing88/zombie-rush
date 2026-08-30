@@ -16,7 +16,7 @@ local UIController = require(Controllers.UIController)
 local EffectsController = require(Controllers.EffectsController)
 local CameraController = require(Controllers.CameraController)
 local ShopController = require(Controllers.ShopController)
-local WeaponAimPoseController = require(Controllers.WeaponAimPoseController)
+local WeaponViewController = require(Controllers.WeaponViewController)
 
 UIController.Init()
 CameraController.Init() -- must init before WeaponController: its RenderStepped
@@ -26,7 +26,7 @@ CameraController.Init() -- must init before WeaponController: its RenderStepped
 WeaponController.Init()
 EffectsController.Init()
 ShopController.Init()
-WeaponAimPoseController.Init()
+WeaponViewController.Init() -- continuous camera-pitch tracking on the weapon's Grip; see the file's own doc comment for why this replaced the earlier arm-rig approach
 
 WeaponController.OnAmmoChanged(function(weaponName, current, max, isReloading)
 	UIController.SetAmmo(weaponName, current, max, isReloading)
