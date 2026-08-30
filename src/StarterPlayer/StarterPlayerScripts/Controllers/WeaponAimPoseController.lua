@@ -89,17 +89,27 @@ local function findMotor(parent: Instance, name: string): Motor6D?
 	if motor and motor:IsA("Motor6D") then
 		return motor
 	end
-	if motor then
-		warn(
-			("[WeaponAimPose] '%s' under %s exists but is a %s, not a Motor6D."):format(
-				name,
-				parent:GetFullName(),
-				motor.ClassName
-			)
-		)
-	else
-		warn(("[WeaponAimPose] '%s' motor did not appear under %s within 5s."):format(name, parent:GetFullName()))
+
+	-- DIAGNOSTIC: something with the expected name exists but isn't a
+	-- Motor6D (this avatar may be using Roblox's newer constraint/IK
+	-- rig system instead of classic Motor6D joints) — or nothing at all
+	-- exists with that name and there's a genuinely different Motor6D
+	-- name to find. Either way, dump EVERY child of the parent part so
+	-- we can see the real structure directly instead of guessing at
+	-- another specific name to try next.
+	local childList = {}
+	for _, child in parent:GetChildren() do
+		table.insert(childList, ("%s (%s)"):format(child.Name, child.ClassName))
 	end
+	warn(
+		("[WeaponAimPose] Looking for '%s' under %s — %s. All children of %s: %s"):format(
+			name,
+			parent:GetFullName(),
+			motor and ("found a " .. motor.ClassName .. " instead of a Motor6D") or "found nothing with that name",
+			parent.Name,
+			#childList > 0 and table.concat(childList, ", ") or "(no children)"
+		)
+	)
 	return nil
 end
 
