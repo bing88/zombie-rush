@@ -1,15 +1,14 @@
 --[[
 	ZombieConfig.lua
-	Tier 1: three regular types (Normal/Fast/Tank) plus a Boss that spawns
-	after wave 10. Per the reconciled plan's open decision #2, only
-	Tank/Boss use PathfindingService (UsesPathfinding = true) — Normal/Fast
-	stay on cheap direct-chase to keep server cost down with up to 4 players
-	and many concurrent zombies.
+	Tier 1: Normal/Fast/Tank/Boss (melee) plus two new attack styles —
+	Ranged (stops at distance, periodic ranged damage + a visual) and
+	Explode (fragile, self-detonates in an AOE on reaching a player or
+	on death). AttackType drives which branch of ZombieService's AI runs
+	the attack; Melee is the default/existing behavior.
 
-	Boss also carries an "enrage" phase 2: once its HP drops to
-	EnrageHPFraction, ZombieService swaps in the Enrage* stats and gives it
-	a visual tell (see ZombieService.lua) — a simple 2-phase boss per the
-	Tier 1 checklist ("can be simple — 2 phases, not 4").
+	Only Tank/Boss use PathfindingService per the reconciled plan's open
+	decision #2 — Ranged/Exploder stay on cheap direct-chase like
+	Normal/Fast to keep server cost down with many concurrent zombies.
 ]]
 
 export type ZombieStats = {
@@ -20,8 +19,11 @@ export type ZombieStats = {
 	AttackCooldown: number,
 	CoinReward: number,
 	UsesPathfinding: boolean,
-	Scale: number, -- visual size multiplier for the placeholder rig
+	Scale: number,
 	Color: Color3,
+	AttackType: string, -- "Melee" | "Ranged" | "Explode"
+	ExplosionRadius: number?, -- Explode only
+	ExplosionDamage: number?, -- Explode only
 	EnrageHPFraction: number?, -- Boss only: HP fraction that triggers phase 2
 	EnrageWalkSpeed: number?,
 	EnrageAttackDamage: number?,
@@ -39,6 +41,7 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		UsesPathfinding = false,
 		Scale = 1,
 		Color = Color3.fromRGB(90, 120, 70),
+		AttackType = "Melee",
 	},
 	Fast = {
 		MaxHP = 60,
@@ -50,6 +53,7 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		UsesPathfinding = false,
 		Scale = 0.85,
 		Color = Color3.fromRGB(205, 190, 60),
+		AttackType = "Melee",
 	},
 	Tank = {
 		MaxHP = 400,
@@ -61,6 +65,33 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		UsesPathfinding = true,
 		Scale = 1.6,
 		Color = Color3.fromRGB(80, 70, 90),
+		AttackType = "Melee",
+	},
+	Ranged = {
+		MaxHP = 50,
+		WalkSpeed = 5,
+		AttackDamage = 8,
+		AttackRange = 28, -- stops well back and fires rather than closing to melee
+		AttackCooldown = 2.2,
+		CoinReward = 10,
+		UsesPathfinding = false,
+		Scale = 0.95,
+		Color = Color3.fromRGB(120, 180, 90),
+		AttackType = "Ranged",
+	},
+	Exploder = {
+		MaxHP = 40, -- fragile on purpose: meant to be shot down before it reaches you
+		WalkSpeed = 7,
+		AttackDamage = 0, -- unused; see ExplosionDamage
+		AttackRange = 4, -- detonation trigger distance
+		AttackCooldown = 0,
+		CoinReward = 12,
+		UsesPathfinding = false,
+		Scale = 1.1,
+		Color = Color3.fromRGB(200, 120, 30),
+		AttackType = "Explode",
+		ExplosionRadius = 10,
+		ExplosionDamage = 35,
 	},
 	Boss = {
 		MaxHP = 3000,
@@ -72,6 +103,7 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		UsesPathfinding = true,
 		Scale = 2.5,
 		Color = Color3.fromRGB(140, 20, 20),
+		AttackType = "Melee",
 		EnrageHPFraction = 0.5,
 		EnrageWalkSpeed = 9,
 		EnrageAttackDamage = 40,

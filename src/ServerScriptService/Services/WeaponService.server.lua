@@ -22,6 +22,8 @@ local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local DataService = require(script.Parent.DataService)
 local InternalSignals = require(script.Parent.InternalSignals)
+local DownedState = require(script.Parent.DownedState)
+local StatsService = require(script.Parent.StatsService)
 
 local FireWeapon = Remotes.FireWeapon
 local ReloadWeapon = Remotes.ReloadWeapon
@@ -169,8 +171,11 @@ end
 --[[
 	Raycasts a single pellet and applies damage if a live zombie was hit.
 	Tags the zombie with LastHitPlayerId so ZombieService can credit the
-	right player for the kill (and coin reward) on death.
-	Returns a hit-result table for the WeaponFired broadcast.
+	right player for the kill (and coin reward) on death. Also records
+	damage/headshot-kill stats via StatsService for the scoreboard and
+	session objective.
+	Returns a hit-result table for the WeaponFired broadcast — Killed
+	drives the client's hitmarker/kill-sound distinction.
 ]]
 local function resolvePellet(player: Player, character: Model, stats, damage: number, origin: Vector3, direction: Vector3)
 	local raycastParams = RaycastParams.new()
@@ -179,33 +184,41 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 
 	local result = Workspace:Raycast(origin, direction * stats.Range, raycastParams)
 	if not result then
-		return { EndPosition = origin + direction * stats.Range, Hit = false, Damage = 0 }
+		return { EndPosition = origin + direction * stats.Range, Hit = false, Damage = 0, Killed = false }
 	end
 
 	local hitInstance = result.Instance
 	local zombieModel = hitInstance:FindFirstAncestorOfClass("Model")
 	if not zombieModel or not zombieModel:HasTag("Zombie") then
-		return { EndPosition = result.Position, Hit = false, Damage = 0 }
+		return { EndPosition = result.Position, Hit = false, Damage = 0, Killed = false }
 	end
 
 	local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then
-		return { EndPosition = result.Position, Hit = false, Damage = 0 }
+		return { EndPosition = result.Position, Hit = false, Damage = 0, Killed = false }
 	end
 
 	local finalDamage = damage
-	if hitInstance.Name == "Head" then
+	local isHeadshot = hitInstance.Name == "Head"
+	if isHeadshot then
 		finalDamage *= stats.HeadshotMultiplier
 	end
 
 	zombieModel:SetAttribute("LastHitPlayerId", player.UserId)
 	humanoid:TakeDamage(finalDamage)
+	StatsService.RecordDamage(player, finalDamage)
+
+	local killed = humanoid.Health <= 0
+	if killed and isHeadshot then
+		StatsService.RecordHeadshotKill(player)
+	end
+
 	ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)
 	if zombieModel:HasTag("Boss") then
 		BossHPChanged:FireAllClients(humanoid.Health, humanoid.MaxHealth)
 	end
 
-	return { EndPosition = result.Position, Hit = true, Damage = finalDamage }
+	return { EndPosition = result.Position, Hit = true, Damage = finalDamage, Killed = killed }
 end
 
 local function startReload(player: Player, state: PlayerWeaponState, weaponName: string, stats)
@@ -249,6 +262,10 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if not rootPart or not humanoid or humanoid.Health <= 0 then
 		return
+	end
+
+	if DownedState.IsDowned(player) then
+		return -- can't fight back while bleeding out, waiting on a teammate revive
 	end
 
 	local state = getOrCreateState(player)

@@ -31,6 +31,7 @@
 	hit SFX exists (see plan Phase 8 — Polish).
 ]]
 
+local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -38,12 +39,19 @@ local Remotes = require(ReplicatedStorage.Remotes)
 
 local EffectsController = {}
 
+local localPlayer = Players.LocalPlayer
+
 local TRACER_LIFETIME = 0.05
 local FLASH_LIFETIME = 0.06
 local DAMAGE_NUMBER_LIFETIME = 0.8
+local EXPLOSION_LIFETIME = 0.35
 
 local FIRE_SOUND_ID = "rbxasset://sounds/switch.wav" -- placeholder "click"; only used if a weapon has no real "Fired" sound
 local HIT_SOUND_ID = "rbxasset://sounds/electronicpingshort.wav" -- placeholder hit-confirm "ping"
+local KILL_SOUND_ID = "rbxasset://sounds/bell.wav" -- placeholder "confirmed kill" ding, layered on top of the hit sound
+local EXPLOSION_SOUND_ID = "rbxasset://sounds/impact_water.mp3" -- placeholder "boom" -- only bundled sound with any real low-end weight
+
+local localHitmarkerCallback: ((boolean) -> ())? = nil
 
 local function spawnTracer(origin: Vector3, endPoint: Vector3)
 	local distance = (endPoint - origin).Magnitude
@@ -189,10 +197,66 @@ local function spawnDamageNumber(position: Vector3, damage: number)
 	Debris:AddItem(anchor, DAMAGE_NUMBER_LIFETIME + 0.1)
 end
 
+--[[
+	Green tracer for a Ranged zombie's attack — same drawing code as the
+	player's own tracer but a distinct color, so it's readable at a
+	glance which shots are incoming vs. outgoing.
+]]
+local function spawnRangedAttackTracer(origin: Vector3, endPoint: Vector3)
+	local distance = (endPoint - origin).Magnitude
+	if distance < 0.1 then
+		return
+	end
+
+	local tracer = Instance.new("Part")
+	tracer.Name = "ZombieRangedTracer"
+	tracer.Anchored = true
+	tracer.CanCollide = false
+	tracer.CanQuery = false
+	tracer.Material = Enum.Material.Neon
+	tracer.Color = Color3.fromRGB(120, 220, 90)
+	tracer.Size = Vector3.new(0.12, 0.12, distance)
+	tracer.CFrame = CFrame.new(origin, endPoint) * CFrame.new(0, 0, -distance / 2)
+	tracer.Parent = workspace
+
+	Debris:AddItem(tracer, 0.12) -- slightly longer than the player's own tracer so an incoming shot reads clearly
+end
+
+--[[
+	Expanding ring + burst for an Exploder zombie's detonation. Purely
+	visual — the actual damage was already applied server-side before
+	this remote fired.
+]]
+local function spawnExplosion(position: Vector3, radius: number)
+	spawnBurst(position, Color3.fromRGB(255, 140, 40), 3)
+	playSoundAt(position, EXPLOSION_SOUND_ID, 0.8)
+
+	local ring = Instance.new("Part")
+	ring.Name = "ExplosionRing"
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Anchored = true
+	ring.CanCollide = false
+	ring.CanQuery = false
+	ring.Material = Enum.Material.Neon
+	ring.Color = Color3.fromRGB(255, 160, 60)
+	ring.Transparency = 0.3
+	ring.Size = Vector3.new(0.2, 1, 1)
+	ring.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
+	ring.Parent = workspace
+
+	TweenService:Create(ring, TweenInfo.new(EXPLOSION_LIFETIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size = Vector3.new(0.2, radius * 2, radius * 2),
+		Transparency = 1,
+	}):Play()
+
+	Debris:AddItem(ring, EXPLOSION_LIFETIME + 0.1)
+end
+
 type HitResult = {
 	EndPosition: Vector3,
 	Hit: boolean,
 	Damage: number,
+	Killed: boolean,
 }
 
 function EffectsController.Init()
@@ -217,9 +281,34 @@ function EffectsController.Init()
 				spawnBurst(hit.EndPosition, Color3.fromRGB(255, 60, 60), 0.4) -- hit spark
 				playSoundAt(hit.EndPosition, HIT_SOUND_ID, 0.6)
 				spawnDamageNumber(hit.EndPosition, hit.Damage)
+
+				if hit.Killed then
+					playSoundAt(hit.EndPosition, KILL_SOUND_ID, 0.7)
+				end
+
+				if shooter == localPlayer and localHitmarkerCallback then
+					localHitmarkerCallback(hit.Killed == true)
+				end
 			end
 		end
 	end)
+
+	Remotes.ZombieRangedAttack.OnClientEvent:Connect(function(_zombieName: string, origin: Vector3, targetPosition: Vector3)
+		spawnRangedAttackTracer(origin, targetPosition)
+	end)
+
+	Remotes.ZombieExploded.OnClientEvent:Connect(function(position: Vector3, radius: number)
+		spawnExplosion(position, radius)
+	end)
+end
+
+--[[
+	Called once per confirmed hit that the LOCAL player scored (not other
+	players' shots). killed distinguishes a regular hitmarker from a
+	kill-confirm one for whatever UI wants to react (see UIController).
+]]
+function EffectsController.OnLocalHitmarker(callback: (boolean) -> ())
+	localHitmarkerCallback = callback
 end
 
 return EffectsController

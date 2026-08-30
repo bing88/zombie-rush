@@ -104,6 +104,19 @@ local function tryBuyUpgrade(player: Player, weaponName: string)
 	-- refresh the ammo display immediately so a level-up shows the new
 	-- max right away instead of waiting for the next reload/switch.
 	InternalSignals.RequestAmmoRefresh(player)
+
+	-- Live-apply the prestige cosmetic the instant a weapon hits max
+	-- level, on whichever Tool instance currently exists (backpack or
+	-- equipped) rather than waiting for the next respawn.
+	if nextLevel >= UpgradeConfig.MaxLevel then
+		local character = player.Character
+		local backpack = player:FindFirstChildOfClass("Backpack")
+		local tool = (character and character:FindFirstChild(weaponName))
+			or (backpack and backpack:FindFirstChild(weaponName))
+		if tool and tool:IsA("Tool") then
+			WeaponModelFactory.ApplyPrestigeEffect(tool)
+		end
+	end
 end
 
 local function connectStall(stallName: string, handler: (Player) -> ())

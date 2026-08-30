@@ -27,6 +27,14 @@ local remoteNames = {
 	"PurchaseUpgradeRequest", -- client -> server: player wants to upgrade a weapon from the anytime UI panel (not a physical stall)
 	"ShowStartConfirmation", -- server -> client: player stepped on the lobby teleport pad, show a Yes/No prompt
 	"ConfirmStartGame", -- client -> server: player's answer to the above
+	"PlayerDownedChanged", -- server -> owning client: entered/left the downed (bleeding out) state, + seconds left
+	"ZombieRangedAttack", -- server -> all clients: a Ranged zombie fired, for a visual projectile
+	"ZombieExploded", -- server -> all clients: an Exploder zombie went off, for a visual blast
+	"WaveModifierAnnounced", -- server -> all clients: this wave's random modifier, for a banner
+	"MatchScoreboard", -- server -> all clients: final per-player kills/damage/coins at Victory or Defeat
+	"ObjectiveUpdated", -- server -> owning client: session objective progress
+	"LeaderboardData", -- server -> owning client: top entries, sent on request
+	"RequestLeaderboard", -- client -> server: ask for the current top entries
 }
 
 local Remotes = {}

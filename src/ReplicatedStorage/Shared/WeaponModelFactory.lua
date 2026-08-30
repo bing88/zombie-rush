@@ -337,4 +337,43 @@ function WeaponModelFactory.CreateTool(weaponName: string): Tool
 	return WeaponModelFactory.CreatePlaceholderTool(weaponName)
 end
 
+--[[
+	Purely cosmetic flourish for a weapon at max upgrade level — a
+	golden glow + faint sparkle on the Handle, applied non-destructively
+	(doesn't touch the Handle's own Color/Material) so it works
+	regardless of whether the Tool is a real loaded asset or the
+	placeholder block. Safe to call more than once (clears any existing
+	prestige effect first) so it can be re-applied idempotently.
+]]
+function WeaponModelFactory.ApplyPrestigeEffect(tool: Tool)
+	local handle = tool:FindFirstChild("Handle")
+	if not handle or not handle:IsA("BasePart") then
+		return
+	end
+
+	local existing = handle:FindFirstChild("PrestigeEffect")
+	if existing then
+		existing:Destroy()
+	end
+
+	local effectHolder = Instance.new("Attachment")
+	effectHolder.Name = "PrestigeEffect"
+	effectHolder.Parent = handle
+
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 215, 100)
+	light.Brightness = 1.5
+	light.Range = 6
+	light.Parent = effectHolder
+
+	local sparkle = Instance.new("ParticleEmitter")
+	sparkle.Color = ColorSequence.new(Color3.fromRGB(255, 225, 140))
+	sparkle.Size = NumberSequence.new(0.15)
+	sparkle.Lifetime = NumberRange.new(0.4, 0.8)
+	sparkle.Rate = 4
+	sparkle.Speed = NumberRange.new(0.5, 1)
+	sparkle.SpreadAngle = Vector2.new(180, 180)
+	sparkle.Parent = effectHolder
+end
+
 return WeaponModelFactory

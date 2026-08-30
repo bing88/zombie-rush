@@ -30,6 +30,10 @@ local ServerStorage = game:GetService("ServerStorage")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ZombieConfig = require(ReplicatedStorage.Shared.ZombieConfig)
+local Remotes = require(ReplicatedStorage.Remotes)
+
+local ZombieRangedAttack = Remotes.ZombieRangedAttack
+local ZombieExploded = Remotes.ZombieExploded
 
 local ZombieService = {}
 
@@ -324,8 +328,8 @@ local function findNearestPlayerRoot(fromPosition: Vector3): BasePart?
 	return nearestRoot
 end
 
---[[ Cheap direct-chase AI for Normal/Fast — no PathfindingService. ]]
-local function runDirectChaseAI(model: Model, stats, humanoid: Humanoid, rootPart: BasePart, onDeath: () -> ())
+--[[ Cheap direct-chase AI for Normal/Fast/Ranged — no PathfindingService. ]]
+local function runDirectChaseAI(model: Model, stats, humanoid: Humanoid, rootPart: BasePart, damageMultiplier: number, onDeath: () -> ())
 	local lastAttackTime = 0
 	local aiConnection: RBXScriptConnection
 
@@ -363,10 +367,89 @@ local function runDirectChaseAI(model: Model, stats, humanoid: Humanoid, rootPar
 			if now - lastAttackTime >= stats.AttackCooldown then
 				lastAttackTime = now
 				local targetHumanoid = targetRoot.Parent and targetRoot.Parent:FindFirstChildOfClass("Humanoid")
+
+				if stats.AttackType == "Ranged" then
+					-- Broadcast first so the visual and the damage land
+					-- in the same frame — this is a hitscan attack
+					-- (instant damage), the travel-time look is purely
+					-- cosmetic on the client.
+					ZombieRangedAttack:FireAllClients(model.Name, rootPart.Position, targetRoot.Position)
+				end
+
 				if targetHumanoid and targetHumanoid.Health > 0 then
-					targetHumanoid:TakeDamage(stats.AttackDamage)
+					targetHumanoid:TakeDamage(stats.AttackDamage * damageMultiplier)
 				end
 			end
+		end
+	end)
+end
+
+--[[
+	One-shot AI for Exploder: chases like the others, but instead of a
+	repeating attack, detonates exactly once on reaching AttackRange —
+	dealing AOE damage to every player in ExplosionRadius, then killing
+	itself. Also detonates if it dies from being shot (see onDeath in
+	SpawnZombie), so a partial-HP Exploder killed by gunfire still pops,
+	which reads more consistently than it just quietly vanishing.
+]]
+local function runExploderAI(model: Model, stats, humanoid: Humanoid, rootPart: BasePart, onDeath: () -> ())
+	local aiConnection: RBXScriptConnection
+	local detonated = false
+
+	local function detonate()
+		if detonated then
+			return
+		end
+		detonated = true
+
+		ZombieExploded:FireAllClients(rootPart.Position, stats.ExplosionRadius)
+
+		for _, player in Players:GetPlayers() do
+			local character = player.Character
+			local targetRoot = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+			local targetHumanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
+				local distance = (targetRoot.Position - rootPart.Position).Magnitude
+				if distance <= stats.ExplosionRadius then
+					-- Linear falloff: full damage at point-blank, ~0 at
+					-- the edge of the radius, so it's not an insta-kill
+					-- flat-damage blast regardless of distance.
+					local falloff = 1 - (distance / stats.ExplosionRadius)
+					targetHumanoid:TakeDamage(stats.ExplosionDamage * math.max(falloff, 0.15))
+				end
+			end
+		end
+
+		if humanoid.Health > 0 then
+			humanoid.Health = 0 -- triggers Died -> onDeath cleanup below; no killer credit for a self-detonation
+		end
+	end
+
+	humanoid.Died:Connect(function()
+		if aiConnection then
+			aiConnection:Disconnect()
+		end
+		detonate() -- still pops even if it died from being shot rather than reaching a player
+		activeZombieCount -= 1
+		onDeath()
+	end)
+
+	aiConnection = RunService.Heartbeat:Connect(function()
+		if not model.Parent or humanoid.Health <= 0 or detonated then
+			return
+		end
+
+		local targetRoot = findNearestPlayerRoot(rootPart.Position)
+		if not targetRoot then
+			humanoid:MoveTo(rootPart.Position)
+			return
+		end
+
+		local distance = (targetRoot.Position - rootPart.Position).Magnitude
+		if distance <= stats.AttackRange and hasLineOfSight(rootPart.Position, targetRoot.Position, model) then
+			detonate()
+		else
+			humanoid:MoveTo(targetRoot.Position)
 		end
 	end)
 end
@@ -381,7 +464,7 @@ end
 	EnrageHPFraction, WalkSpeed/AttackDamage/AttackCooldown swap to the
 	Enrage* stats and every part tints red as a readable phase-2 tell.
 ]]
-local function runPathfindingAI(model: Model, statsName: string, stats, humanoid: Humanoid, rootPart: BasePart, onDeath: () -> ())
+local function runPathfindingAI(model: Model, statsName: string, stats, humanoid: Humanoid, rootPart: BasePart, damageMultiplier: number, onDeath: () -> ())
 	local alive = true
 	local enraged = false
 
@@ -436,7 +519,7 @@ local function runPathfindingAI(model: Model, statsName: string, stats, humanoid
 					local targetHumanoid = targetRoot.Parent and targetRoot.Parent:FindFirstChildOfClass("Humanoid")
 					if targetHumanoid and targetHumanoid.Health > 0 then
 						local damage = enraged and stats.EnrageAttackDamage or stats.AttackDamage
-						targetHumanoid:TakeDamage(damage)
+						targetHumanoid:TakeDamage(damage * damageMultiplier)
 					end
 				end
 				-- Don't let time spent attacking count against the stuck
@@ -516,10 +599,43 @@ local function runPathfindingAI(model: Model, statsName: string, stats, humanoid
 end
 
 --[[
+	Applies a quick outward/upward velocity pop to the root part on
+	death, so a kill reads as an impact instead of the model just
+	freezing in its tracks. Real toolbox rigs with standard Motor6D
+	joints will also ragdoll via Roblox's default BreakJointsOnDeath
+	behavior on top of this; the placeholder rig (welded, not
+	Motor6D-jointed) won't ragdoll, but still gets the same knockback pop
+	since that's just a velocity set on the root part regardless of rig type.
+]]
+local function applyDeathKnockback(rootPart: BasePart)
+	local randomAngle = math.random() * math.pi * 2
+	local horizontal = Vector3.new(math.cos(randomAngle), 0, math.sin(randomAngle)) * math.random(8, 14)
+	local impulseVelocity = horizontal + Vector3.new(0, math.random(6, 10), 0)
+
+	local ok = pcall(function()
+		rootPart.AssemblyLinearVelocity = impulseVelocity
+	end)
+	if not ok then
+		-- Root part may be anchored on some fallback paths; harmless no-op then.
+	end
+end
+
+--[[
 	Spawns one zombie of the given type at the given position and starts
 	its AI. Returns the Model (or nil if statsName is unknown).
+
+	hpMultiplier/speedMultiplier/damageMultiplier (all default 1) let
+	WaveService apply a random per-wave modifier (see WaveModifiers.lua)
+	without this module needing to know anything about wave balance —
+	it just scales whatever base stats it was given.
 ]]
-function ZombieService.SpawnZombie(statsName: string, position: Vector3): Model?
+function ZombieService.SpawnZombie(
+	statsName: string,
+	position: Vector3,
+	hpMultiplier: number?,
+	speedMultiplier: number?,
+	damageMultiplier: number?
+): Model?
 	local stats = ZombieConfig[statsName]
 	if not stats then
 		warn("ZombieService.SpawnZombie: unknown zombie type " .. tostring(statsName))
@@ -534,8 +650,16 @@ function ZombieService.SpawnZombie(statsName: string, position: Vector3): Model?
 	local humanoid = model:FindFirstChildOfClass("Humanoid") :: Humanoid
 	local rootPart = model.PrimaryPart :: BasePart
 
+	-- Applied here (after createZombieModel, which sets base values)
+	-- so multiplier scaling is consistent regardless of which path
+	-- created the model (real asset clone vs. placeholder).
+	humanoid.MaxHealth = stats.MaxHP * (hpMultiplier or 1)
+	humanoid.Health = humanoid.MaxHealth
+	humanoid.WalkSpeed = stats.WalkSpeed * (speedMultiplier or 1)
+
 	local function onDeath()
 		CollectionService:RemoveTag(model, ZOMBIE_TAG)
+		applyDeathKnockback(rootPart)
 		local killerPlayer: Player? = nil
 		local killerUserId = model:GetAttribute("LastHitPlayerId")
 		if killerUserId then
@@ -547,10 +671,13 @@ function ZombieService.SpawnZombie(statsName: string, position: Vector3): Model?
 		end)
 	end
 
-	if stats.UsesPathfinding then
-		runPathfindingAI(model, statsName, stats, humanoid, rootPart, onDeath)
+	local effectiveDamageMultiplier = damageMultiplier or 1
+	if stats.AttackType == "Explode" then
+		runExploderAI(model, stats, humanoid, rootPart, onDeath)
+	elseif stats.UsesPathfinding then
+		runPathfindingAI(model, statsName, stats, humanoid, rootPart, effectiveDamageMultiplier, onDeath)
 	else
-		runDirectChaseAI(model, stats, humanoid, rootPart, onDeath)
+		runDirectChaseAI(model, stats, humanoid, rootPart, effectiveDamageMultiplier, onDeath)
 	end
 
 	return model

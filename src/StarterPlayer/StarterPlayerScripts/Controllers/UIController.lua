@@ -25,6 +25,7 @@ local fireButton: TextButton
 local deathLabel: TextLabel
 local coinLabel: TextLabel
 local waveLabel: TextLabel
+local modifierLabel: TextLabel
 local bossHPBackground: Frame
 local bossHPFill: Frame
 local bossHPLabel: TextLabel
@@ -34,8 +35,21 @@ local confirmBackdrop: Frame
 local confirmDialog: Frame
 local confirmYesButton: TextButton
 local confirmNoButton: TextButton
+local vignette: Frame
+local hitmarker: Frame
+local downedBanner: TextLabel
+local objectiveContainer: Frame
+local objectiveLabel: TextLabel
+local objectiveBarFill: Frame
+local scoreboardPanel: Frame
+local scoreboardRowsHolder: Frame
+local leaderboardPanel: Frame
+local leaderboardRowsHolder: Frame
+local leaderboardTabButton: TextButton
 
 local toastHideThread: thread? = nil
+local downedCountdownThread: thread? = nil
+local hitmarkerHideThread: thread? = nil
 
 local AMMO_POSITION = UDim2.new(1, -20, 1, -200)
 
@@ -97,6 +111,40 @@ local function buildUI()
 
 	buildCrosshair(screenGui)
 
+	-- Hitmarker: small X that flashes over the crosshair on a confirmed
+	-- hit (white) or kill (gold), separate from the crosshair itself so
+	-- the two can animate independently.
+	hitmarker = Instance.new("Frame")
+	hitmarker.Name = "Hitmarker"
+	hitmarker.AnchorPoint = Vector2.new(0.5, 0.5)
+	hitmarker.Position = UDim2.fromScale(0.5, 0.5)
+	hitmarker.Size = UDim2.fromOffset(24, 24)
+	hitmarker.BackgroundTransparency = 1
+	hitmarker.Visible = false
+	hitmarker.Parent = screenGui
+
+	local function hitmarkerTick(rotation: number)
+		local tick = Instance.new("Frame")
+		tick.AnchorPoint = Vector2.new(0.5, 0.5)
+		tick.Position = UDim2.fromScale(0.5, 0.5)
+		tick.Size = UDim2.fromOffset(3, 18)
+		tick.Rotation = rotation
+		tick.BackgroundColor3 = Color3.new(1, 1, 1)
+		tick.BorderSizePixel = 0
+		tick.Parent = hitmarker
+	end
+	hitmarkerTick(45)
+	hitmarkerTick(-45)
+
+	-- Full-screen damage vignette (hidden/transparent until SetDamageFlash).
+	vignette = Instance.new("Frame")
+	vignette.Name = "DamageVignette"
+	vignette.Size = UDim2.fromScale(1, 1)
+	vignette.BackgroundColor3 = Color3.fromRGB(180, 20, 20)
+	vignette.BackgroundTransparency = 1
+	vignette.ZIndex = 5
+	vignette.Parent = screenGui
+
 	-- HP bar (bottom-left)
 	local hpBarBackground = Instance.new("Frame")
 	hpBarBackground.Name = "HPBarBackground"
@@ -151,12 +199,27 @@ local function buildUI()
 	waveLabel.Text = ""
 	waveLabel.Parent = screenGui
 
+	-- Current wave modifier chip (directly below the wave counter).
+	-- Distinct from stateBanner/FlashBanner — this persists for the
+	-- whole wave rather than flashing and clearing.
+	modifierLabel = Instance.new("TextLabel")
+	modifierLabel.Name = "ModifierLabel"
+	modifierLabel.AnchorPoint = Vector2.new(0.5, 0)
+	modifierLabel.Size = UDim2.fromOffset(320, 22)
+	modifierLabel.Position = UDim2.new(0.5, 0, 0, 54)
+	modifierLabel.BackgroundTransparency = 1
+	modifierLabel.TextColor3 = Color3.fromRGB(180, 210, 255)
+	modifierLabel.Font = Enum.Font.Gotham
+	modifierLabel.TextSize = 13
+	modifierLabel.Text = ""
+	modifierLabel.Parent = screenGui
+
 	-- Boss HP bar (top-center, below wave label; hidden until a boss is active)
 	bossHPBackground = Instance.new("Frame")
 	bossHPBackground.Name = "BossHPBackground"
 	bossHPBackground.AnchorPoint = Vector2.new(0.5, 0)
 	bossHPBackground.Size = UDim2.fromOffset(420, 28)
-	bossHPBackground.Position = UDim2.new(0.5, 0, 0, 58)
+	bossHPBackground.Position = UDim2.new(0.5, 0, 0, 82)
 	bossHPBackground.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	bossHPBackground.BorderSizePixel = 0
 	bossHPBackground.Visible = false
@@ -274,7 +337,7 @@ local function buildUI()
 	toastLabel.Name = "ToastLabel"
 	toastLabel.AnchorPoint = Vector2.new(0.5, 0)
 	toastLabel.Size = UDim2.fromOffset(420, 30)
-	toastLabel.Position = UDim2.new(0.5, 0, 0, 96)
+	toastLabel.Position = UDim2.new(0.5, 0, 0, 120)
 	toastLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 	toastLabel.BackgroundTransparency = 0.25
 	toastLabel.Font = Enum.Font.GothamBold
@@ -349,6 +412,163 @@ local function buildUI()
 	local noCorner = Instance.new("UICorner")
 	noCorner.CornerRadius = UDim.new(0, 6)
 	noCorner.Parent = confirmNoButton
+
+	-- Downed banner (hidden by default) — separate from deathLabel since
+	-- downed and true-death are visually/semantically distinct states.
+	downedBanner = Instance.new("TextLabel")
+	downedBanner.Name = "DownedBanner"
+	downedBanner.Size = UDim2.fromScale(1, 0.15)
+	downedBanner.Position = UDim2.fromScale(0, 0.4)
+	downedBanner.BackgroundTransparency = 1
+	downedBanner.TextColor3 = Color3.fromRGB(255, 90, 90)
+	downedBanner.Font = Enum.Font.GothamBold
+	downedBanner.TextScaled = true
+	downedBanner.TextStrokeTransparency = 0.2
+	downedBanner.Text = ""
+	downedBanner.Visible = false
+	downedBanner.Parent = screenGui
+
+	-- Session objective widget (top-right, small, always visible)
+	objectiveContainer = Instance.new("Frame")
+	objectiveContainer.Name = "ObjectiveContainer"
+	objectiveContainer.AnchorPoint = Vector2.new(1, 0)
+	objectiveContainer.Size = UDim2.fromOffset(220, 40)
+	objectiveContainer.Position = UDim2.new(1, -20, 0, 20)
+	objectiveContainer.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	objectiveContainer.BackgroundTransparency = 0.3
+	objectiveContainer.Parent = screenGui
+
+	objectiveLabel = Instance.new("TextLabel")
+	objectiveLabel.Size = UDim2.new(1, -10, 0, 18)
+	objectiveLabel.Position = UDim2.new(0, 5, 0, 2)
+	objectiveLabel.BackgroundTransparency = 1
+	objectiveLabel.TextColor3 = Color3.new(1, 1, 1)
+	objectiveLabel.Font = Enum.Font.Gotham
+	objectiveLabel.TextSize = 12
+	objectiveLabel.TextXAlignment = Enum.TextXAlignment.Left
+	objectiveLabel.Text = "Objective: Headshot kills 0/10"
+	objectiveLabel.Parent = objectiveContainer
+
+	local objectiveBarBackground = Instance.new("Frame")
+	objectiveBarBackground.Size = UDim2.new(1, -10, 0, 8)
+	objectiveBarBackground.Position = UDim2.new(0, 5, 0, 24)
+	objectiveBarBackground.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+	objectiveBarBackground.BorderSizePixel = 0
+	objectiveBarBackground.Parent = objectiveContainer
+
+	objectiveBarFill = Instance.new("Frame")
+	objectiveBarFill.Size = UDim2.fromScale(0, 1)
+	objectiveBarFill.BackgroundColor3 = Color3.fromRGB(255, 210, 90)
+	objectiveBarFill.BorderSizePixel = 0
+	objectiveBarFill.Parent = objectiveBarBackground
+
+	-- End-of-match scoreboard (hidden until UIController.ShowScoreboard)
+	scoreboardPanel = Instance.new("Frame")
+	scoreboardPanel.Name = "ScoreboardPanel"
+	scoreboardPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+	scoreboardPanel.Position = UDim2.fromScale(0.5, 0.5)
+	scoreboardPanel.Size = UDim2.fromOffset(420, 280)
+	scoreboardPanel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	scoreboardPanel.BackgroundTransparency = 0.1
+	scoreboardPanel.Visible = false
+	scoreboardPanel.ZIndex = 8
+	scoreboardPanel.Parent = screenGui
+
+	local scoreboardCorner = Instance.new("UICorner")
+	scoreboardCorner.CornerRadius = UDim.new(0, 8)
+	scoreboardCorner.Parent = scoreboardPanel
+
+	local scoreboardTitle = Instance.new("TextLabel")
+	scoreboardTitle.Size = UDim2.new(1, 0, 0, 36)
+	scoreboardTitle.BackgroundTransparency = 1
+	scoreboardTitle.TextColor3 = Color3.new(1, 1, 1)
+	scoreboardTitle.Font = Enum.Font.GothamBold
+	scoreboardTitle.TextSize = 20
+	scoreboardTitle.ZIndex = 8
+	scoreboardTitle.Text = "Match Results"
+	scoreboardTitle.Parent = scoreboardPanel
+
+	local headerRow = Instance.new("Frame")
+	headerRow.Size = UDim2.new(1, -20, 0, 24)
+	headerRow.Position = UDim2.new(0, 10, 0, 40)
+	headerRow.BackgroundTransparency = 1
+	headerRow.ZIndex = 8
+	headerRow.Parent = scoreboardPanel
+
+	local function headerCell(text: string, xScale: number, width: number)
+		local cell = Instance.new("TextLabel")
+		cell.Size = UDim2.new(width, 0, 1, 0)
+		cell.Position = UDim2.new(xScale, 0, 0, 0)
+		cell.BackgroundTransparency = 1
+		cell.TextColor3 = Color3.fromRGB(180, 180, 180)
+		cell.Font = Enum.Font.GothamBold
+		cell.TextSize = 12
+		cell.TextXAlignment = Enum.TextXAlignment.Left
+		cell.ZIndex = 8
+		cell.Text = text
+		cell.Parent = headerRow
+	end
+	headerCell("PLAYER", 0, 0.4)
+	headerCell("KILLS", 0.4, 0.2)
+	headerCell("DAMAGE", 0.6, 0.2)
+	headerCell("COINS", 0.8, 0.2)
+
+	scoreboardRowsHolder = Instance.new("Frame")
+	scoreboardRowsHolder.Size = UDim2.new(1, -20, 1, -110)
+	scoreboardRowsHolder.Position = UDim2.new(0, 10, 0, 68)
+	scoreboardRowsHolder.BackgroundTransparency = 1
+	scoreboardRowsHolder.ZIndex = 8
+	scoreboardRowsHolder.Parent = scoreboardPanel
+	local scoreboardLayout = Instance.new("UIListLayout")
+	scoreboardLayout.Padding = UDim.new(0, 4)
+	scoreboardLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	scoreboardLayout.Parent = scoreboardRowsHolder
+
+	-- Leaderboard panel (toggleable, best-wave-reached top 10)
+	leaderboardTabButton = Instance.new("TextButton")
+	leaderboardTabButton.Name = "LeaderboardTabButton"
+	leaderboardTabButton.Size = UDim2.fromOffset(140, 32)
+	leaderboardTabButton.Position = UDim2.new(0, 150, 1, -100)
+	leaderboardTabButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	leaderboardTabButton.BackgroundTransparency = 0.2
+	leaderboardTabButton.TextColor3 = Color3.new(1, 1, 1)
+	leaderboardTabButton.Font = Enum.Font.GothamBold
+	leaderboardTabButton.TextSize = 14
+	leaderboardTabButton.Text = "LEADERBOARD (L)"
+	leaderboardTabButton.Parent = screenGui
+
+	leaderboardPanel = Instance.new("Frame")
+	leaderboardPanel.Name = "LeaderboardPanel"
+	leaderboardPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+	leaderboardPanel.Position = UDim2.fromScale(0.5, 0.5)
+	leaderboardPanel.Size = UDim2.fromOffset(320, 340)
+	leaderboardPanel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	leaderboardPanel.BackgroundTransparency = 0.1
+	leaderboardPanel.Visible = false
+	leaderboardPanel.Parent = screenGui
+
+	local leaderboardCorner = Instance.new("UICorner")
+	leaderboardCorner.CornerRadius = UDim.new(0, 8)
+	leaderboardCorner.Parent = leaderboardPanel
+
+	local leaderboardTitle = Instance.new("TextLabel")
+	leaderboardTitle.Size = UDim2.new(1, 0, 0, 36)
+	leaderboardTitle.BackgroundTransparency = 1
+	leaderboardTitle.TextColor3 = Color3.new(1, 1, 1)
+	leaderboardTitle.Font = Enum.Font.GothamBold
+	leaderboardTitle.TextSize = 18
+	leaderboardTitle.Text = "Best Wave Reached"
+	leaderboardTitle.Parent = leaderboardPanel
+
+	leaderboardRowsHolder = Instance.new("Frame")
+	leaderboardRowsHolder.Size = UDim2.new(1, -20, 1, -46)
+	leaderboardRowsHolder.Position = UDim2.new(0, 10, 0, 40)
+	leaderboardRowsHolder.BackgroundTransparency = 1
+	leaderboardRowsHolder.Parent = leaderboardPanel
+	local leaderboardLayout = Instance.new("UIListLayout")
+	leaderboardLayout.Padding = UDim.new(0, 4)
+	leaderboardLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	leaderboardLayout.Parent = leaderboardRowsHolder
 end
 
 function UIController.Init()
@@ -577,6 +797,210 @@ function UIController.ShowStartConfirmation(onAnswer: (boolean) -> ())
 	end)
 
 	confirmBackdrop.Visible = true
+end
+
+--[[
+	Brief full-screen red flash on taking damage. Fades back to fully
+	transparent over a fixed duration regardless of how much damage was
+	taken — intensity doesn't scale with damage amount, just a consistent
+	"you got hit" pulse.
+]]
+function UIController.FlashDamageVignette()
+	if not vignette then
+		return
+	end
+	vignette.BackgroundTransparency = 0.6
+	TweenService:Create(vignette, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 1,
+	}):Play()
+end
+
+--[[
+	Flashes the crosshair hitmarker — white for a regular hit, gold for a
+	kill. Auto-hides after a short beat regardless of further hits (each
+	call restarts the timer rather than stacking).
+]]
+function UIController.ShowHitmarker(killed: boolean)
+	if not hitmarker then
+		return
+	end
+	local color = killed and Color3.fromRGB(255, 210, 90) or Color3.new(1, 1, 1)
+	for _, child in hitmarker:GetChildren() do
+		if child:IsA("Frame") then
+			child.BackgroundColor3 = color
+		end
+	end
+	hitmarker.Visible = true
+
+	if hitmarkerHideThread then
+		task.cancel(hitmarkerHideThread)
+	end
+	hitmarkerHideThread = task.delay(killed and 0.28 or 0.15, function()
+		if hitmarker then
+			hitmarker.Visible = false
+		end
+	end)
+end
+
+--[[
+	Shows/hides the downed banner. When downing, starts a client-side
+	countdown display seeded from the server's bleedOutSeconds — purely
+	cosmetic ticking (the server owns the real timer independently), so a
+	little client/server drift here doesn't matter.
+]]
+function UIController.SetDowned(isDowned: boolean, bleedOutSeconds: number)
+	if not downedBanner then
+		return
+	end
+
+	if downedCountdownThread then
+		task.cancel(downedCountdownThread)
+		downedCountdownThread = nil
+	end
+
+	if not isDowned then
+		downedBanner.Visible = false
+		return
+	end
+
+	downedBanner.Visible = true
+	local remaining = bleedOutSeconds
+	downedCountdownThread = task.spawn(function()
+		while remaining > 0 do
+			downedBanner.Text = ("DOWNED — wait for rescue (%ds)"):format(math.ceil(remaining))
+			task.wait(1)
+			remaining -= 1
+		end
+	end)
+end
+
+function UIController.SetObjective(progress: number, target: number, completed: boolean)
+	if not objectiveLabel then
+		return
+	end
+	if completed then
+		objectiveLabel.Text = "Objective complete! +100 coins"
+		objectiveLabel.TextColor3 = Color3.fromRGB(130, 230, 130)
+	else
+		objectiveLabel.Text = ("Objective: Headshot kills %d/%d"):format(progress, target)
+		objectiveLabel.TextColor3 = Color3.new(1, 1, 1)
+	end
+	objectiveBarFill.Size = UDim2.fromScale(target > 0 and math.clamp(progress / target, 0, 1) or 0, 1)
+end
+
+function UIController.SetWaveModifier(name: string, description: string)
+	if not modifierLabel then
+		return
+	end
+	if name == "Normal" or name == "" then
+		modifierLabel.Text = ""
+	else
+		modifierLabel.Text = ("MODIFIER: %s — %s"):format(name, description)
+	end
+end
+
+--[[
+	entries: array of {Name, Kills, DamageDealt, CoinsEarned}, already
+	sorted by the server. Rebuilds the row list from scratch each call —
+	this only fires once per match (Victory/Defeat), so no need for
+	incremental diffing.
+]]
+function UIController.ShowScoreboard(entries: { { Name: string, Kills: number, DamageDealt: number, CoinsEarned: number } })
+	if not scoreboardPanel then
+		return
+	end
+
+	for _, child in scoreboardRowsHolder:GetChildren() do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+
+	for i, entry in entries do
+		local row = Instance.new("Frame")
+		row.Name = "Row" .. i
+		row.Size = UDim2.new(1, 0, 0, 22)
+		row.BackgroundTransparency = 1
+		row.LayoutOrder = i
+		row.ZIndex = 8
+		row.Parent = scoreboardRowsHolder
+
+		local function cell(text: string, xScale: number, width: number)
+			local label = Instance.new("TextLabel")
+			label.Size = UDim2.new(width, 0, 1, 0)
+			label.Position = UDim2.new(xScale, 0, 0, 0)
+			label.BackgroundTransparency = 1
+			label.TextColor3 = Color3.new(1, 1, 1)
+			label.Font = Enum.Font.Gotham
+			label.TextSize = 13
+			label.TextXAlignment = Enum.TextXAlignment.Left
+			label.ZIndex = 8
+			label.Text = text
+			label.Parent = row
+		end
+		cell(entry.Name, 0, 0.4)
+		cell(tostring(entry.Kills), 0.4, 0.2)
+		cell(tostring(entry.DamageDealt), 0.6, 0.2)
+		cell(tostring(entry.CoinsEarned), 0.8, 0.2)
+	end
+
+	scoreboardPanel.Visible = true
+end
+
+function UIController.HideScoreboard()
+	if scoreboardPanel then
+		scoreboardPanel.Visible = false
+	end
+end
+
+function UIController.OnLeaderboardTabPressed(callback: () -> ())
+	if leaderboardTabButton then
+		leaderboardTabButton.Activated:Connect(callback)
+	end
+end
+
+function UIController.ToggleLeaderboard()
+	if leaderboardPanel then
+		leaderboardPanel.Visible = not leaderboardPanel.Visible
+	end
+end
+
+function UIController.SetLeaderboardEntries(entries: { { Name: string, BestWave: number } })
+	if not leaderboardRowsHolder then
+		return
+	end
+
+	for _, child in leaderboardRowsHolder:GetChildren() do
+		if child:IsA("TextLabel") then
+			child:Destroy()
+		end
+	end
+
+	if #entries == 0 then
+		local empty = Instance.new("TextLabel")
+		empty.Size = UDim2.new(1, 0, 0, 22)
+		empty.BackgroundTransparency = 1
+		empty.TextColor3 = Color3.fromRGB(160, 160, 160)
+		empty.Font = Enum.Font.Gotham
+		empty.TextSize = 13
+		empty.Text = "No entries yet — be the first!"
+		empty.Parent = leaderboardRowsHolder
+		return
+	end
+
+	for i, entry in entries do
+		local row = Instance.new("TextLabel")
+		row.Name = "Row" .. i
+		row.Size = UDim2.new(1, 0, 0, 22)
+		row.BackgroundTransparency = 1
+		row.TextColor3 = Color3.new(1, 1, 1)
+		row.Font = Enum.Font.Gotham
+		row.TextSize = 13
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.LayoutOrder = i
+		row.Text = ("%d. %s — Wave %d"):format(i, entry.Name, entry.BestWave)
+		row.Parent = leaderboardRowsHolder
+	end
 end
 
 return UIController
