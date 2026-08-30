@@ -65,6 +65,7 @@ local initialized = false
 local ammoChangedCallback: ((string, number, number, boolean) -> ())? = nil
 local localFireCallback: (() -> ())? = nil
 local localMuzzleFlashCallback: ((Vector3) -> ())? = nil
+local localTracerCallback: ((Vector3, Vector3, number) -> ())? = nil
 
 local function statsFor(weaponName: string)
 	return WeaponConfig[weaponName]
@@ -222,10 +223,16 @@ local function tryFire()
 	updateAmmoUI()
 
 	local muzzlePosition = getLocalMuzzlePosition()
-	FireWeapon:FireServer(camera.CFrame.LookVector, muzzlePosition)
+	local aimDirection = camera.CFrame.LookVector
+	FireWeapon:FireServer(aimDirection, muzzlePosition)
 
-	if muzzlePosition and localMuzzleFlashCallback then
-		localMuzzleFlashCallback(muzzlePosition)
+	if muzzlePosition then
+		if localMuzzleFlashCallback then
+			localMuzzleFlashCallback(muzzlePosition)
+		end
+		if localTracerCallback then
+			localTracerCallback(muzzlePosition, aimDirection, stats.Range)
+		end
 	end
 
 	if localFireCallback then
@@ -357,6 +364,16 @@ end
 ]]
 function WeaponController.OnLocalMuzzleFlash(callback: (Vector3) -> ())
 	localMuzzleFlashCallback = callback
+end
+
+--[[
+	Fires with (origin, direction, range) immediately on every local
+	shot, alongside OnLocalMuzzleFlash — this is what actually fixes the
+	tracer beam trailing behind a moving player, which the muzzle-flash
+	fix alone didn't touch.
+]]
+function WeaponController.OnLocalTracer(callback: (Vector3, Vector3, number) -> ())
+	localTracerCallback = callback
 end
 
 return WeaponController

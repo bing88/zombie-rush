@@ -40,6 +40,10 @@ WeaponController.OnLocalMuzzleFlash(function(position: Vector3)
 	EffectsController.SpawnLocalMuzzleFlash(position)
 end)
 
+WeaponController.OnLocalTracer(function(origin: Vector3, direction: Vector3, range: number)
+	EffectsController.SpawnLocalTracer(origin, direction, range)
+end)
+
 EffectsController.OnLocalHitmarker(function(killed: boolean)
 	UIController.ShowHitmarker(killed)
 end)

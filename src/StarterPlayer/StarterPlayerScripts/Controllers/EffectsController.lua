@@ -91,6 +91,28 @@ local function spawnBurst(position: Vector3, color: Color3, size: number)
 end
 
 --[[
+	Client-side raycast purely for a plausible-looking INSTANT tracer
+	endpoint — this is never used for damage or hit registration, which
+	stays entirely server-side (see WeaponService). If this local guess
+	turns out visually wrong (e.g. it grazed something the server didn't
+	register, due to the same replication lag that motivated this in the
+	first place), the only consequence is a cosmetic tracer landing a
+	few studs off for one 0.05s-lived beam — never a gameplay effect.
+]]
+local function localPredictedEndpoint(origin: Vector3, direction: Vector3, range: number): Vector3
+	local character = localPlayer.Character
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = character and { character } or {}
+
+	local result = workspace:Raycast(origin, direction.Unit * range, raycastParams)
+	if result then
+		return result.Position
+	end
+	return origin + direction.Unit * range
+end
+
+--[[
 	Plays a positional (3D) sound at a world position. Uses a short-lived
 	invisible anchored part as the sound's emitter so volume falls off
 	with distance — useful in multiplayer so a shot across the map isn't
@@ -292,7 +314,15 @@ function EffectsController.Init()
 		end
 
 		for _, hit in hits do
-			spawnTracer(origin, hit.EndPosition)
+			-- Skip drawing the beam itself for the local player's own
+			-- shots — SpawnLocalTracer (below) already drew one
+			-- instantly, with zero network wait. Everyone else's shots
+			-- still draw their tracer here exactly as before; this was
+			-- never laggy for anyone watching someone ELSE shoot, only
+			-- for the shooter watching their own gun.
+			if shooter ~= localPlayer then
+				spawnTracer(origin, hit.EndPosition)
+			end
 			if hit.Hit then
 				spawnBurst(hit.EndPosition, Color3.fromRGB(255, 60, 60), 0.4) -- hit spark
 				playSoundAt(hit.EndPosition, HIT_SOUND_ID, 0.6)
@@ -326,6 +356,26 @@ end
 ]]
 function EffectsController.SpawnLocalMuzzleFlash(origin: Vector3)
 	spawnBurst(origin, Color3.fromRGB(255, 220, 120), 0.5)
+end
+
+--[[
+	Instant local tracer beam for the local player's own shot — the
+	previous muzzle-flash-only fix left the tracer (a full beam, far
+	more visually obvious than the small flash) still exclusively
+	server-broadcast-driven, so it still visibly trailed a moving
+	shooter even after that fix. Uses its own local raycast purely to
+	pick a plausible endpoint (see localPredictedEndpoint's doc comment
+	— this never touches damage/hit registration, which stays entirely
+	server-side). One tracer per trigger pull regardless of pellet count
+	— for the shotgun this shows a single clean line instead of a full
+	8-pellet spread for your OWN shots specifically (other players still
+	see the real per-pellet spread when watching you fire), a reasonable
+	simplification given the beam itself is barely visible for its
+	0.05s lifetime anyway.
+]]
+function EffectsController.SpawnLocalTracer(origin: Vector3, direction: Vector3, range: number)
+	local endPoint = localPredictedEndpoint(origin, direction, range)
+	spawnTracer(origin, endPoint)
 end
 
 --[[

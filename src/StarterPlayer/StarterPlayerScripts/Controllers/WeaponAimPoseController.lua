@@ -172,10 +172,13 @@ function WeaponAimPoseController.Init()
 
 	-- BindToRenderStep (not a plain RenderStepped:Connect) so this is
 	-- guaranteed to run AFTER Roblox's own animation system applies that
-	-- frame's walk/idle pose — the same "override after the default
-	-- runs" pattern CameraController already uses successfully for
-	-- character facing.
-	RunService:BindToRenderStep("WeaponAimPose", Enum.RenderPriority.Camera.Value + 1, update)
+	-- frame's walk/idle pose. Bound at Last (not just "after Camera") —
+	-- character animation appears to apply at a priority later than
+	-- Camera, which meant an earlier version of this bound too early
+	-- and was silently overwritten every frame, producing no visible
+	-- effect at all. Last is the latest priority tier RenderStepped
+	-- exposes, giving this the final say each frame.
+	RunService:BindToRenderStep("WeaponAimPose", Enum.RenderPriority.Last.Value + 1, update)
 end
 
 return WeaponAimPoseController
