@@ -7,14 +7,28 @@
 	player's shots (not just the local player's) so shooting is visible
 	and audible to everyone in a match, not just the shooter.
 
+	Tier 1: WeaponFired now carries a per-pellet "hits" array (shotgun
+	fires up to 8 pellets per trigger pull) instead of a single endpoint —
+	this loops over all of them, drawing one tracer per pellet but only
+	one muzzle flash/fire sound per trigger pull.
+
 	None of this affects gameplay — it's reacting to what the server has
 	already decided happened, using the origin/endpoint/damage it computed.
 
-	Sound IDs below (rbxasset://sounds/...) are Roblox's own bundled
-	client sounds — the same ones Roblox's default scripts use internally.
-	They're guaranteed to be present with no catalog/ownership dependency,
-	which makes them a safe placeholder. Swap SoundId below for real SFX
-	asset IDs whenever real audio is ready (see plan Phase 8 — Polish).
+	Fire sound: each real Weapons Kit asset ships its own "Fired" Sound
+	as a descendant of the weapon model (see
+	https://create.roblox.com/docs/resources/weapons-kit#weapon-model) —
+	WeaponModelFactory never strips Sounds, so it's still sitting on the
+	shooter's actual equipped Tool, already correctly 3D-positioned via
+	the Handle. This plays *that* sound directly (same instance every
+	client already has via normal replication) instead of a generic
+	placeholder, falling back to the placeholder only for a weapon that
+	doesn't have one.
+
+	Hit sound ID below (rbxasset://sounds/...) is one of Roblox's own
+	bundled client sounds — guaranteed to be present with no catalog/
+	ownership dependency, which makes it a safe placeholder until real
+	hit SFX exists (see plan Phase 8 — Polish).
 ]]
 
 local Debris = game:GetService("Debris")
@@ -28,7 +42,7 @@ local TRACER_LIFETIME = 0.05
 local FLASH_LIFETIME = 0.06
 local DAMAGE_NUMBER_LIFETIME = 0.8
 
-local FIRE_SOUND_ID = "rbxasset://sounds/switch.wav" -- placeholder "click"; swap for a real gunshot SFX later
+local FIRE_SOUND_ID = "rbxasset://sounds/switch.wav" -- placeholder "click"; only used if a weapon has no real "Fired" sound
 local HIT_SOUND_ID = "rbxasset://sounds/electronicpingshort.wav" -- placeholder hit-confirm "ping"
 
 local function spawnTracer(origin: Vector3, endPoint: Vector3)
@@ -97,6 +111,38 @@ local function playSoundAt(position: Vector3, soundId: string, volume: number)
 end
 
 --[[
+	Restarts (rather than just Play()s) so rapid automatic fire retriggers
+	the sound from the beginning every shot instead of Play() silently
+	no-oping on a Sound that's still playing out its previous shot.
+]]
+local function restartSound(sound: Sound)
+	sound.TimePosition = 0
+	sound:Play()
+end
+
+--[[
+	Finds the exact Tool that fired (the shooter's currently equipped
+	one, verified by name in case of a rare desync) so its own bundled
+	"Fired" Sound (see module doc comment) can be played instead of a
+	generic placeholder.
+]]
+local function findFiredSound(shooter: Player, weaponName: string): Sound?
+	local character = shooter.Character
+	if not character then
+		return nil
+	end
+	local tool = character:FindFirstChildOfClass("Tool")
+	if not tool or tool.Name ~= weaponName then
+		return nil
+	end
+	local sound = tool:FindFirstChild("Fired", true)
+	if sound and sound:IsA("Sound") then
+		return sound
+	end
+	return nil
+end
+
+--[[
 	Floating "-N" combat text that rises and fades at the hit location.
 	BillboardGui always faces the camera automatically, so this reads
 	correctly from any angle without extra math.
@@ -143,22 +189,35 @@ local function spawnDamageNumber(position: Vector3, damage: number)
 	Debris:AddItem(anchor, DAMAGE_NUMBER_LIFETIME + 0.1)
 end
 
+type HitResult = {
+	EndPosition: Vector3,
+	Hit: boolean,
+	Damage: number,
+}
+
 function EffectsController.Init()
 	Remotes.WeaponFired.OnClientEvent:Connect(function(
-		_shooter: Player,
+		shooter: Player,
+		weaponName: string,
 		origin: Vector3,
-		endPoint: Vector3,
-		hitZombie: boolean,
-		damageDealt: number
+		hits: { HitResult }
 	)
-		spawnTracer(origin, endPoint)
 		spawnBurst(origin, Color3.fromRGB(255, 220, 120), 0.5) -- muzzle flash
-		playSoundAt(origin, FIRE_SOUND_ID, 0.5)
 
-		if hitZombie then
-			spawnBurst(endPoint, Color3.fromRGB(255, 60, 60), 0.4) -- hit spark
-			playSoundAt(endPoint, HIT_SOUND_ID, 0.6)
-			spawnDamageNumber(endPoint, damageDealt)
+		local firedSound = findFiredSound(shooter, weaponName)
+		if firedSound then
+			restartSound(firedSound)
+		else
+			playSoundAt(origin, FIRE_SOUND_ID, 0.5)
+		end
+
+		for _, hit in hits do
+			spawnTracer(origin, hit.EndPosition)
+			if hit.Hit then
+				spawnBurst(hit.EndPosition, Color3.fromRGB(255, 60, 60), 0.4) -- hit spark
+				playSoundAt(hit.EndPosition, HIT_SOUND_ID, 0.6)
+				spawnDamageNumber(hit.EndPosition, hit.Damage)
+			end
 		end
 	end)
 end

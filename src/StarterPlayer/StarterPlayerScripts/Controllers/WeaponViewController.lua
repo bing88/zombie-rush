@@ -16,8 +16,20 @@
 	affects how the Handle sits relative to the hand, so it layers on top
 	cleanly regardless of whatever the arm is currently doing.
 
-	This is local-only — it doesn't replicate to other clients. Worth
-	revisiting with a real animation asset once art/animation exists.
+	Each Tool carries its own "DefaultGrip" attribute (set by
+	WeaponModelFactory) rather than this script assuming one shared grip
+	CFrame for every weapon — real toolbox weapon assets each have their
+	own Grip already tuned by their original author, which would look
+	wrong if we snapped back to the placeholder's grip after reloading.
+
+	Also plays the equipped Tool's own bundled "Reload" Sound (see
+	https://create.roblox.com/docs/resources/weapons-kit#weapon-model) if
+	it has one, instead of a generic placeholder.
+
+	This is local-only — it doesn't replicate to other clients (AmmoUpdated,
+	which drives this, is only ever sent to the reloading player — see
+	WeaponService). Worth revisiting with a real animation asset once
+	art/animation exists.
 ]]
 
 local Players = game:GetService("Players")
@@ -30,7 +42,6 @@ local WeaponViewController = {}
 
 local player = Players.LocalPlayer
 
-local DEFAULT_GRIP = WeaponModelFactory.DEFAULT_GRIP
 local RELOAD_GRIP = CFrame.new(0, -0.6, 0.3) * CFrame.Angles(math.rad(35), 0, 0)
 
 local function getEquippedTool(): Tool?
@@ -41,11 +52,36 @@ local function getEquippedTool(): Tool?
 	return character:FindFirstChildOfClass("Tool")
 end
 
+local function getDefaultGrip(tool: Tool): CFrame
+	local attributeValue = tool:GetAttribute("DefaultGrip")
+	if typeof(attributeValue) == "CFrame" then
+		return attributeValue
+	end
+	return WeaponModelFactory.DEFAULT_GRIP
+end
+
+--[[
+	Plays the real weapon's own "Reload" Sound if it has one (silently
+	does nothing otherwise — not every asset ships one). Resets
+	TimePosition first so re-reloading the same weapon in quick
+	succession (e.g. after the reload watchdog force-clears a stuck
+	one) always restarts the clip instead of Play() no-oping.
+]]
+local function playReloadSound(tool: Tool)
+	local sound = tool:FindFirstChild("Reload", true)
+	if sound and sound:IsA("Sound") then
+		sound.TimePosition = 0
+		sound:Play()
+	end
+end
+
 function WeaponViewController.PlayReloadAnimation(durationSeconds: number)
 	local tool = getEquippedTool()
 	if not tool then
 		return
 	end
+
+	playReloadSound(tool)
 
 	-- Dip down quickly, then spend the remaining time returning to grip —
 	-- roughly mimics "pull mag out fast, seat new one more deliberately".
@@ -68,7 +104,7 @@ function WeaponViewController.PlayReloadAnimation(durationSeconds: number)
 		TweenService:Create(
 			currentTool,
 			TweenInfo.new(returnTime, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-			{ Grip = DEFAULT_GRIP }
+			{ Grip = getDefaultGrip(currentTool) }
 		):Play()
 	end)
 end

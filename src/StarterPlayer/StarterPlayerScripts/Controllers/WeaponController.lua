@@ -5,15 +5,21 @@
 	prediction for a responsive-feeling UI. The server re-validates
 	everything and is the actual source of truth — SyncFromServer() below
 	overwrites local prediction with the server's authoritative ammo/
-	reload state whenever AmmoUpdated arrives.
+	reload state per weapon whenever AmmoUpdated arrives.
+
+	Tier 1: tracks the currently equipped weapon by listening to
+	Tool.Equipped on every Tool in the Backpack + character (weapon
+	*switching* itself is just Roblox's default Backpack hotbar — number
+	keys / clicking a slot — no custom input handling needed here).
+	Ammo/reload state is now tracked per weapon so switching weapons mid-
+	reload doesn't lose or corrupt another weapon's state.
 
 	Aim direction is always just camera.CFrame.LookVector at the moment of
 	firing — no separate override logic here. CameraController is what
 	decides whether the camera itself is currently bent toward a nearby
 	target (auto-aim lock-on); this controller doesn't need to know why
 	the camera is pointing where it's pointing, only that it should fire
-	there when told to. That's what keeps manual aim and auto-aim
-	perfectly consistent: there's only one aim direction, ever.
+	there when told to.
 
 	Firing triggers on:
 	  - The dedicated on-screen fire button being held (SetFireButtonHeld)
@@ -21,13 +27,13 @@
 
 	IMPORTANT: this must be Init()'d AFTER CameraController in ClientMain,
 	so CameraController's RenderStepped connection (which may bend the
-	camera this frame) registers and therefore runs first. Both use
-	RenderStepped so they stay in lockstep frame-to-frame.
+	camera this frame) registers and therefore runs first.
 
 	Exposes Init(), RequestReload(), SetFireButtonHeld(), OnAmmoChanged(),
 	and SyncFromServer() so ClientMain can wire this into UI and remotes.
 ]]
 
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -41,25 +47,45 @@ local WeaponViewController = require(Controllers.WeaponViewController)
 
 local FireWeapon = Remotes.FireWeapon
 local ReloadWeapon = Remotes.ReloadWeapon
-local DEFAULT_WEAPON = "AssaultRifle"
-local stats = WeaponConfig[DEFAULT_WEAPON]
 
 local WeaponController = {}
 
+local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
-local predictedAmmo = stats.MagazineSize
+local currentWeapon = WeaponConfig.StartingWeapon
+local predictedAmmo: { [string]: number } = {} -- [weaponName] = ammo in magazine
+local reloading: { [string]: boolean } = {} -- [weaponName] = true while reloading
+local reloadDeadline: { [string]: number } = {} -- [weaponName] = os.clock() by which a real reload must have finished
 local lastFireTime = 0
-local reloading = false
 local fireButtonHeld = false
 local initialized = false
 
-local ammoChangedCallback: ((number, number, boolean) -> ())? = nil
+local ammoChangedCallback: ((string, number, number, boolean) -> ())? = nil
+
+local function statsFor(weaponName: string)
+	return WeaponConfig[weaponName]
+end
+
+local function ensureAmmo(weaponName: string)
+	if predictedAmmo[weaponName] == nil then
+		local stats = statsFor(weaponName)
+		if stats then
+			predictedAmmo[weaponName] = stats.MagazineSize
+		end
+	end
+end
 
 local function updateAmmoUI()
-	if ammoChangedCallback then
-		ammoChangedCallback(predictedAmmo, stats.MagazineSize, reloading)
+	if not ammoChangedCallback then
+		return
 	end
+	ensureAmmo(currentWeapon)
+	local stats = statsFor(currentWeapon)
+	if not stats then
+		return
+	end
+	ammoChangedCallback(currentWeapon, predictedAmmo[currentWeapon] or 0, stats.MagazineSize, reloading[currentWeapon] == true)
 end
 
 --[[
@@ -67,20 +93,71 @@ end
 	only ever triggers once per reload (on the false -> true transition),
 	regardless of whether that transition came from local prediction
 	(RequestReload / auto-empty) or a server sync overwriting it.
+
+	Also arms/disarms a watchdog deadline: if a dropped/rejected FireServer
+	call or missed remote ever left this flag stuck true with no server
+	sync to clear it, checkReloadWatchdog() below force-clears it instead
+	of leaving the player stuck for the rest of the match.
 ]]
-local function setReloading(value: boolean)
-	if reloading == value then
+local function setReloading(weaponName: string, value: boolean)
+	if value then
+		local stats = statsFor(weaponName)
+		if stats then
+			-- Generous buffer over the server's own reload timer so a
+			-- normal reload never gets pre-empted by the watchdog.
+			reloadDeadline[weaponName] = os.clock() + stats.ReloadTime + 1.5
+		end
+	else
+		reloadDeadline[weaponName] = nil
+	end
+
+	if reloading[weaponName] == value then
 		return
 	end
-	reloading = value
-	if value then
-		WeaponViewController.PlayReloadAnimation(stats.ReloadTime)
+	reloading[weaponName] = value
+	if value and weaponName == currentWeapon then
+		local stats = statsFor(weaponName)
+		if stats then
+			WeaponViewController.PlayReloadAnimation(stats.ReloadTime)
+		end
 	end
-	updateAmmoUI()
+	if weaponName == currentWeapon then
+		updateAmmoUI()
+	end
+end
+
+--[[
+	Self-heals a reload that's been "in progress" longer than the weapon's
+	ReloadTime plus a generous buffer — this should never happen if every
+	FireServer/ReloadWeapon round-trip completes normally, but a dropped
+	client->server request (e.g. rejected by the fire-rate check right at
+	the edge of a magazine, or any other missed sync) previously left the
+	player stuck with a weapon that visually never finishes reloading and
+	no way to escape it (R was gated behind the very flag that was stuck).
+]]
+local function checkReloadWatchdog()
+	for weaponName, deadline in reloadDeadline do
+		if reloading[weaponName] and os.clock() > deadline then
+			reloadDeadline[weaponName] = nil
+			reloading[weaponName] = false
+			local stats = statsFor(weaponName)
+			if stats then
+				predictedAmmo[weaponName] = stats.MagazineSize
+			end
+			if weaponName == currentWeapon then
+				updateAmmoUI()
+			end
+		end
+	end
 end
 
 local function tryFire()
-	if reloading then
+	if reloading[currentWeapon] then
+		return
+	end
+
+	local stats = statsFor(currentWeapon)
+	if not stats then
 		return
 	end
 
@@ -89,19 +166,43 @@ local function tryFire()
 		return
 	end
 
-	if predictedAmmo <= 0 then
+	ensureAmmo(currentWeapon)
+	if (predictedAmmo[currentWeapon] or 0) <= 0 then
 		return
 	end
 
 	lastFireTime = now
-	predictedAmmo -= 1
+	predictedAmmo[currentWeapon] -= 1
 	updateAmmoUI()
 
 	FireWeapon:FireServer(camera.CFrame.LookVector)
 
-	if predictedAmmo <= 0 then
-		setReloading(true)
+	if predictedAmmo[currentWeapon] <= 0 then
+		setReloading(currentWeapon, true)
 	end
+end
+
+--[[
+	Connects Tool.Equipped so switching weapons via the default Backpack
+	hotbar (number keys / clicking a slot) updates local prediction state
+	without any custom input handling.
+]]
+local function trackTool(tool: Instance)
+	if not tool:IsA("Tool") or not statsFor(tool.Name) then
+		return
+	end
+	tool.Equipped:Connect(function()
+		currentWeapon = tool.Name
+		ensureAmmo(currentWeapon)
+		updateAmmoUI()
+	end)
+end
+
+local function watchContainer(container: Instance)
+	for _, child in container:GetChildren() do
+		trackTool(child)
+	end
+	container.ChildAdded:Connect(trackTool)
 end
 
 function WeaponController.Init()
@@ -109,6 +210,17 @@ function WeaponController.Init()
 		return
 	end
 	initialized = true
+
+	watchContainer(player:WaitForChild("Backpack"))
+	if player.Character then
+		watchContainer(player.Character)
+	end
+	player.CharacterAdded:Connect(function(character)
+		predictedAmmo = {}
+		reloading = {}
+		reloadDeadline = {}
+		watchContainer(character)
+	end)
 
 	-- Only remaining raw input binding: reload. Firing is button/auto-aim only.
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -121,6 +233,7 @@ function WeaponController.Init()
 	end)
 
 	RunService.RenderStepped:Connect(function()
+		checkReloadWatchdog()
 		if CameraController.IsLocked() or fireButtonHeld then
 			tryFire()
 		end
@@ -132,22 +245,41 @@ function WeaponController.SetFireButtonHeld(held: boolean)
 end
 
 function WeaponController.RequestReload()
-	if reloading or predictedAmmo >= stats.MagazineSize then
+	local stats = statsFor(currentWeapon)
+	if not stats then
 		return
 	end
-	setReloading(true) -- optimistic local flag; server's AmmoUpdated reply confirms it
+	ensureAmmo(currentWeapon)
+	if (predictedAmmo[currentWeapon] or 0) >= stats.MagazineSize then
+		return
+	end
+	-- Deliberately NOT gated on the local `reloading` flag: the server is
+	-- authoritative and safely no-ops a redundant request, so pressing R
+	-- always gives the player a way to nudge/re-sync a weapon that looks
+	-- stuck, instead of that same flag blocking its own recovery.
+	setReloading(currentWeapon, true) -- optimistic local flag; server's AmmoUpdated reply confirms it
 	ReloadWeapon:FireServer()
 end
 
-function WeaponController.SyncFromServer(current: number, max: number, isReloading: boolean)
-	predictedAmmo = current
-	setReloading(isReloading)
-	updateAmmoUI()
+function WeaponController.SyncFromServer(weaponName: string, current: number, max: number, isReloading: boolean)
+	predictedAmmo[weaponName] = current
+	reloading[weaponName] = isReloading
+	if isReloading then
+		local stats = statsFor(weaponName)
+		if stats then
+			reloadDeadline[weaponName] = os.clock() + stats.ReloadTime + 1.5
+		end
+	else
+		reloadDeadline[weaponName] = nil
+	end
+	if weaponName == currentWeapon then
+		updateAmmoUI()
+	end
 end
 
-function WeaponController.OnAmmoChanged(callback: (number, number, boolean) -> ())
+function WeaponController.OnAmmoChanged(callback: (string, number, number, boolean) -> ())
 	ammoChangedCallback = callback
-	callback(predictedAmmo, stats.MagazineSize, reloading)
+	updateAmmoUI()
 end
 
 return WeaponController

@@ -2,15 +2,15 @@
 	WeaponService.server.lua
 
 	Server-authoritative shooting. Per the plan (section 5), the client is
-	NEVER trusted for damage, ammo, or fire rate. The client only sends
-	"I want to fire" with aim data (and "I want to reload"); everything
-	else — including what actually gets drawn as a tracer/flash on every
-	client — is decided here and broadcast out.
+	NEVER trusted for damage, ammo, fire rate, or even *which weapon* it's
+	firing — that's derived here from whichever Tool is actually equipped
+	on the character, not anything the client claims.
 
-	Tier 0 scope: one weapon (AssaultRifle), single-target hitscan raycast
-	from the equipped Tool's muzzle, manual + auto reload, ammo tracked
-	server-side per player and synced back to the owner as the source of
-	truth (the client's own copy is prediction only, for responsiveness).
+	Tier 1: generalized from Tier 0's single hardcoded AssaultRifle into
+	N weapons with independent per-weapon ammo/reload state, weapon
+	switching via Roblox's default Backpack hotbar (Tool.Equipped is what
+	we listen to — no custom "switch weapon" remote needed), shotgun-style
+	multi-pellet spread, and damage upgrades read from DataService.
 ]]
 
 local Players = game:GetService("Players")
@@ -19,47 +19,91 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
+local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
+local DataService = require(script.Parent.DataService)
 
 local FireWeapon = Remotes.FireWeapon
 local ReloadWeapon = Remotes.ReloadWeapon
 local AmmoUpdated = Remotes.AmmoUpdated
 local WeaponFired = Remotes.WeaponFired
 local ZombieHPChanged = Remotes.ZombieHPChanged
+local BossHPChanged = Remotes.BossHPChanged
 
--- Per-player runtime state. Never trust the client's copy of this.
+-- Per-player runtime state. Never trust the client's copy of any of this.
 type PlayerWeaponState = {
-	WeaponName: string,
-	AmmoInMagazine: number,
+	EquippedWeapon: string,
+	Ammo: { [string]: number },
+	Reloading: { [string]: boolean },
 	LastFireTime: number,
-	Reloading: boolean,
 }
 
 local playerStates: { [Player]: PlayerWeaponState } = {}
 
-local DEFAULT_WEAPON = "AssaultRifle"
-
 local function getOrCreateState(player: Player): PlayerWeaponState
 	local state = playerStates[player]
 	if not state then
-		local stats = WeaponConfig[DEFAULT_WEAPON]
 		state = {
-			WeaponName = DEFAULT_WEAPON,
-			AmmoInMagazine = stats.MagazineSize,
+			EquippedWeapon = WeaponConfig.StartingWeapon,
+			Ammo = {},
+			Reloading = {},
 			LastFireTime = 0,
-			Reloading = false,
 		}
 		playerStates[player] = state
 	end
 	return state
 end
 
-local function syncAmmo(player: Player, state: PlayerWeaponState, stats)
-	AmmoUpdated:FireClient(player, state.AmmoInMagazine, stats.MagazineSize, state.Reloading)
+local function syncAmmo(player: Player, state: PlayerWeaponState)
+	local weaponName = state.EquippedWeapon
+	local stats = WeaponConfig[weaponName]
+	if not stats then
+		return
+	end
+	local ammo = state.Ammo[weaponName] or stats.MagazineSize
+	AmmoUpdated:FireClient(player, weaponName, ammo, stats.MagazineSize, state.Reloading[weaponName] == true)
+end
+
+--[[
+	Connects Tool.Equipped so we always know the *actual* equipped weapon
+	server-side, regardless of whether the client switched via number key
+	or clicking the Backpack hotbar (both just equip a Tool — no remote
+	involved). Called once per container per life; ChildAdded catches
+	tools added later (shop purchases, or the starter weapon PlayerService
+	parents in after this connects).
+]]
+local function trackTool(player: Player, state: PlayerWeaponState, tool: Instance)
+	if not tool:IsA("Tool") or not WeaponConfig[tool.Name] then
+		return
+	end
+	tool.Equipped:Connect(function()
+		local weaponName = tool.Name
+		state.EquippedWeapon = weaponName
+		if state.Ammo[weaponName] == nil then
+			state.Ammo[weaponName] = WeaponConfig[weaponName].MagazineSize
+		end
+		syncAmmo(player, state)
+	end)
+end
+
+local function watchContainer(player: Player, state: PlayerWeaponState, container: Instance)
+	for _, child in container:GetChildren() do
+		trackTool(player, state, child)
+	end
+	container.ChildAdded:Connect(function(child)
+		trackTool(player, state, child)
+	end)
 end
 
 Players.PlayerAdded:Connect(function(player)
 	local state = getOrCreateState(player)
-	syncAmmo(player, state, WeaponConfig[state.WeaponName])
+	local backpack = player:WaitForChild("Backpack")
+	watchContainer(player, state, backpack)
+
+	player.CharacterAdded:Connect(function(character)
+		state.Ammo = {}
+		state.Reloading = {}
+		watchContainer(player, state, character)
+	end)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
@@ -68,9 +112,8 @@ end)
 
 --[[
 	Finds the equipped Tool's muzzle world position, so shots visually
-	originate from the barrel instead of the torso center. Falls back to a
-	position near the player's chest if no tool/muzzle is found (shouldn't
-	normally happen since PlayerService auto-equips the weapon on spawn).
+	originate from the barrel instead of the torso center. Falls back to
+	a position near the player's chest if no tool/muzzle is found.
 ]]
 local function getMuzzlePosition(character: Model, rootPart: BasePart): Vector3
 	local tool = character:FindFirstChildOfClass("Tool")
@@ -82,61 +125,77 @@ local function getMuzzlePosition(character: Model, rootPart: BasePart): Vector3
 	return rootPart.Position + Vector3.new(0, 1, 0)
 end
 
+local function getDamageMultiplier(player: Player, weaponName: string): number
+	local level = DataService.GetWeaponLevel(player, weaponName)
+	if level <= 0 then
+		return 1
+	end
+	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
+	local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
+	return (levelData and levelData.DamageMultiplier) or 1
+end
+
 --[[
-	Raycasts and applies damage if a zombie was hit.
-	Returns (hitZombie, endPosition, damageDealt) — endPosition is used by
-	every client to draw the tracer regardless of whether anything was
-	actually hit; damageDealt drives the floating damage number.
+	Raycasts a single pellet and applies damage if a live zombie was hit.
+	Tags the zombie with LastHitPlayerId so ZombieService can credit the
+	right player for the kill (and coin reward) on death.
+	Returns a hit-result table for the WeaponFired broadcast.
 ]]
-local function resolveHit(character: Model, stats, origin: Vector3, direction: Vector3): (boolean, Vector3, number)
+local function resolvePellet(player: Player, character: Model, stats, damage: number, origin: Vector3, direction: Vector3)
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
 	raycastParams.FilterDescendantsInstances = { character }
 
 	local result = Workspace:Raycast(origin, direction * stats.Range, raycastParams)
 	if not result then
-		return false, origin + direction * stats.Range, 0
+		return { EndPosition = origin + direction * stats.Range, Hit = false, Damage = 0 }
 	end
 
 	local hitInstance = result.Instance
 	local zombieModel = hitInstance:FindFirstAncestorOfClass("Model")
 	if not zombieModel or not zombieModel:HasTag("Zombie") then
-		return false, result.Position, 0
+		return { EndPosition = result.Position, Hit = false, Damage = 0 }
 	end
 
 	local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then
-		return false, result.Position, 0
+		return { EndPosition = result.Position, Hit = false, Damage = 0 }
 	end
 
-	local damage = stats.Damage
+	local finalDamage = damage
 	if hitInstance.Name == "Head" then
-		damage *= stats.HeadshotMultiplier
+		finalDamage *= stats.HeadshotMultiplier
 	end
 
-	humanoid:TakeDamage(damage)
+	zombieModel:SetAttribute("LastHitPlayerId", player.UserId)
+	humanoid:TakeDamage(finalDamage)
 	ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)
+	if zombieModel:HasTag("Boss") then
+		BossHPChanged:FireAllClients(humanoid.Health, humanoid.MaxHealth)
+	end
 
-	return true, result.Position, damage
+	return { EndPosition = result.Position, Hit = true, Damage = finalDamage }
 end
 
-local function startReload(player: Player, state: PlayerWeaponState, stats)
-	if state.Reloading or state.AmmoInMagazine >= stats.MagazineSize then
+local function startReload(player: Player, state: PlayerWeaponState, weaponName: string, stats)
+	if state.Reloading[weaponName] or (state.Ammo[weaponName] or stats.MagazineSize) >= stats.MagazineSize then
 		return
 	end
 
-	state.Reloading = true
-	syncAmmo(player, state, stats)
+	state.Reloading[weaponName] = true
+	syncAmmo(player, state)
 
 	task.delay(stats.ReloadTime, function()
-		-- Guard against the player leaving or their state being replaced
-		-- mid-reload (e.g. respawn) before firing the completion sync.
-		if playerStates[player] ~= state then
+		-- Guard against the player leaving or their state resetting
+		-- (e.g. respawn) mid-reload before firing the completion sync.
+		if playerStates[player] ~= state or not state.Reloading[weaponName] then
 			return
 		end
-		state.AmmoInMagazine = stats.MagazineSize
-		state.Reloading = false
-		syncAmmo(player, state, stats)
+		state.Ammo[weaponName] = stats.MagazineSize
+		state.Reloading[weaponName] = false
+		if state.EquippedWeapon == weaponName then
+			syncAmmo(player, state)
+		end
 	end)
 end
 
@@ -158,8 +217,18 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
 	end
 
 	local state = getOrCreateState(player)
-	local stats = WeaponConfig[state.WeaponName]
+	local weaponName = state.EquippedWeapon
+	local stats = WeaponConfig[weaponName]
 	if not stats then
+		return
+	end
+
+	-- The client can only ever fire whatever Tool is actually equipped —
+	-- this also implicitly enforces weapon ownership, since a Tool only
+	-- exists in the character if PlayerService/ShopService gave it out
+	-- for an unlocked weapon.
+	local equippedTool = character:FindFirstChildOfClass("Tool")
+	if not equippedTool or equippedTool.Name ~= weaponName then
 		return
 	end
 
@@ -169,42 +238,47 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3)
 		return
 	end
 
-	-- Validate ammo/reload state.
-	if state.Reloading or state.AmmoInMagazine <= 0 then
+	local ammo = state.Ammo[weaponName] or stats.MagazineSize
+	if state.Reloading[weaponName] or ammo <= 0 then
 		return
 	end
 
 	state.LastFireTime = now
-	state.AmmoInMagazine -= 1
-	syncAmmo(player, state, stats)
+	state.Ammo[weaponName] = ammo - 1
+	syncAmmo(player, state)
 
-	-- Apply weapon spread server-side so clients can't send a laser-perfect
-	-- direction and bypass spread.
-	local spreadRadians = math.rad(stats.Spread)
-	local randomAngleX = (math.random() - 0.5) * 2 * spreadRadians
-	local randomAngleY = (math.random() - 0.5) * 2 * spreadRadians
-	local spreadCFrame = CFrame.new(rootPart.Position, rootPart.Position + aimDirection)
-		* CFrame.Angles(randomAngleY, randomAngleX, 0)
-	local finalDirection = spreadCFrame.LookVector
-
+	local baseDamage = stats.Damage * getDamageMultiplier(player, weaponName)
 	local origin = getMuzzlePosition(character, rootPart)
-	local hitZombie, endPosition, damageDealt = resolveHit(character, stats, origin, finalDirection)
+	local spreadRadians = math.rad(stats.Spread)
+
+	local hits = {}
+	for _ = 1, stats.Pellets do
+		-- Apply weapon spread server-side per pellet so clients can't
+		-- send a laser-perfect direction and bypass spread.
+		local randomAngleX = (math.random() - 0.5) * 2 * spreadRadians
+		local randomAngleY = (math.random() - 0.5) * 2 * spreadRadians
+		local spreadCFrame = CFrame.new(rootPart.Position, rootPart.Position + aimDirection)
+			* CFrame.Angles(randomAngleY, randomAngleX, 0)
+		local finalDirection = spreadCFrame.LookVector
+
+		table.insert(hits, resolvePellet(player, character, stats, baseDamage, origin, finalDirection))
+	end
 
 	-- Broadcast to ALL clients (not just the shooter) so every player in
-	-- the match sees the tracer/muzzle flash/hit spark/damage number,
-	-- not just their own.
-	WeaponFired:FireAllClients(player, origin, endPosition, hitZombie, damageDealt)
+	-- the match sees the tracer/muzzle flash/hit spark/damage numbers.
+	WeaponFired:FireAllClients(player, weaponName, origin, hits)
 
-	if state.AmmoInMagazine <= 0 then
-		startReload(player, state, stats)
+	if state.Ammo[weaponName] <= 0 then
+		startReload(player, state, weaponName, stats)
 	end
 end)
 
 ReloadWeapon.OnServerEvent:Connect(function(player: Player)
 	local state = getOrCreateState(player)
-	local stats = WeaponConfig[state.WeaponName]
+	local weaponName = state.EquippedWeapon
+	local stats = WeaponConfig[weaponName]
 	if not stats then
 		return
 	end
-	startReload(player, state, stats)
+	startReload(player, state, weaponName, stats)
 end)

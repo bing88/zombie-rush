@@ -1,13 +1,11 @@
 --[[
 	UIController.lua (ModuleScript)
 
-	Tier 0 UI is deliberately minimal per the reconciled plan:
-	HP bar, ammo counter, crosshair, and a reload button. No wave counter,
-	no coins, no menus — those arrive in Tier 1.
-
-	The reload button exists mainly for mobile/touch, where there's no R
-	key. Desktop can use either the button or the R key (see
-	WeaponController).
+	Tier 1 UI stays "basic" per the reconciled plan (no fancy shop menu —
+	that's physical ProximityPrompt stalls, see ShopService) but adds
+	what the checklist calls for: wave counter, coin counter, and a boss
+	HP bar, plus a small toast for shop feedback and a center banner for
+	match state (waiting/starting/boss incoming/victory).
 ]]
 
 local Players = game:GetService("Players")
@@ -23,6 +21,15 @@ local ammoLabel: TextLabel
 local reloadButton: TextButton
 local fireButton: TextButton
 local deathLabel: TextLabel
+local coinLabel: TextLabel
+local waveLabel: TextLabel
+local bossHPBackground: Frame
+local bossHPFill: Frame
+local bossHPLabel: TextLabel
+local stateBanner: TextLabel
+local toastLabel: TextLabel
+
+local toastHideThread: thread? = nil
 
 local function buildCrosshair(parent: ScreenGui)
 	local crosshair = Instance.new("Frame")
@@ -54,14 +61,17 @@ end
 
 local function buildUI()
 	screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "Tier0HUD"
+	screenGui.Name = "Tier1HUD"
 	screenGui.ResetOnSpawn = false
-	screenGui.IgnoreGuiInset = true
+	-- false (default) so Roblox reserves space for its own top bar
+	-- (menu/leave icons) — otherwise our top-anchored elements (coins,
+	-- wave counter) render underneath/overlapping it.
+	screenGui.IgnoreGuiInset = false
 	screenGui.Parent = player:WaitForChild("PlayerGui")
 
 	buildCrosshair(screenGui)
 
-	-- HP bar
+	-- HP bar (bottom-left)
 	local hpBarBackground = Instance.new("Frame")
 	hpBarBackground.Name = "HPBarBackground"
 	hpBarBackground.Size = UDim2.fromOffset(240, 28)
@@ -87,18 +97,75 @@ local function buildUI()
 	hpLabel.Text = "100 / 100"
 	hpLabel.Parent = hpBarBackground
 
-	-- Ammo counter
+	-- Coin counter (top-left)
+	coinLabel = Instance.new("TextLabel")
+	coinLabel.Name = "CoinLabel"
+	coinLabel.Size = UDim2.fromOffset(180, 32)
+	coinLabel.Position = UDim2.new(0, 20, 0, 20)
+	coinLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	coinLabel.BackgroundTransparency = 0.3
+	coinLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
+	coinLabel.Font = Enum.Font.GothamBold
+	coinLabel.TextSize = 18
+	coinLabel.TextXAlignment = Enum.TextXAlignment.Left
+	coinLabel.Text = "  Coins: 0"
+	coinLabel.Parent = screenGui
+
+	-- Wave counter (top-center)
+	waveLabel = Instance.new("TextLabel")
+	waveLabel.Name = "WaveLabel"
+	waveLabel.AnchorPoint = Vector2.new(0.5, 0)
+	waveLabel.Size = UDim2.fromOffset(320, 32)
+	waveLabel.Position = UDim2.new(0.5, 0, 0, 20)
+	waveLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	waveLabel.BackgroundTransparency = 0.3
+	waveLabel.TextColor3 = Color3.new(1, 1, 1)
+	waveLabel.Font = Enum.Font.GothamBold
+	waveLabel.TextSize = 18
+	waveLabel.Text = ""
+	waveLabel.Parent = screenGui
+
+	-- Boss HP bar (top-center, below wave label; hidden until a boss is active)
+	bossHPBackground = Instance.new("Frame")
+	bossHPBackground.Name = "BossHPBackground"
+	bossHPBackground.AnchorPoint = Vector2.new(0.5, 0)
+	bossHPBackground.Size = UDim2.fromOffset(420, 28)
+	bossHPBackground.Position = UDim2.new(0.5, 0, 0, 58)
+	bossHPBackground.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	bossHPBackground.BorderSizePixel = 0
+	bossHPBackground.Visible = false
+	bossHPBackground.Parent = screenGui
+
+	bossHPFill = Instance.new("Frame")
+	bossHPFill.Name = "BossHPFill"
+	bossHPFill.Size = UDim2.fromScale(1, 1)
+	bossHPFill.BackgroundColor3 = Color3.fromRGB(160, 40, 200)
+	bossHPFill.BorderSizePixel = 0
+	bossHPFill.Parent = bossHPBackground
+
+	bossHPLabel = Instance.new("TextLabel")
+	bossHPLabel.Name = "BossHPLabel"
+	bossHPLabel.Size = UDim2.fromScale(1, 1)
+	bossHPLabel.BackgroundTransparency = 1
+	bossHPLabel.TextColor3 = Color3.new(1, 1, 1)
+	bossHPLabel.Font = Enum.Font.GothamBold
+	bossHPLabel.TextSize = 16
+	bossHPLabel.Text = "BOSS"
+	bossHPLabel.Parent = bossHPBackground
+
+	-- Ammo counter (bottom-right, above reload/fire buttons)
 	ammoLabel = Instance.new("TextLabel")
 	ammoLabel.Name = "AmmoLabel"
 	ammoLabel.AnchorPoint = Vector2.new(1, 1)
-	ammoLabel.Size = UDim2.fromOffset(160, 28)
+	ammoLabel.Size = UDim2.fromOffset(160, 44)
 	ammoLabel.Position = UDim2.new(1, -20, 1, -200)
 	ammoLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	ammoLabel.BackgroundTransparency = 0.3
 	ammoLabel.TextColor3 = Color3.new(1, 1, 1)
 	ammoLabel.Font = Enum.Font.GothamBold
-	ammoLabel.TextSize = 16
-	ammoLabel.Text = "30 / 30"
+	ammoLabel.TextSize = 15
+	ammoLabel.TextWrapped = true
+	ammoLabel.Text = "Pistol\n12 / 12"
 	ammoLabel.Parent = screenGui
 
 	-- Reload button (works via mouse click or touch tap on any platform)
@@ -148,6 +215,35 @@ local function buildUI()
 	deathLabel.Text = "YOU DIED — respawning..."
 	deathLabel.Visible = false
 	deathLabel.Parent = screenGui
+
+	-- Center banner for match state (Lobby/Starting/BossIncoming/Victory)
+	stateBanner = Instance.new("TextLabel")
+	stateBanner.Name = "StateBanner"
+	stateBanner.AnchorPoint = Vector2.new(0.5, 0)
+	stateBanner.Size = UDim2.fromScale(1, 0.1)
+	stateBanner.Position = UDim2.new(0.5, 0, 0, 100)
+	stateBanner.BackgroundTransparency = 1
+	stateBanner.TextColor3 = Color3.fromRGB(255, 230, 150)
+	stateBanner.Font = Enum.Font.GothamBold
+	stateBanner.TextScaled = true
+	stateBanner.TextStrokeTransparency = 0.2
+	stateBanner.Text = ""
+	stateBanner.Visible = false
+	stateBanner.Parent = screenGui
+
+	-- Shop/secret feedback toast (top-center, below wave/boss UI)
+	toastLabel = Instance.new("TextLabel")
+	toastLabel.Name = "ToastLabel"
+	toastLabel.AnchorPoint = Vector2.new(0.5, 0)
+	toastLabel.Size = UDim2.fromOffset(420, 30)
+	toastLabel.Position = UDim2.new(0.5, 0, 0, 96)
+	toastLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	toastLabel.BackgroundTransparency = 0.25
+	toastLabel.Font = Enum.Font.GothamBold
+	toastLabel.TextSize = 16
+	toastLabel.Text = ""
+	toastLabel.Visible = false
+	toastLabel.Parent = screenGui
 end
 
 function UIController.Init()
@@ -165,15 +261,111 @@ function UIController.SetHP(current: number, max: number)
 	hpBarFill.Size = UDim2.fromScale(max > 0 and (current / max) or 0, 1)
 end
 
-function UIController.SetAmmo(current: number, max: number, isReloading: boolean?)
+function UIController.SetAmmo(weaponName: string, current: number, max: number, isReloading: boolean?)
 	if not ammoLabel then
 		return
 	end
 	if isReloading then
-		ammoLabel.Text = "RELOADING..."
+		ammoLabel.Text = weaponName .. "\nRELOADING..."
 	else
-		ammoLabel.Text = string.format("%d / %d", current, max)
+		ammoLabel.Text = string.format("%s\n%d / %d", weaponName, current, max)
 	end
+end
+
+function UIController.SetCoins(amount: number)
+	if coinLabel then
+		coinLabel.Text = "  Coins: " .. tostring(amount)
+	end
+end
+
+function UIController.SetWave(waveNumber: number, totalWaves: number, state: string)
+	if not waveLabel then
+		return
+	end
+	if state == "Boss" then
+		waveLabel.Text = "BOSS FIGHT"
+	elseif state == "Break" then
+		waveLabel.Text = string.format("Wave %d / %d complete", waveNumber, totalWaves)
+	else
+		waveLabel.Text = string.format("Wave %d / %d", waveNumber, totalWaves)
+	end
+end
+
+function UIController.SetBossHP(current: number, max: number)
+	if not bossHPFill then
+		return
+	end
+	bossHPBackground.Visible = true
+	current = math.max(current, 0)
+	bossHPFill.Size = UDim2.fromScale(max > 0 and (current / max) or 0, 1)
+	bossHPLabel.Text = string.format("BOSS   %d / %d", current, max)
+	if current <= 0 then
+		task.delay(1.5, function()
+			if bossHPBackground then
+				bossHPBackground.Visible = false
+			end
+		end)
+	end
+end
+
+local bannerFlashThread: thread? = nil
+
+function UIController.SetGameStateBanner(text: string)
+	if not stateBanner then
+		return
+	end
+	-- A flash in progress owns the banner until its own timer clears it;
+	-- persistent state text (Lobby/Starting/etc.) shouldn't stomp on it
+	-- mid-flash only to have the flash's delayed clear erase it moments later.
+	if bannerFlashThread then
+		return
+	end
+	if text == "" then
+		stateBanner.Visible = false
+	else
+		stateBanner.Visible = true
+		stateBanner.Text = text
+	end
+end
+
+--[[
+	Shows a big banner for a fixed duration then clears itself, regardless
+	of whether any further GameStateChanged event arrives — used for
+	"Wave N incoming" announcements where the server doesn't send a
+	separate "now clear the banner" event afterward.
+]]
+function UIController.FlashBanner(text: string, duration: number)
+	if not stateBanner then
+		return
+	end
+	if bannerFlashThread then
+		task.cancel(bannerFlashThread)
+	end
+	stateBanner.Visible = true
+	stateBanner.Text = text
+	bannerFlashThread = task.delay(duration, function()
+		bannerFlashThread = nil
+		if stateBanner then
+			stateBanner.Visible = false
+		end
+	end)
+end
+
+function UIController.ShowToast(message: string, success: boolean)
+	if not toastLabel then
+		return
+	end
+	toastLabel.Text = message
+	toastLabel.TextColor3 = success and Color3.fromRGB(130, 230, 130) or Color3.fromRGB(230, 100, 100)
+	toastLabel.Visible = true
+	if toastHideThread then
+		task.cancel(toastHideThread)
+	end
+	toastHideThread = task.delay(3, function()
+		if toastLabel then
+			toastLabel.Visible = false
+		end
+	end)
 end
 
 function UIController.OnReloadPressed(callback: () -> ())
