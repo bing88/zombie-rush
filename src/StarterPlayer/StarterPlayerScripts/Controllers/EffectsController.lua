@@ -34,6 +34,7 @@
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
 local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
 
@@ -48,8 +49,8 @@ local EXPLOSION_LIFETIME = 0.35
 
 local FIRE_SOUND_ID = "rbxasset://sounds/switch.wav" -- placeholder "click"; only used if a weapon has no real "Fired" sound
 local HIT_SOUND_ID = "rbxasset://sounds/electronicpingshort.wav" -- placeholder hit-confirm "ping"
-local KILL_SOUND_ID = "rbxasset://sounds/bell.wav" -- placeholder "confirmed kill" ding, layered on top of the hit sound
 local EXPLOSION_SOUND_ID = "rbxasset://sounds/impact_water.mp3" -- placeholder "boom" -- only bundled sound with any real low-end weight
+local HIT_TAKEN_SOUND_ID = "rbxassetid://79348298352567" -- Official OOF Sound Effect (https://create.roblox.com/store/asset/79348298352567), played locally when the local player takes damage
 
 local localHitmarkerCallback: ((boolean) -> ())? = nil
 
@@ -282,10 +283,6 @@ function EffectsController.Init()
 				playSoundAt(hit.EndPosition, HIT_SOUND_ID, 0.6)
 				spawnDamageNumber(hit.EndPosition, hit.Damage)
 
-				if hit.Killed then
-					playSoundAt(hit.EndPosition, KILL_SOUND_ID, 0.7)
-				end
-
 				if shooter == localPlayer and localHitmarkerCallback then
 					localHitmarkerCallback(hit.Killed == true)
 				end
@@ -309,6 +306,23 @@ end
 ]]
 function EffectsController.OnLocalHitmarker(callback: (boolean) -> ())
 	localHitmarkerCallback = callback
+end
+
+--[[
+	The classic "oof" — plays only for the local player, right when their
+	own HP drops (see ClientMain's PlayerHPChanged handler, which already
+	distinguishes a decrease/damage from an increase/heal so this never
+	fires on a heal or revive). Parented under SoundService rather than a
+	BasePart so it's non-positional — personal damage feedback at a
+	consistent volume, not a 3D world sound anyone else hears.
+]]
+function EffectsController.PlayLocalHitSound()
+	local sound = Instance.new("Sound")
+	sound.SoundId = HIT_TAKEN_SOUND_ID
+	sound.Volume = 0.65
+	sound.Parent = SoundService
+	sound:Play()
+	Debris:AddItem(sound, 3) -- safety buffer well past the clip's length
 end
 
 return EffectsController

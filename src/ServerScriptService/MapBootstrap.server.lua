@@ -201,23 +201,55 @@ addLabel(teleportPad, "START MATCH", "Step here")
 addPrompt(teleportPad, "StartMatch", "Start Match", "Teleporter")
 addPointLight(teleportPad, Color3.fromRGB(60, 200, 220), 4, 20)
 
--- ============================== CORRIDOR ==============================
+-- Perimeter walls flush with the lobby floor's actual edges (X ±25,
+-- Z -25) — solid on 3 sides, with a 10-stud gap on the north (Z 25)
+-- side exactly matching the corridor's width so it reads as a doorway
+-- rather than a wall players can just walk past into open air.
+local LOBBY_WALL_HEIGHT = 12
+local lobbyWallColor = Color3.fromRGB(50, 50, 58)
+makePart("LobbyWallSouth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, -25), lobbyWallColor)
+makePart("LobbyWallWest", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(-25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
+makePart("LobbyWallEast", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
+makePart("LobbyWallNorthWest", Vector3.new(20, LOBBY_WALL_HEIGHT, 1), Vector3.new(-15, LOBBY_WALL_HEIGHT / 2, 25), lobbyWallColor)
+makePart("LobbyWallNorthEast", Vector3.new(20, LOBBY_WALL_HEIGHT, 1), Vector3.new(15, LOBBY_WALL_HEIGHT / 2, 25), lobbyWallColor)
 
-makePart("CorridorFloor", Vector3.new(10, 2, 50), Vector3.new(0, 0, 50), Color3.fromRGB(55, 55, 60))
-makePart("CorridorWallLeft", Vector3.new(1, 8, 50), Vector3.new(-5, 4, 50), Color3.fromRGB(45, 45, 50))
-makePart("CorridorWallRight", Vector3.new(1, 8, 50), Vector3.new(5, 4, 50), Color3.fromRGB(45, 45, 50))
+-- ============================== CORRIDOR ==============================
+-- Runs from the lobby's north wall opening (Z 25) to the arena's south
+-- wall opening (Z 95) — length picked to exactly meet the arena floor's
+-- edge below, with no gap between them (a previous version stopped 20
+-- studs short of the arena, leaving an open pit players fell into
+-- walking from one to the other).
+
+local CORRIDOR_Z_MIN, CORRIDOR_Z_MAX = 25, 95
+local corridorLength = CORRIDOR_Z_MAX - CORRIDOR_Z_MIN
+local corridorCenterZ = (CORRIDOR_Z_MIN + CORRIDOR_Z_MAX) / 2
+
+makePart("CorridorFloor", Vector3.new(10, 2, corridorLength), Vector3.new(0, 0, corridorCenterZ), Color3.fromRGB(55, 55, 60))
+makePart("CorridorWallLeft", Vector3.new(1, 8, corridorLength), Vector3.new(-5, 4, corridorCenterZ), Color3.fromRGB(45, 45, 50))
+makePart("CorridorWallRight", Vector3.new(1, 8, corridorLength), Vector3.new(5, 4, corridorCenterZ), Color3.fromRGB(45, 45, 50))
 
 -- A few overhead light fixtures so the corridor isn't a dark tunnel
 -- between the lit lobby and arena.
-local corridorLightPositions = { Vector3.new(0, 7.5, 25), Vector3.new(0, 7.5, 50), Vector3.new(0, 7.5, 75) }
+local corridorLightPositions = { Vector3.new(0, 7.5, 30), Vector3.new(0, 7.5, 60), Vector3.new(0, 7.5, 90) }
 for i, position in corridorLightPositions do
 	local fixture = makePart("CorridorLight" .. i, Vector3.new(2, 0.5, 2), position, Color3.fromRGB(255, 240, 200), { Material = Enum.Material.Neon })
 	addPointLight(fixture, Color3.fromRGB(255, 235, 190), 2, 18)
 end
 
 -- ============================== ARENA ==============================
+-- X range widened east (-55..80, vs. a symmetric -55..55) to actually
+-- reach under the CoverBarrel cluster below (placed as far out as
+-- X = 75) — that cluster used to float past the floor's old edge with
+-- nothing underneath, an easy way to fall straight through the map.
 
-makePart("ArenaFloor", Vector3.new(110, 2, 110), Vector3.new(0, 0, 150), Color3.fromRGB(70, 60, 55))
+local ARENA_X_MIN, ARENA_X_MAX = -55, 80
+local ARENA_Z_MIN, ARENA_Z_MAX = 95, 205
+local arenaWidth = ARENA_X_MAX - ARENA_X_MIN
+local arenaDepth = ARENA_Z_MAX - ARENA_Z_MIN
+local arenaCenterX = (ARENA_X_MIN + ARENA_X_MAX) / 2
+local arenaCenterZ = (ARENA_Z_MIN + ARENA_Z_MAX) / 2
+
+makePart("ArenaFloor", Vector3.new(arenaWidth, 2, arenaDepth), Vector3.new(arenaCenterX, 0, arenaCenterZ), Color3.fromRGB(70, 60, 55))
 
 makeMarker("ArenaSpawnPoint", Vector3.new(0, 3, 105))
 
@@ -265,6 +297,12 @@ local CATWALK_HEIGHT = 10
 makePart("CatwalkPlatform", Vector3.new(16, 1, 10), Vector3.new(0, CATWALK_HEIGHT, 175), Color3.fromRGB(70, 70, 78))
 makePart("CatwalkRailingLeft", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 170.25), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
 makePart("CatwalkRailingRight", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 179.75), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
+-- The two railings above only guard the north/south edges — without
+-- these, the long east/west sides of the platform were completely open,
+-- an easy way to fall the 10 studs off the catwalk while sidestepping
+-- during a fight up there.
+makePart("CatwalkRailingWest", Vector3.new(0.5, 3, 10), Vector3.new(-8.25, CATWALK_HEIGHT + 2, 175), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
+makePart("CatwalkRailingEast", Vector3.new(0.5, 3, 10), Vector3.new(8.25, CATWALK_HEIGHT + 2, 175), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
 
 local function makeRamp(name: string, position: Vector3, rotationY: number)
 	-- NOTE: WedgePart's slope direction depends on Roblox's default local
@@ -307,8 +345,23 @@ for i = 1, SPAWN_COUNT do
 	point.Parent = zombieSpawns
 end
 
+-- Perimeter walls flush with the (widened) arena floor's actual edges —
+-- solid on the north/east/west sides, with a 10-stud gap on the south
+-- (Z 95) side exactly matching the corridor's width so it lines up with
+-- that doorway instead of sealing the arena off entirely.
+local ARENA_WALL_HEIGHT = 16
+local arenaWallColor = Color3.fromRGB(55, 50, 55)
+makePart("ArenaWallSouthWest", Vector3.new(50, ARENA_WALL_HEIGHT, 1), Vector3.new(-30, ARENA_WALL_HEIGHT / 2, 95), arenaWallColor)
+makePart("ArenaWallSouthEast", Vector3.new(75, ARENA_WALL_HEIGHT, 1), Vector3.new(42.5, ARENA_WALL_HEIGHT / 2, 95), arenaWallColor)
+makePart("ArenaWallNorth", Vector3.new(arenaWidth, ARENA_WALL_HEIGHT, 1), Vector3.new(arenaCenterX, ARENA_WALL_HEIGHT / 2, ARENA_Z_MAX), arenaWallColor)
+makePart("ArenaWallWest", Vector3.new(1, ARENA_WALL_HEIGHT, arenaDepth), Vector3.new(ARENA_X_MIN, ARENA_WALL_HEIGHT / 2, arenaCenterZ), arenaWallColor)
+makePart("ArenaWallEast", Vector3.new(1, ARENA_WALL_HEIGHT, arenaDepth), Vector3.new(ARENA_X_MAX, ARENA_WALL_HEIGHT / 2, arenaCenterZ), arenaWallColor)
+
 -- ============================== BOUNDARY ==============================
 -- Invisible walls around the whole level so players/zombies can't wander off the edge into the void.
+-- Now mostly a defense-in-depth backstop — the lobby/corridor/arena
+-- walls above already sit flush with every real floor edge — but cheap
+-- insurance against any gap missed in that reasoning.
 
 local BOUNDARY_MIN_X, BOUNDARY_MAX_X = -65, 85
 local BOUNDARY_MIN_Z, BOUNDARY_MAX_Z = -30, 210
@@ -321,3 +374,53 @@ makePart("BoundaryNorth", Vector3.new(boundaryWidth, 40, 2), Vector3.new(boundar
 makePart("BoundarySouth", Vector3.new(boundaryWidth, 40, 2), Vector3.new(boundaryCenterX, 15, BOUNDARY_MIN_Z), Color3.new(), { Transparency = 1 })
 makePart("BoundaryEast", Vector3.new(2, 40, boundaryDepth), Vector3.new(BOUNDARY_MAX_X, 15, boundaryCenterZ), Color3.new(), { Transparency = 1 })
 makePart("BoundaryWest", Vector3.new(2, 40, boundaryDepth), Vector3.new(BOUNDARY_MIN_X, 15, boundaryCenterZ), Color3.new(), { Transparency = 1 })
+
+-- ============================== FALL SAFETY NET ==============================
+-- Last-resort catch-all, well below every floor (Y = -50) and spanning
+-- past even the outer boundary above in every direction: if a player
+-- ever still ends up falling — a knockback shoved through a gap we
+-- didn't account for, a future geometry change, etc. — this catches
+-- them and teleports them back to a safe spot instead of leaving them
+-- to fall forever. Not a substitute for the real floors/walls above,
+-- just insurance underneath them.
+local fallSafetyNet = Instance.new("Part")
+fallSafetyNet.Name = "FallSafetyNet"
+fallSafetyNet.Anchored = true
+fallSafetyNet.CanCollide = false
+fallSafetyNet.CanQuery = false
+fallSafetyNet.Transparency = 1
+fallSafetyNet.Size = Vector3.new(boundaryWidth + 200, 4, boundaryDepth + 200)
+fallSafetyNet.Position = Vector3.new(boundaryCenterX, -50, boundaryCenterZ)
+fallSafetyNet.Parent = map
+
+local LOBBY_RECOVERY_POSITION = Vector3.new(0, 5, -18)
+local ARENA_RECOVERY_POSITION = Vector3.new(0, 8, 105)
+local recoveringCharacters: { [Model]: boolean } = {}
+
+fallSafetyNet.Touched:Connect(function(hit: BasePart)
+	local character = hit.Parent
+	if not character or not character:IsA("Model") or recoveringCharacters[character] then
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not humanoid or not rootPart or humanoid.Health <= 0 then
+		return
+	end
+
+	recoveringCharacters[character] = true
+
+	-- Rough "which area were they in" guess from their Z position right
+	-- before hitting the net (X/Z barely drift during a straight fall) —
+	-- good enough since this is only ever expected to fire as a last
+	-- resort, not something normal play should ever actually trigger.
+	local recoveryPosition = if rootPart.Position.Z < CORRIDOR_Z_MAX then LOBBY_RECOVERY_POSITION else ARENA_RECOVERY_POSITION
+
+	rootPart.AssemblyLinearVelocity = Vector3.zero
+	character:PivotTo(CFrame.new(recoveryPosition))
+
+	task.delay(1, function()
+		recoveringCharacters[character] = nil
+	end)
+end)

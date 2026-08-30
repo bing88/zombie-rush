@@ -24,6 +24,7 @@ local DataService = require(script.Parent.DataService)
 local InternalSignals = require(script.Parent.InternalSignals)
 local DownedState = require(script.Parent.DownedState)
 local StatsService = require(script.Parent.StatsService)
+local ZombieService = require(script.Parent.ZombieService)
 
 local FireWeapon = Remotes.FireWeapon
 local ReloadWeapon = Remotes.ReloadWeapon
@@ -211,6 +212,14 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 	local killed = humanoid.Health <= 0
 	if killed and isHeadshot then
 		StatsService.RecordHeadshotKill(player)
+	end
+
+	if not killed then
+		-- Killing blows get their own separate, more theatrical knockback
+		-- (see ZombieService's applyDeathKnockback via onDeath) — this is
+		-- just for hits the zombie survives, so getting shot always reads
+		-- as an impact rather than only mattering on the kill.
+		ZombieService.ApplyHitKnockback(zombieModel, direction)
 	end
 
 	ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)

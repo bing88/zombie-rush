@@ -27,6 +27,7 @@ local Workspace = game:GetService("Workspace")
 local PathfindingService = game:GetService("PathfindingService")
 local AssetService = game:GetService("AssetService")
 local ServerStorage = game:GetService("ServerStorage")
+local Debris = game:GetService("Debris")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ZombieConfig = require(ReplicatedStorage.Shared.ZombieConfig)
@@ -45,19 +46,22 @@ local BOSS_TAG = "Boss"
 -- Zombie (Rthro)" NPC kit (see https://create.roblox.com/docs/resources/npc-kit
 -- for its documented structure); Fast/Tank/Boss are unofficial community
 -- models of unknown internal structure, handled more defensively below.
+-- Ranged/Exploder have no asset yet and always use the placeholder rig.
 local ZOMBIE_ASSET_IDS: { [string]: number } = {
-	Normal = 3924238625,
-	Fast = 82664805038905,
-	Tank = 14000778389,
-	Boss = 158642843,
+	Normal = 39242386251,
+	Fast = 3065429261, -- "Skeleton Dog"
+	Tank = 3058978681, -- "NERF Zombie"
+	Boss = 3193866641, -- "Axe Monster"
 }
 
 -- Whichever of these scripts exist are purely cosmetic (walk/idle
 -- animation playback, footstep/groan/death audio) and layer on top of
--- our own AI without conflict, so they're the only ones kept. Everything
--- else — most importantly any built-in health-regen or roam/attack AI
--- script the asset ships with — is stripped, since our server-authoritative
--- HP + Heartbeat/PathfindingService AI below must be the sole authority.
+-- our own AI without conflict — but only trusted for the one verified-
+-- compatible asset (Normal; see buildZombieTemplate's trustBuiltInScripts).
+-- Everything else — most importantly any built-in health-regen or
+-- roam/attack AI script the asset ships with — is unconditionally
+-- stripped, since our server-authoritative HP + Heartbeat/
+-- PathfindingService AI below must be the sole authority.
 local KEPT_ZOMBIE_SCRIPT_NAMES = { Animate = true, RbxNpcSounds = true }
 
 local activeZombieCount = 0
@@ -70,10 +74,107 @@ function ZombieService.GetActiveCount(): number
 end
 
 --[[
+	Adds one rigidly-welded, non-animated limb part to the model.
+	`localCFrame` is the limb's full rest pose (translation *and*
+	rotation) relative to rootPart — used for the arms below, which get a
+	fixed "reach forward" rotation baked in but never move afterward, so
+	a plain WeldConstraint (not a Motor6D) is enough; there's nothing to
+	animate.
+]]
+local function addPlaceholderLimb(model: Model, rootPart: BasePart, name: string, size: Vector3, color: Color3, localCFrame: CFrame)
+	local limb = Instance.new("Part")
+	limb.Name = name
+	limb.Size = size
+	limb.Color = color
+	limb.Parent = model
+	limb.CFrame = rootPart.CFrame * localCFrame
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = rootPart
+	weld.Part1 = limb
+	weld.Parent = limb
+
+	return limb
+end
+
+--[[
+	Adds one leg jointed to rootPart via Motor6D (pivoting at the hip,
+	where the leg meets the torso) instead of a rigid WeldConstraint, so
+	its C0 can be animated frame-by-frame for a walk cycle (see
+	animateLegWalk) — a WeldConstraint would otherwise continuously fight
+	back to the leg's original rigid offset every time we tried to swing it.
+
+	`hipLocalPosition` is where the hip joint sits, in rootPart's local
+	space; the leg part itself hangs straight down from there by default
+	(its top face at the hip, matching the C1 offset below).
+]]
+local function addPlaceholderLeg(model: Model, rootPart: BasePart, name: string, size: Vector3, color: Color3, hipLocalPosition: Vector3): (BasePart, Motor6D)
+	local leg = Instance.new("Part")
+	leg.Name = name
+	leg.Size = size
+	leg.Color = color
+	leg.Parent = model
+	leg.CFrame = rootPart.CFrame * CFrame.new(hipLocalPosition - Vector3.new(0, size.Y / 2, 0))
+
+	local motor = Instance.new("Motor6D")
+	motor.Part0 = rootPart
+	motor.Part1 = leg
+	motor.C0 = CFrame.new(hipLocalPosition)
+	motor.C1 = CFrame.new(0, size.Y / 2, 0)
+	motor.Parent = leg
+
+	return leg, motor
+end
+
+local LEG_SWING_MAX_ANGLE = math.rad(50)
+local LEG_SWING_CYCLES_PER_STUD = 0.6 -- stride frequency; tuned so it reads as a walk/run cycle rather than a spin
+local LEG_SWING_MIN_SPEED = 0.6 -- studs/sec of actual root velocity below which legs snap back to standing rather than idly twitching
+
+--[[
+	Procedural walk cycle for the placeholder rig's legs: swings each
+	leg's Motor6D about its hip in opposite phase, driven by how far the
+	zombie has actually *travelled* (root part velocity integrated over
+	time) rather than just elapsed time — so a slow Tank and a fast
+	zombie both get a stride that matches their real movement instead of
+	either one looking like it's moonwalking or sprinting in place.
+	Snaps straight back to the standing rest pose the moment it stops
+	(no ease-out) — simple, and stopping is usually to attack, so a
+	lingering mid-stride leg would look worse than a clean snap.
+]]
+local function animateLegWalk(model: Model, humanoid: Humanoid, rootPart: BasePart, leftLegMotor: Motor6D, rightLegMotor: Motor6D, restC0Left: CFrame, restC0Right: CFrame)
+	local strideDistance = 0
+	local connection: RBXScriptConnection
+	connection = RunService.Heartbeat:Connect(function(dt: number)
+		if not model.Parent or humanoid.Health <= 0 then
+			connection:Disconnect()
+			return
+		end
+
+		local horizontalVelocity = Vector3.new(rootPart.AssemblyLinearVelocity.X, 0, rootPart.AssemblyLinearVelocity.Z)
+		local speed = horizontalVelocity.Magnitude
+
+		if speed > LEG_SWING_MIN_SPEED then
+			strideDistance += speed * dt
+		else
+			strideDistance = 0
+		end
+
+		local swing = math.sin(strideDistance * LEG_SWING_CYCLES_PER_STUD * (math.pi * 2)) * LEG_SWING_MAX_ANGLE
+		leftLegMotor.C0 = restC0Left * CFrame.Angles(swing, 0, 0)
+		rightLegMotor.C0 = restC0Right * CFrame.Angles(-swing, 0, 0)
+	end)
+end
+
+--[[
 	Builds a minimal procedural zombie rig, scaled/colored per
 	ZombieConfig. Still used for Fast/Tank/Boss (and as a Normal fallback
 	if the real asset fails to load) — no art pipeline exists for those
-	yet, same rationale as Tier 0.
+	yet, same rationale as Tier 0. Torso + Head + 2 arms + 2 legs.
+
+	Arms are fixed in a "reach forward" pose (classic zombie silhouette)
+	and never move; legs are hip-jointed via Motor6D and swing through a
+	procedural walk cycle while the zombie is actually moving (see
+	animateLegWalk).
 ]]
 local function createPlaceholderZombieModel(statsName: string): Model
 	local stats = ZombieConfig[statsName]
@@ -111,6 +212,31 @@ local function createPlaceholderZombieModel(statsName: string): Model
 	headWeld.Part1 = head
 	headWeld.Parent = head
 
+	-- Classic R6 proportions: 1x2x1 limbs.
+	local limbColor = stats.Color:Lerp(Color3.new(0, 0, 0), 0.1) -- slightly darker than the torso for a bit of visual definition
+	local limbSize = Vector3.new(1, 2, 1) * scale
+
+	-- Arms: shoulder flush against the torso's side (half torso width +
+	-- half arm width = 1.5 studs out), rotated -90° about X so the arm's
+	-- long axis points forward (local -Z — the model's facing direction,
+	-- same convention as CFrame.LookVector) from the shoulder instead of
+	-- hanging straight down, and pushed forward by half the arm's length
+	-- so it still pivots from the shoulder rather than from its middle.
+	local armForwardRotation = CFrame.Angles(math.rad(-90), 0, 0)
+	local shoulderHeight = 0.3 * scale
+	addPlaceholderLimb(model, rootPart, "Left Arm", limbSize, limbColor,
+		CFrame.new(-1.5 * scale, shoulderHeight, -1 * scale) * armForwardRotation)
+	addPlaceholderLimb(model, rootPart, "Right Arm", limbSize, limbColor,
+		CFrame.new(1.5 * scale, shoulderHeight, -1 * scale) * armForwardRotation)
+
+	-- Legs: hip centered under each half of the torso, hip joint sitting
+	-- right at the torso's bottom edge (half torso height up from the
+	-- leg's own center).
+	local leftHip = Vector3.new(-0.5 * scale, -1 * scale, 0)
+	local rightHip = Vector3.new(0.5 * scale, -1 * scale, 0)
+	local _leftLeg, leftLegMotor = addPlaceholderLeg(model, rootPart, "Left Leg", limbSize, limbColor, leftHip)
+	local _rightLeg, rightLegMotor = addPlaceholderLeg(model, rootPart, "Right Leg", limbSize, limbColor, rightHip)
+
 	local humanoid = Instance.new("Humanoid")
 	humanoid.MaxHealth = stats.MaxHP
 	humanoid.Health = stats.MaxHP
@@ -118,6 +244,8 @@ local function createPlaceholderZombieModel(statsName: string): Model
 	humanoid.Parent = model
 
 	model.PrimaryPart = rootPart
+
+	animateLegWalk(model, humanoid, rootPart, leftLegMotor, rightLegMotor, CFrame.new(leftHip), CFrame.new(rightHip))
 
 	return model
 end
@@ -150,8 +278,24 @@ local function buildZombieTemplate(assetId: number, statsName: string): Model
 	container:Destroy()
 	template.Sandboxed = false
 
+	-- A kept "Animate" script almost always assumes a standard R6/R15
+	-- humanoid layout ("Torso"/"UpperTorso" + "Head" as *direct* children
+	-- of the top-level model) to WaitForChild its limbs — on a
+	-- non-humanoid/non-standard community model that WaitForChild never
+	-- resolves, hanging that thread forever ("Infinite yield possible..."
+	-- spam, one leaked coroutine per zombie spawned; happened for both
+	-- the "Skeleton Dog" Fast model and — since a part merely being
+	-- *named* "Torso" doesn't guarantee it's a direct child of the exact
+	-- Model the script expects — isn't safely detectable by sniffing part
+	-- names either). Given that, only the one Normal zombie asset (the
+	-- official, verified-compatible Roblox NPC kit) is trusted to keep
+	-- its own scripts; every other (community-sourced) zombie type always
+	-- strips them, regardless of what part names it happens to contain.
+	local trustBuiltInScripts = statsName == "Normal"
+
 	for _, descendant in template:GetDescendants() do
-		if (descendant:IsA("Script") or descendant:IsA("LocalScript")) and not KEPT_ZOMBIE_SCRIPT_NAMES[descendant.Name] then
+		local isKeptScriptName = KEPT_ZOMBIE_SCRIPT_NAMES[descendant.Name] and trustBuiltInScripts
+		if (descendant:IsA("Script") or descendant:IsA("LocalScript")) and not isKeptScriptName then
 			descendant:Destroy()
 		end
 	end
@@ -620,6 +764,89 @@ local function applyDeathKnockback(rootPart: BasePart)
 	end
 end
 
+local HIT_KNOCKBACK_STUN_SECONDS = 0.15
+local HIT_KNOCKBACK_SPEED = 16
+local HIT_KNOCKBACK_LIFT = 5
+
+--[[
+	Punches a *surviving* hit (see WeaponService's resolvePellet — killing
+	blows keep the separate, more theatrical applyDeathKnockback instead)
+	backward along the shot's direction, so getting shot reads as an
+	impact instead of the zombie just soaking damage silently.
+
+	Briefly flips Humanoid.PlatformStand on: a Humanoid actively fighting
+	for movement control (MoveTo, every AI loop below calls it constantly)
+	would otherwise re-assert its own velocity within the same frame,
+	making a plain AssemblyLinearVelocity impulse invisible. PlatformStand
+	hands full control to physics for a beat so the impulse is actually
+	visible, then hands it back — the AI loops keep calling MoveTo the
+	whole time regardless, so movement just resumes normally afterward
+	with no extra bookkeeping needed here.
+]]
+function ZombieService.ApplyHitKnockback(zombieModel: Model, shotDirection: Vector3)
+	local rootPart = zombieModel.PrimaryPart
+	local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
+	if not rootPart or not humanoid or humanoid.Health <= 0 then
+		return
+	end
+
+	local horizontal = Vector3.new(shotDirection.X, 0, shotDirection.Z)
+	if horizontal.Magnitude < 0.01 then
+		return
+	end
+	local impulseVelocity = horizontal.Unit * HIT_KNOCKBACK_SPEED + Vector3.new(0, HIT_KNOCKBACK_LIFT, 0)
+
+	local wasPlatformStand = humanoid.PlatformStand
+	humanoid.PlatformStand = true
+
+	local ok = pcall(function()
+		rootPart.AssemblyLinearVelocity = impulseVelocity
+	end)
+	if not ok then
+		-- Root part may be anchored on some fallback paths; harmless no-op then.
+	end
+
+	task.delay(HIT_KNOCKBACK_STUN_SECONDS, function()
+		if humanoid.Parent and humanoid.Health > 0 then
+			humanoid.PlatformStand = wasPlatformStand
+		end
+	end)
+end
+
+-- Community "zombie die" groan (https://create.roblox.com/store/asset/116391542832455/Fast-Zombie-Die),
+-- used as the death sound for every zombie type, not just Fast.
+local ZOMBIE_DEATH_SOUND_ID = "rbxassetid://116391542832455"
+
+--[[
+	Plays the death groan at the zombie's position via a standalone
+	emitter part (rather than a Sound parented directly under the corpse)
+	so it isn't cut off early by onDeath's task.delay(2, model:Destroy).
+	Playing this from the server (not a LocalScript) means the replicated
+	Sound.Playing change is what every client actually hears — no remote
+	event needed.
+]]
+local function playDeathSound(position: Vector3)
+	local emitter = Instance.new("Part")
+	emitter.Name = "ZombieDeathSoundEmitter"
+	emitter.Anchored = true
+	emitter.CanCollide = false
+	emitter.CanQuery = false
+	emitter.Transparency = 1
+	emitter.Size = Vector3.new(0.1, 0.1, 0.1)
+	emitter.Position = position
+	emitter.Parent = Workspace
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = ZOMBIE_DEATH_SOUND_ID
+	sound.Volume = 0.6
+	sound.RollOffMinDistance = 8
+	sound.RollOffMaxDistance = 150
+	sound.Parent = emitter
+	sound:Play()
+
+	Debris:AddItem(emitter, 5) -- safety buffer well past the clip's length
+end
+
 --[[
 	Spawns one zombie of the given type at the given position and starts
 	its AI. Returns the Model (or nil if statsName is unknown).
@@ -660,6 +887,7 @@ function ZombieService.SpawnZombie(
 	local function onDeath()
 		CollectionService:RemoveTag(model, ZOMBIE_TAG)
 		applyDeathKnockback(rootPart)
+		playDeathSound(rootPart.Position)
 		local killerPlayer: Player? = nil
 		local killerUserId = model:GetAttribute("LastHitPlayerId")
 		if killerUserId then

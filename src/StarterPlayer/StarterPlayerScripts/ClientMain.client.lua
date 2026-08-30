@@ -82,6 +82,7 @@ Remotes.PlayerHPChanged.OnClientEvent:Connect(function(current: number, max: num
 	UIController.SetHP(current, max)
 	if lastKnownHP and current < lastKnownHP then
 		UIController.FlashDamageVignette()
+		EffectsController.PlayLocalHitSound()
 	end
 	lastKnownHP = current
 end)
