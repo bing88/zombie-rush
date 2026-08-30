@@ -27,6 +27,7 @@ local DataService = require(script.Parent.DataService)
 local CoinsUpdated = Remotes.CoinsUpdated
 local WeaponsOwned = Remotes.WeaponsOwned
 local ShopResult = Remotes.ShopResult
+local PurchaseUpgradeRequest = Remotes.PurchaseUpgradeRequest
 
 local SECRET_REWARD_COINS = 250
 
@@ -155,3 +156,19 @@ connectStall("Stall_UpgradeShotgun", function(player)
 end)
 connectStall("Stall_SecretButton", trySecretButton)
 connectStall("Stall_SecretCache", trySecretCache)
+
+--[[
+	Anytime upgrade path: same tryBuyUpgrade validation as the physical
+	stalls (cost/level-cap/ownership checks all still happen server-side
+	here, nothing new is trusted), just triggered by a direct remote
+	instead of a ProximityPrompt. This is what backs the client's
+	always-available upgrade panel — upgrades shouldn't require walking
+	to a specific map location, unlike unlocking a new weapon for the
+	first time, which stays a physical stall per the original design.
+]]
+PurchaseUpgradeRequest.OnServerEvent:Connect(function(player: Player, weaponName: string)
+	if typeof(weaponName) ~= "string" then
+		return
+	end
+	tryBuyUpgrade(player, weaponName)
+end)

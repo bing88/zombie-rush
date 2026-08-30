@@ -8,6 +8,7 @@
 	match state (waiting/starting/boss incoming/victory).
 ]]
 
+local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
 
 local UIController = {}
@@ -17,6 +18,7 @@ local player = Players.LocalPlayer
 local screenGui: ScreenGui
 local hpLabel: TextLabel
 local hpBarFill: Frame
+local ammoContainer: Frame
 local ammoLabel: TextLabel
 local reloadButton: TextButton
 local fireButton: TextButton
@@ -31,32 +33,52 @@ local toastLabel: TextLabel
 
 local toastHideThread: thread? = nil
 
+local AMMO_POSITION = UDim2.new(1, -20, 1, -200)
+
+--[[
+	Gapped tick-mark crosshair (four short lines + a center dot, with a
+	gap around the middle) instead of a solid connected "+". A solid
+	cross visually reads as overlapping/part of the weapon model in
+	over-the-shoulder framing; four separate gapped segments read more
+	clearly as a discrete UI element.
+]]
 local function buildCrosshair(parent: ScreenGui)
 	local crosshair = Instance.new("Frame")
 	crosshair.Name = "Crosshair"
 	crosshair.AnchorPoint = Vector2.new(0.5, 0.5)
 	crosshair.Position = UDim2.fromScale(0.5, 0.5)
-	crosshair.Size = UDim2.fromOffset(20, 20)
+	crosshair.Size = UDim2.fromOffset(28, 28)
 	crosshair.BackgroundTransparency = 1
 	crosshair.Parent = parent
 
-	local vertical = Instance.new("Frame")
-	vertical.Name = "Vertical"
-	vertical.AnchorPoint = Vector2.new(0.5, 0.5)
-	vertical.Position = UDim2.fromScale(0.5, 0.5)
-	vertical.Size = UDim2.fromOffset(2, 14)
-	vertical.BackgroundColor3 = Color3.new(1, 1, 1)
-	vertical.BorderSizePixel = 0
-	vertical.Parent = crosshair
+	local GAP = 4 -- distance from center each tick starts
+	local TICK_LENGTH = 7
+	local THICKNESS = 2
 
-	local horizontal = Instance.new("Frame")
-	horizontal.Name = "Horizontal"
-	horizontal.AnchorPoint = Vector2.new(0.5, 0.5)
-	horizontal.Position = UDim2.fromScale(0.5, 0.5)
-	horizontal.Size = UDim2.fromOffset(14, 2)
-	horizontal.BackgroundColor3 = Color3.new(1, 1, 1)
-	horizontal.BorderSizePixel = 0
-	horizontal.Parent = crosshair
+	local function tick(name: string, position: UDim2, size: UDim2)
+		local line = Instance.new("Frame")
+		line.Name = name
+		line.AnchorPoint = Vector2.new(0.5, 0.5)
+		line.Position = position
+		line.Size = size
+		line.BackgroundColor3 = Color3.new(1, 1, 1)
+		line.BorderSizePixel = 0
+		line.Parent = crosshair
+	end
+
+	tick("Top", UDim2.fromOffset(0, -(GAP + TICK_LENGTH / 2)), UDim2.fromOffset(THICKNESS, TICK_LENGTH))
+	tick("Bottom", UDim2.fromOffset(0, GAP + TICK_LENGTH / 2), UDim2.fromOffset(THICKNESS, TICK_LENGTH))
+	tick("Left", UDim2.fromOffset(-(GAP + TICK_LENGTH / 2), 0), UDim2.fromOffset(TICK_LENGTH, THICKNESS))
+	tick("Right", UDim2.fromOffset(GAP + TICK_LENGTH / 2, 0), UDim2.fromOffset(TICK_LENGTH, THICKNESS))
+
+	local centerDot = Instance.new("Frame")
+	centerDot.Name = "CenterDot"
+	centerDot.AnchorPoint = Vector2.new(0.5, 0.5)
+	centerDot.Position = UDim2.fromScale(0.5, 0.5)
+	centerDot.Size = UDim2.fromOffset(2, 2)
+	centerDot.BackgroundColor3 = Color3.new(1, 1, 1)
+	centerDot.BorderSizePixel = 0
+	centerDot.Parent = crosshair
 end
 
 local function buildUI()
@@ -153,20 +175,32 @@ local function buildUI()
 	bossHPLabel.Text = "BOSS"
 	bossHPLabel.Parent = bossHPBackground
 
-	-- Ammo counter (bottom-right, above reload/fire buttons)
+	-- Ammo counter (bottom-right, above reload/fire buttons). Wrapped in a
+	-- container Frame so the fire-shake tween can animate Position without
+	-- fighting the label's own text updates.
+	ammoContainer = Instance.new("Frame")
+	ammoContainer.Name = "AmmoContainer"
+	ammoContainer.AnchorPoint = Vector2.new(1, 1)
+	ammoContainer.Size = UDim2.fromOffset(100, 32)
+	ammoContainer.Position = AMMO_POSITION
+	ammoContainer.BackgroundTransparency = 1
+	ammoContainer.Parent = screenGui
+
 	ammoLabel = Instance.new("TextLabel")
 	ammoLabel.Name = "AmmoLabel"
-	ammoLabel.AnchorPoint = Vector2.new(1, 1)
-	ammoLabel.Size = UDim2.fromOffset(160, 44)
-	ammoLabel.Position = UDim2.new(1, -20, 1, -200)
+	ammoLabel.Size = UDim2.fromScale(1, 1)
 	ammoLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	ammoLabel.BackgroundTransparency = 0.3
 	ammoLabel.TextColor3 = Color3.new(1, 1, 1)
 	ammoLabel.Font = Enum.Font.GothamBold
-	ammoLabel.TextSize = 15
+	ammoLabel.TextSize = 13
 	ammoLabel.TextWrapped = true
 	ammoLabel.Text = "Pistol\n12 / 12"
-	ammoLabel.Parent = screenGui
+	ammoLabel.Parent = ammoContainer
+
+	local ammoCorner = Instance.new("UICorner")
+	ammoCorner.CornerRadius = UDim.new(0, 4)
+	ammoCorner.Parent = ammoLabel
 
 	-- Reload button (works via mouse click or touch tap on any platform)
 	reloadButton = Instance.new("TextButton")
@@ -270,6 +304,34 @@ function UIController.SetAmmo(weaponName: string, current: number, max: number, 
 	else
 		ammoLabel.Text = string.format("%s\n%d / %d", weaponName, current, max)
 	end
+end
+
+--[[
+	Small punch/shake on the ammo counter each time the local player
+	fires — quick visual feedback tied to the shot itself, separate from
+	whether it hit anything. Cheap: nudges the container's Position with
+	a couple of quick tweens rather than a full spring/shake library.
+]]
+function UIController.ShakeAmmoUI()
+	if not ammoContainer then
+		return
+	end
+
+	local shakenPosition = AMMO_POSITION + UDim2.fromOffset(3, 2)
+
+	local outTween = TweenService:Create(
+		ammoContainer,
+		TweenInfo.new(0.03, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Position = shakenPosition }
+	)
+	outTween:Play()
+	outTween.Completed:Connect(function()
+		TweenService:Create(
+			ammoContainer,
+			TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Position = AMMO_POSITION }
+		):Play()
+	end)
 end
 
 function UIController.SetCoins(amount: number)

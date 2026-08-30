@@ -62,6 +62,7 @@ local fireButtonHeld = false
 local initialized = false
 
 local ammoChangedCallback: ((string, number, number, boolean) -> ())? = nil
+local localFireCallback: (() -> ())? = nil
 
 local function statsFor(weaponName: string)
 	return WeaponConfig[weaponName]
@@ -177,6 +178,10 @@ local function tryFire()
 
 	FireWeapon:FireServer(camera.CFrame.LookVector)
 
+	if localFireCallback then
+		localFireCallback()
+	end
+
 	if predictedAmmo[currentWeapon] <= 0 then
 		setReloading(currentWeapon, true)
 	end
@@ -280,6 +285,15 @@ end
 function WeaponController.OnAmmoChanged(callback: (string, number, number, boolean) -> ())
 	ammoChangedCallback = callback
 	updateAmmoUI()
+end
+
+--[[
+	Fires once per successful local shot (not per server confirmation —
+	this is immediate, for snappy UI feedback like the ammo-counter
+	shake). Doesn't indicate whether the shot hit anything.
+]]
+function WeaponController.OnLocalFire(callback: () -> ())
+	localFireCallback = callback
 end
 
 return WeaponController

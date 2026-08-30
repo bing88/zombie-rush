@@ -24,6 +24,7 @@ local remoteNames = {
 	"GameStateChanged", -- server -> all clients: match state ("Lobby"/"Starting"/"BossIncoming"/"Victory") + seconds left
 	"BossHPChanged", -- server -> all clients: boss health bar
 	"ShopResult", -- server -> owning client: toast feedback for a purchase/upgrade/secret attempt
+	"PurchaseUpgradeRequest", -- client -> server: player wants to upgrade a weapon from the anytime UI panel (not a physical stall)
 }
 
 local Remotes = {}

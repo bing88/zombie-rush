@@ -14,6 +14,7 @@ local WeaponController = require(Controllers.WeaponController)
 local UIController = require(Controllers.UIController)
 local EffectsController = require(Controllers.EffectsController)
 local CameraController = require(Controllers.CameraController)
+local ShopController = require(Controllers.ShopController)
 
 UIController.Init()
 CameraController.Init() -- must init before WeaponController: its RenderStepped
@@ -22,9 +23,14 @@ CameraController.Init() -- must init before WeaponController: its RenderStepped
                          -- camera.CFrame.LookVector to decide fire direction.
 WeaponController.Init()
 EffectsController.Init()
+ShopController.Init()
 
 WeaponController.OnAmmoChanged(function(weaponName, current, max, isReloading)
 	UIController.SetAmmo(weaponName, current, max, isReloading)
+end)
+
+WeaponController.OnLocalFire(function()
+	UIController.ShakeAmmoUI()
 end)
 
 UIController.OnReloadPressed(function()
@@ -63,6 +69,10 @@ end)
 
 Remotes.ShopResult.OnClientEvent:Connect(function(success: boolean, message: string)
 	UIController.ShowToast(message, success)
+end)
+
+Remotes.WeaponsOwned.OnClientEvent:Connect(function(owned: { [string]: boolean }, levels: { [string]: number })
+	ShopController.SetOwnedWeapons(owned, levels)
 end)
 
 Remotes.GameStateChanged.OnClientEvent:Connect(function(state: string, secondsLeft: number, nextWaveNumber: number?)
