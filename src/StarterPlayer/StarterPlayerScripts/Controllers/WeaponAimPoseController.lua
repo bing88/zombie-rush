@@ -249,16 +249,60 @@ end
 	camera's look direction from the shoulder, roughly where a
 	two-handed rifle grip would naturally sit.
 ]]
+--[[
+	World-space point the hand should reach toward: out along the
+	camera's direction from the torso, roughly where a two-handed rifle
+	grip would naturally sit.
+
+	Pitch is clamped rather than using the camera's raw vertical angle
+	directly — this is the actual fix for "the gun keeps pointing at
+	the floor": a typical over-the-shoulder third-person camera often
+	rests at a mildly downward angle even when the player isn't
+	deliberately looking down, and that small downward tilt, multiplied
+	by IK_TARGET_DISTANCE, was enough to drag the target below torso
+	height every frame by default. Clamping means only a genuinely
+	deliberate, steeper look up/down meaningfully tilts the aim target;
+	the resting camera angle no longer droops the gun on its own.
+]]
 local function computeHandTargetPosition(originPart: BasePart): Vector3
 	local lookVector = camera.CFrame.LookVector
-	return originPart.Position + lookVector * IK_TARGET_DISTANCE
+
+	local horizontal = Vector3.new(lookVector.X, 0, lookVector.Z)
+	local horizontalLength = horizontal.Magnitude
+	if horizontalLength < 0.0001 then
+		-- Looking almost straight up/down: fall back to the origin
+		-- part's own forward direction so there's still a sensible yaw.
+		horizontal = Vector3.new(originPart.CFrame.LookVector.X, 0, originPart.CFrame.LookVector.Z)
+		horizontalLength = horizontal.Magnitude
+		if horizontalLength < 0.0001 then
+			horizontal = Vector3.new(0, 0, -1)
+			horizontalLength = 1
+		end
+	end
+	horizontal = horizontal / horizontalLength -- unit vector, same yaw as the camera
+
+	local rawPitch = math.atan2(lookVector.Y, horizontalLength)
+	local clampedPitch = math.clamp(rawPitch, -math.rad(MAX_PITCH_DEGREES), math.rad(MAX_PITCH_DEGREES))
+
+	-- Same yaw as the camera, but with the clamped (not raw) pitch:
+	-- horizontal component scaled by cos(pitch), vertical by sin(pitch).
+	local direction = Vector3.new(
+		horizontal.X * math.cos(clampedPitch),
+		math.sin(clampedPitch),
+		horizontal.Z * math.cos(clampedPitch)
+	)
+
+	return originPart.Position + direction * IK_TARGET_DISTANCE
 end
+
+local lastDiagnosticPrintTime = 0
 
 local function updateR15(character: Model)
 	if not ikSetupSucceeded then
 		return
 	end
 	local upperTorso = character:FindFirstChild("UpperTorso") :: BasePart?
+	local rightHand = character:FindFirstChild("RightHand") :: BasePart?
 	if not upperTorso or not rightTargetAnchor or not leftTargetAnchor then
 		return
 	end
@@ -267,6 +311,26 @@ local function updateR15(character: Model)
 		local targetPosition = computeHandTargetPosition(upperTorso)
 		rightTargetAnchor.CFrame = CFrame.new(targetPosition)
 		leftTargetAnchor.CFrame = CFrame.new(targetPosition)
+
+		-- DIAGNOSTIC (throttled to once every 3s so it doesn't spam):
+		-- if the gun still points wrong after the pitch-clamp fix,
+		-- this distinguishes "target is at a sensible height but the
+		-- hand's ROTATION is still wrong" (an axis-convention issue
+		-- with IKControl.Type=LookAt, needing a different approach)
+		-- from "the target itself is still off" (position math still
+		-- wrong) — compares the target's height to the torso's, and
+		-- the hand's actual current world position, to the target.
+		local now = os.clock()
+		if rightHand and now - lastDiagnosticPrintTime > 3 then
+			lastDiagnosticPrintTime = now
+			print(
+				("[WeaponAimPose] target.Y-torso.Y=%.2f (should be small/moderate, not sharply negative) | hand pos=%s | target pos=%s"):format(
+					targetPosition.Y - upperTorso.Position.Y,
+					tostring(rightHand.Position),
+					tostring(targetPosition)
+				)
+			)
+		end
 	end)
 
 	if not ok then
