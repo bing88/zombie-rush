@@ -64,6 +64,7 @@ local initialized = false
 
 local ammoChangedCallback: ((string, number, number, boolean) -> ())? = nil
 local localFireCallback: (() -> ())? = nil
+local localMuzzleFlashCallback: ((Vector3) -> ())? = nil
 
 local function statsFor(weaponName: string)
 	return WeaponConfig[weaponName]
@@ -220,7 +221,12 @@ local function tryFire()
 	predictedAmmo[currentWeapon] -= 1
 	updateAmmoUI()
 
-	FireWeapon:FireServer(camera.CFrame.LookVector, getLocalMuzzlePosition())
+	local muzzlePosition = getLocalMuzzlePosition()
+	FireWeapon:FireServer(camera.CFrame.LookVector, muzzlePosition)
+
+	if muzzlePosition and localMuzzleFlashCallback then
+		localMuzzleFlashCallback(muzzlePosition)
+	end
 
 	if localFireCallback then
 		localFireCallback()
@@ -340,6 +346,17 @@ end
 ]]
 function WeaponController.OnLocalFire(callback: () -> ())
 	localFireCallback = callback
+end
+
+--[[
+	Fires with the shooter's own current muzzle position, immediately on
+	every local shot — zero network wait. This is what actually fixes
+	the muzzle flash trailing behind a moving player: the flash it drives
+	(see EffectsController.SpawnLocalMuzzleFlash) never waits on a
+	server round-trip at all for the local player.
+]]
+function WeaponController.OnLocalMuzzleFlash(callback: (Vector3) -> ())
+	localMuzzleFlashCallback = callback
 end
 
 return WeaponController

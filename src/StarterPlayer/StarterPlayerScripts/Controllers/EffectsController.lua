@@ -267,7 +267,22 @@ function EffectsController.Init()
 		origin: Vector3,
 		hits: { HitResult }
 	)
-		spawnBurst(origin, Color3.fromRGB(255, 220, 120), 0.5) -- muzzle flash
+		-- The local shooter already saw their own instant muzzle flash
+		-- the moment they fired (see SpawnLocalMuzzleFlash, called
+		-- directly from WeaponController with zero network round-trip).
+		-- Drawing it AGAIN here, once this broadcast finally arrives
+		-- back after a full client->server->client round trip, is
+		-- exactly the "still trailing" symptom — the origin value was
+		-- already fixed to be accurate, but accuracy doesn't fix
+		-- LATENCY: by the time this event lands, the player has kept
+		-- moving, so a flash appearing only now unavoidably reads as
+		-- behind wherever they currently are. Skipping it here for the
+		-- local player (everyone else still sees it exactly as before)
+		-- is what actually removes the trailing feel, since their own
+		-- flash never waited on the network at all.
+		if shooter ~= localPlayer then
+			spawnBurst(origin, Color3.fromRGB(255, 220, 120), 0.5) -- muzzle flash
+		end
 
 		local firedSound = findFiredSound(shooter, weaponName)
 		if firedSound then
@@ -297,6 +312,20 @@ function EffectsController.Init()
 	Remotes.ZombieExploded.OnClientEvent:Connect(function(position: Vector3, radius: number)
 		spawnExplosion(position, radius)
 	end)
+end
+
+--[[
+	Instant, zero-latency muzzle flash for the local player's own shot —
+	called directly from WeaponController the moment a shot is fired
+	client-side, using the shooter's own current muzzle position, rather
+	than waiting for the server's WeaponFired echo (which is skipped for
+	the local player specifically to avoid a duplicate/second flash —
+	see the Init() handler above). This is the actual fix for "the flash
+	trails behind while moving": it's not a timing/network-bound effect
+	for the shooter at all anymore, just an immediate local visual.
+]]
+function EffectsController.SpawnLocalMuzzleFlash(origin: Vector3)
+	spawnBurst(origin, Color3.fromRGB(255, 220, 120), 0.5)
 end
 
 --[[

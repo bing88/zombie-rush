@@ -16,6 +16,7 @@ local UIController = require(Controllers.UIController)
 local EffectsController = require(Controllers.EffectsController)
 local CameraController = require(Controllers.CameraController)
 local ShopController = require(Controllers.ShopController)
+local WeaponAimPoseController = require(Controllers.WeaponAimPoseController)
 
 UIController.Init()
 CameraController.Init() -- must init before WeaponController: its RenderStepped
@@ -25,6 +26,7 @@ CameraController.Init() -- must init before WeaponController: its RenderStepped
 WeaponController.Init()
 EffectsController.Init()
 ShopController.Init()
+WeaponAimPoseController.Init()
 
 WeaponController.OnAmmoChanged(function(weaponName, current, max, isReloading)
 	UIController.SetAmmo(weaponName, current, max, isReloading)
@@ -32,6 +34,10 @@ end)
 
 WeaponController.OnLocalFire(function()
 	UIController.ShakeAmmoUI()
+end)
+
+WeaponController.OnLocalMuzzleFlash(function(position: Vector3)
+	EffectsController.SpawnLocalMuzzleFlash(position)
 end)
 
 EffectsController.OnLocalHitmarker(function(killed: boolean)
