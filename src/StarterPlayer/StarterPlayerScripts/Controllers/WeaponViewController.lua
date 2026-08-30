@@ -140,6 +140,25 @@ local hasLoggedNoTool = false
 local hasLoggedError = false
 local lastDiagnosticPrintTime = 0
 
+-- Reused across frames rather than creating a brand-new Tween every
+-- single frame (cheaper, and avoids any risk of tween-creation churn
+-- itself being the problem).
+local pitchTween: Tween? = nil
+local pitchTweenTool: Tool? = nil
+
+--[[
+	Switched from direct assignment (tool.Grip = newGrip) to a very
+	short TweenService tween toward the same value. This is a direct
+	test of a real hypothesis: the ONLY Grip-based effect confirmed to
+	actually work visually anywhere in this codebase is the reload dip,
+	which has always used TweenService — direct assignment was never
+	actually verified to be visually respected the same way, and it
+	produced an identical "the data is provably correct, nothing moves"
+	symptom to the earlier IKControl attempt. If tweening fixes it, that
+	confirms direct Grip assignment isn't visually honored the way
+	tweened assignment is, at least for this equipped asset — if it
+	doesn't fix it either, that rules this hypothesis out cleanly.
+]]
 local function updatePitchFollow()
 	if os.clock() < reloadingUntilClock then
 		return -- the reload tween currently owns Grip
@@ -161,7 +180,18 @@ local function updatePitchFollow()
 	local newGrip = defaultGrip * pitchOffset
 
 	local ok, err = pcall(function()
-		tool.Grip = newGrip
+		if pitchTweenTool ~= tool then
+			-- Weapon switched since the last frame — drop the old tween
+			-- reference rather than trying to reuse one bound to a
+			-- different (possibly destroyed) Tool instance.
+			pitchTween = nil
+			pitchTweenTool = tool
+		end
+		if pitchTween then
+			pitchTween:Cancel()
+		end
+		pitchTween = TweenService:Create(tool, TweenInfo.new(0.08, Enum.EasingStyle.Linear), { Grip = newGrip })
+		pitchTween:Play()
 	end)
 
 	if not ok then
@@ -171,7 +201,7 @@ local function updatePitchFollow()
 		-- equipped asset for any reason, this was invisible before.
 		if not hasLoggedError then
 			hasLoggedError = true
-			warn("[WeaponView] tool.Grip assignment errored: " .. tostring(err))
+			warn("[WeaponView] tween-based Grip update errored: " .. tostring(err))
 		end
 		return
 	end
@@ -185,7 +215,7 @@ local function updatePitchFollow()
 		lastDiagnosticPrintTime = now
 		local pitchDegrees = math.deg(math.asin(math.clamp(camera.CFrame.LookVector.Y, -1, 1)))
 		print(
-			("[WeaponView] pitch=%.1f deg | defaultGrip=%s | newGrip set to=%s | tool.Grip actually reads=%s"):format(
+			("[WeaponView] (tween mode) pitch=%.1f deg | defaultGrip=%s | tweenTarget=%s | tool.Grip actually reads=%s"):format(
 				pitchDegrees,
 				tostring(defaultGrip),
 				tostring(newGrip),
