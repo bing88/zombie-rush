@@ -74,6 +74,9 @@ local MAX_PITCH_DEGREES = 55 -- clamps how far the pose tilts at extreme up/down
 local restPoses: { [Motor6D]: CFrame } = {}
 local trackedMotors: { Motor6D } = {}
 local currentRigType: string? = nil -- "R15" | "R6" | nil
+local hasLoggedNoWeaponSkip = false
+local hasLoggedFirstApply = false
+local hasLoggedError = false
 
 local function findMotor(parent: Instance, name: string): Motor6D?
 	local motor = parent:FindFirstChild(name)
@@ -87,6 +90,9 @@ local function setupCharacter(character: Model)
 	restPoses = {}
 	trackedMotors = {}
 	currentRigType = nil
+	hasLoggedNoWeaponSkip = false
+	hasLoggedFirstApply = false
+	hasLoggedError = false
 
 	local upperTorso = character:FindFirstChild("UpperTorso")
 	local torso = character:FindFirstChild("Torso")
@@ -116,6 +122,25 @@ local function setupCharacter(character: Model)
 			table.insert(trackedMotors, motor)
 		end
 	end
+
+	-- DIAGNOSTIC (temporary): confirms setup actually found what it
+	-- expects. If this prints "rig=NONE" or 0 motors, the problem is
+	-- Motor6D/rig detection, not pose math or render timing — check
+	-- this output first before assuming anything else is broken.
+	local motorNames = {}
+	for _, motor in trackedMotors do
+		table.insert(motorNames, motor.Name)
+	end
+	print(
+		("[WeaponAimPose] setupCharacter: rig=%s, tracked %d motor(s): %s"):format(
+			currentRigType or "NONE",
+			#trackedMotors,
+			#motorNames > 0 and table.concat(motorNames, ", ") or "(none found)"
+		)
+	)
+	if #trackedMotors == 0 then
+		warn("[WeaponAimPose] Found zero arm motors — character structure didn't match either R15 or R6 expectations. This controller will do nothing for this character.")
+	end
 end
 
 local function hasEquippedWeapon(character: Model): boolean
@@ -136,7 +161,15 @@ local function update()
 		return
 	end
 	if not hasEquippedWeapon(character) then
-		return -- no weapon equipped: let the default animation play normally
+		-- DIAGNOSTIC (temporary): only logs once so it doesn't spam —
+		-- confirms whether "no Tool found on the character" is why
+		-- nothing is happening (e.g. the Tool isn't actually parented
+		-- directly under the character the way this expects).
+		if not hasLoggedNoWeaponSkip then
+			hasLoggedNoWeaponSkip = true
+			print("[WeaponAimPose] Skipping: no equipped Tool found as a direct child of the character.")
+		end
+		return
 	end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -147,16 +180,34 @@ local function update()
 	local pose = currentRigType == "R15" and R15_POSE or R6_POSE
 	local pitchOffset = getPitchOffset()
 
-	for _, motor in trackedMotors do
-		local baseOffset = pose[motor.Name]
-		if baseOffset then
-			local restC0 = restPoses[motor]
-			if PITCH_TRACKING_MOTOR_NAMES[motor.Name] then
-				motor.C0 = restC0 * pitchOffset * baseOffset
-			else
-				motor.C0 = restC0 * baseOffset
+	local ok, err = pcall(function()
+		for _, motor in trackedMotors do
+			local baseOffset = pose[motor.Name]
+			if baseOffset then
+				local restC0 = restPoses[motor]
+				if PITCH_TRACKING_MOTOR_NAMES[motor.Name] then
+					motor.C0 = restC0 * pitchOffset * baseOffset
+				else
+					motor.C0 = restC0 * baseOffset
+				end
 			end
 		end
+	end)
+
+	if not ok then
+		-- DIAGNOSTIC (temporary): if the pose math itself is erroring
+		-- every frame, a silently-failing BindToRenderStep callback
+		-- could look identical to "doing nothing" from the outside.
+		if not hasLoggedError then
+			hasLoggedError = true
+			warn("[WeaponAimPose] update() errored: " .. tostring(err))
+		end
+		return
+	end
+
+	if not hasLoggedFirstApply then
+		hasLoggedFirstApply = true
+		print("[WeaponAimPose] First successful pose apply this life.")
 	end
 end
 
@@ -178,7 +229,22 @@ function WeaponAimPoseController.Init()
 	-- and was silently overwritten every frame, producing no visible
 	-- effect at all. Last is the latest priority tier RenderStepped
 	-- exposes, giving this the final say each frame.
-	RunService:BindToRenderStep("WeaponAimPose", Enum.RenderPriority.Last.Value + 1, update)
+	--
+	-- Wrapped in pcall: this call sits near the END of ClientMain's
+	-- Init() sequence — if it ever threw unprotected (e.g. a
+	-- BindToRenderStep name collision with something else), Lua halts
+	-- the REST of that script's execution too, which would have
+	-- silently broken every remote-wiring line still below it in
+	-- ClientMain, not just this feature. This print/warn pair also
+	-- confirms whether registration itself is the actual failure point.
+	local ok, err = pcall(function()
+		RunService:BindToRenderStep("WeaponAimPose", Enum.RenderPriority.Last.Value + 1, update)
+	end)
+	if ok then
+		print("[WeaponAimPose] BindToRenderStep registered successfully.")
+	else
+		warn("[WeaponAimPose] BindToRenderStep FAILED to register: " .. tostring(err))
+	end
 end
 
 return WeaponAimPoseController
