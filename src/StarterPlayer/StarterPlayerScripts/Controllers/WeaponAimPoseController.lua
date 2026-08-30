@@ -162,20 +162,40 @@ local function createArmIK(character: Model, humanoid: Humanoid, chainRootPart: 
 	targetAttachment.Name = "IKTargetAttachment_" .. label
 	targetAttachment.Parent = targetAnchor
 
-	-- Parent BEFORE setting the functional properties, not after —
-	-- diagnostic data showed every property "succeeding" (no errors)
-	-- but the hand never actually converging toward the target, which
-	-- is consistent with IKControl needing to already be part of the
-	-- character/Humanoid hierarchy before ChainRoot/EndEffector/Target
-	-- actually take hold, rather than just being set on a
-	-- not-yet-parented instance and carried over on Parent assignment.
+	-- Parent under the Animator (a child of Humanoid), not the Humanoid
+	-- directly. IKControl is fundamentally an animation-system feature
+	-- meant to blend on top of whatever the Animator is already
+	-- playing — Roblox's animation-related runtime objects are
+	-- typically expected to live under the Animator specifically, not
+	-- the Humanoid itself. This is a real, previously-untried gap: the
+	-- last two rounds both "succeeded" on every property assignment
+	-- with zero actual effect (handToTargetDistance never moved off
+	-- ~5), which is consistent with the IKControl existing but never
+	-- being picked up by whatever system actually runs IK solving,
+	-- because it was never where that system looks for it.
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		local createOk, createdOrErr = pcall(function()
+			local newAnimator = Instance.new("Animator")
+			newAnimator.Parent = humanoid
+			return newAnimator
+		end)
+		if createOk then
+			animator = createdOrErr :: Animator
+			print(("[WeaponAimPose] No Animator existed under Humanoid — created one for %s."):format(label))
+		else
+			warn(("[WeaponAimPose] No Animator found and failed to create one for %s: %s"):format(label, tostring(createdOrErr)))
+		end
+	end
+
+	local parentTarget: Instance = animator or humanoid
 	local parentOk, parentErr = pcall(function()
-		ikControl.Parent = humanoid
+		ikControl.Parent = parentTarget
 	end)
 	if parentOk then
-		print(("[WeaponAimPose] IKControl for %s parented under Humanoid successfully."):format(label))
+		print(("[WeaponAimPose] IKControl for %s parented under %s successfully."):format(label, parentTarget.ClassName))
 	else
-		warn(("[WeaponAimPose] Failed to parent IKControl for %s under Humanoid: %s"):format(label, tostring(parentErr)))
+		warn(("[WeaponAimPose] Failed to parent IKControl for %s under %s: %s"):format(label, parentTarget.ClassName, tostring(parentErr)))
 	end
 
 	trySet(ikControl, "ChainRoot", chainRootPart)
@@ -184,6 +204,27 @@ local function createArmIK(character: Model, humanoid: Humanoid, chainRootPart: 
 	trySetType(ikControl)
 	trySet(ikControl, "Weight", 1)
 	trySet(ikControl, "Enabled", true)
+
+	-- Delayed re-check: confirms the IKControl is STILL where we put
+	-- it a moment later, not silently un-parented/rejected by Roblox
+	-- after the fact despite the assignment itself not erroring.
+	task.defer(function()
+		local checkOk, checkErr = pcall(function()
+			print(
+				("[WeaponAimPose] %s post-setup check: Parent=%s, ChainRoot=%s, EndEffector=%s, Target=%s, Enabled=%s"):format(
+					label,
+					ikControl.Parent and ikControl.Parent:GetFullName() or "NIL",
+					tostring((ikControl :: any).ChainRoot),
+					tostring((ikControl :: any).EndEffector),
+					tostring((ikControl :: any).Target),
+					tostring((ikControl :: any).Enabled)
+				)
+			)
+		end)
+		if not checkOk then
+			warn(("[WeaponAimPose] %s post-setup check errored: %s"):format(label, tostring(checkErr)))
+		end
+	end)
 
 	return ikControl, targetAnchor
 end
