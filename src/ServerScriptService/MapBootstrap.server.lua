@@ -26,15 +26,17 @@ if Workspace:FindFirstChild("Map") then
 	return
 end
 
--- Atmosphere: a bit darker/moodier than default Roblox daylight, matching
--- a "zombie outbreak at dusk" tone without needing any custom skybox
--- assets. Cheap and safe — purely Lighting-service property tweaks.
-Lighting.Brightness = 1.4
-Lighting.OutdoorAmbient = Color3.fromRGB(45, 48, 60)
-Lighting.Ambient = Color3.fromRGB(35, 35, 42)
-Lighting.ClockTime = 19.5 -- dusk
-Lighting.FogEnd = 400
-Lighting.FogColor = Color3.fromRGB(40, 42, 55)
+-- Atmosphere: a bit moodier than default Roblox daylight, matching a
+-- "zombie outbreak at dusk" tone, but bright enough that the arena is
+-- actually readable — gameplay visibility wins over mood here. Combined
+-- with real light fixtures scattered through the lobby/corridor/arena
+-- below rather than relying on ambient light alone.
+Lighting.Brightness = 3
+Lighting.OutdoorAmbient = Color3.fromRGB(90, 95, 115)
+Lighting.Ambient = Color3.fromRGB(70, 72, 90)
+Lighting.ClockTime = 18.3 -- early dusk, noticeably brighter than full night
+Lighting.FogEnd = 550
+Lighting.FogColor = Color3.fromRGB(60, 63, 80)
 
 local map = Instance.new("Folder")
 map.Name = "Map"
@@ -251,6 +253,37 @@ local arenaCenterZ = (ARENA_Z_MIN + ARENA_Z_MAX) / 2
 
 makePart("ArenaFloor", Vector3.new(arenaWidth, 2, arenaDepth), Vector3.new(arenaCenterX, 0, arenaCenterZ), Color3.fromRGB(70, 60, 55))
 
+-- Overhead lamp posts spread across the arena floor — previously this
+-- whole area had zero light fixtures (only the lobby/corridor did),
+-- making it read as near-pitch-black despite the global Lighting
+-- brightening above. A 3x3 grid rather than one central light so there's
+-- no single dark corner, including out toward the widened east edge
+-- where the CoverBarrel cluster sits.
+local arenaLampPositions = {
+	Vector3.new(-40, 0, 115), Vector3.new(10, 0, 115), Vector3.new(60, 0, 115),
+	Vector3.new(-40, 0, 150), Vector3.new(10, 0, 150), Vector3.new(60, 0, 150),
+	Vector3.new(-40, 0, 190), Vector3.new(10, 0, 190), Vector3.new(60, 0, 190),
+}
+for i, basePosition in arenaLampPositions do
+	makePart(
+		"ArenaLampPost" .. i,
+		Vector3.new(0.6, 10, 0.6),
+		basePosition + Vector3.new(0, 5, 0),
+		Color3.fromRGB(40, 40, 45)
+	)
+	local fixture = Instance.new("Part")
+	fixture.Name = "ArenaLampHead" .. i
+	fixture.Shape = Enum.PartType.Ball
+	fixture.Anchored = true
+	fixture.CanCollide = false
+	fixture.Size = Vector3.new(1.4, 1.4, 1.4)
+	fixture.Position = basePosition + Vector3.new(0, 10, 0)
+	fixture.Material = Enum.Material.Neon
+	fixture.Color = Color3.fromRGB(255, 238, 200)
+	fixture.Parent = map
+	addPointLight(fixture, Color3.fromRGB(255, 232, 190), 3, 32)
+end
+
 makeMarker("ArenaSpawnPoint", Vector3.new(0, 3, 105))
 
 -- Cover crates scattered through the arena so gunfights aren't just kiting across open ground.
@@ -294,7 +327,8 @@ end
 -- ground for players, and a longer sightline for picking off zombies
 -- approaching from the north spawn ring.
 local CATWALK_HEIGHT = 10
-makePart("CatwalkPlatform", Vector3.new(16, 1, 10), Vector3.new(0, CATWALK_HEIGHT, 175), Color3.fromRGB(70, 70, 78))
+local catwalkPlatform = makePart("CatwalkPlatform", Vector3.new(16, 1, 10), Vector3.new(0, CATWALK_HEIGHT, 175), Color3.fromRGB(70, 70, 78))
+addPointLight(catwalkPlatform, Color3.fromRGB(150, 200, 255), 2, 22)
 makePart("CatwalkRailingLeft", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 170.25), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
 makePart("CatwalkRailingRight", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 179.75), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
 -- The two railings above only guard the north/south edges — without

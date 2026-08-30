@@ -55,6 +55,7 @@ local camera = workspace.CurrentCamera
 
 local currentWeapon = WeaponConfig.StartingWeapon
 local predictedAmmo: { [string]: number } = {} -- [weaponName] = ammo in magazine
+local maxAmmo: { [string]: number } = {} -- [weaponName] = current capacity, server-authoritative once synced
 local reloading: { [string]: boolean } = {} -- [weaponName] = true while reloading
 local reloadDeadline: { [string]: number } = {} -- [weaponName] = os.clock() by which a real reload must have finished
 local lastFireTime = 0
@@ -68,12 +69,25 @@ local function statsFor(weaponName: string)
 	return WeaponConfig[weaponName]
 end
 
+--[[
+	Seeds both ammo and capacity with the weapon's BASE config values as a
+	reasonable guess before the server's first AmmoUpdated arrives for
+	this weapon. This is only ever a starting guess — maxAmmo gets
+	overwritten with the real (possibly upgrade-scaled) capacity by
+	SyncFromServer, which is the actual source of truth. Without tracking
+	maxAmmo separately, the UI would permanently show the un-upgraded
+	base capacity forever, since there'd be nothing else to read it from.
+]]
 local function ensureAmmo(weaponName: string)
+	local stats = statsFor(weaponName)
+	if not stats then
+		return
+	end
 	if predictedAmmo[weaponName] == nil then
-		local stats = statsFor(weaponName)
-		if stats then
-			predictedAmmo[weaponName] = stats.MagazineSize
-		end
+		predictedAmmo[weaponName] = stats.MagazineSize
+	end
+	if maxAmmo[weaponName] == nil then
+		maxAmmo[weaponName] = stats.MagazineSize
 	end
 end
 
@@ -86,7 +100,12 @@ local function updateAmmoUI()
 	if not stats then
 		return
 	end
-	ammoChangedCallback(currentWeapon, predictedAmmo[currentWeapon] or 0, stats.MagazineSize, reloading[currentWeapon] == true)
+	ammoChangedCallback(
+		currentWeapon,
+		predictedAmmo[currentWeapon] or 0,
+		maxAmmo[currentWeapon] or stats.MagazineSize,
+		reloading[currentWeapon] == true
+	)
 end
 
 --[[
@@ -143,7 +162,7 @@ local function checkReloadWatchdog()
 			reloading[weaponName] = false
 			local stats = statsFor(weaponName)
 			if stats then
-				predictedAmmo[weaponName] = stats.MagazineSize
+				predictedAmmo[weaponName] = maxAmmo[weaponName] or stats.MagazineSize
 			end
 			if weaponName == currentWeapon then
 				updateAmmoUI()
@@ -222,6 +241,7 @@ function WeaponController.Init()
 	end
 	player.CharacterAdded:Connect(function(character)
 		predictedAmmo = {}
+		maxAmmo = {}
 		reloading = {}
 		reloadDeadline = {}
 		watchContainer(character)
@@ -255,7 +275,7 @@ function WeaponController.RequestReload()
 		return
 	end
 	ensureAmmo(currentWeapon)
-	if (predictedAmmo[currentWeapon] or 0) >= stats.MagazineSize then
+	if (predictedAmmo[currentWeapon] or 0) >= (maxAmmo[currentWeapon] or stats.MagazineSize) then
 		return
 	end
 	-- Deliberately NOT gated on the local `reloading` flag: the server is
@@ -268,6 +288,7 @@ end
 
 function WeaponController.SyncFromServer(weaponName: string, current: number, max: number, isReloading: boolean)
 	predictedAmmo[weaponName] = current
+	maxAmmo[weaponName] = max
 	reloading[weaponName] = isReloading
 	if isReloading then
 		local stats = statsFor(weaponName)

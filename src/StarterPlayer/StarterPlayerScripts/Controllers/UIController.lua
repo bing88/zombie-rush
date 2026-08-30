@@ -46,6 +46,7 @@ local scoreboardRowsHolder: Frame
 local leaderboardPanel: Frame
 local leaderboardRowsHolder: Frame
 local leaderboardTabButton: TextButton
+local leaderboardCloseCallback: (() -> ())? = nil
 
 local toastHideThread: thread? = nil
 local downedCountdownThread: thread? = nil
@@ -108,6 +109,15 @@ local function buildUI()
 	-- wave counter) render underneath/overlapping it.
 	screenGui.IgnoreGuiInset = false
 	screenGui.Parent = player:WaitForChild("PlayerGui")
+
+	-- Uniformly scales every descendant's Size/Position offsets AND text
+	-- size — the whole HUD was sized for desktop and read as oversized on
+	-- narrower/mobile screens. 0.5 shrinks everything (buttons, labels,
+	-- text) as one unit; retune this single number rather than touching
+	-- individual element sizes if it needs further adjustment.
+	local uiScale = Instance.new("UIScale")
+	uiScale.Scale = 0.5
+	uiScale.Parent = screenGui
 
 	buildCrosshair(screenGui)
 
@@ -551,6 +561,28 @@ local function buildUI()
 	leaderboardCorner.CornerRadius = UDim.new(0, 8)
 	leaderboardCorner.Parent = leaderboardPanel
 
+	local leaderboardCloseButton = Instance.new("TextButton")
+	leaderboardCloseButton.Name = "CloseButton"
+	leaderboardCloseButton.AnchorPoint = Vector2.new(1, 0)
+	leaderboardCloseButton.Position = UDim2.new(1, -8, 0, 8)
+	leaderboardCloseButton.Size = UDim2.fromOffset(24, 24)
+	leaderboardCloseButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	leaderboardCloseButton.TextColor3 = Color3.new(1, 1, 1)
+	leaderboardCloseButton.Font = Enum.Font.GothamBold
+	leaderboardCloseButton.TextSize = 16
+	leaderboardCloseButton.Text = "X"
+	leaderboardCloseButton.Parent = leaderboardPanel
+
+	local leaderboardCloseCorner = Instance.new("UICorner")
+	leaderboardCloseCorner.CornerRadius = UDim.new(0, 4)
+	leaderboardCloseCorner.Parent = leaderboardCloseButton
+
+	leaderboardCloseButton.Activated:Connect(function()
+		if leaderboardCloseCallback then
+			leaderboardCloseCallback()
+		end
+	end)
+
 	local leaderboardTitle = Instance.new("TextLabel")
 	leaderboardTitle.Size = UDim2.new(1, 0, 0, 36)
 	leaderboardTitle.BackgroundTransparency = 1
@@ -959,9 +991,22 @@ function UIController.OnLeaderboardTabPressed(callback: () -> ())
 	end
 end
 
-function UIController.ToggleLeaderboard()
+--[[
+	Registers the callback fired when the panel's own close (X) button is
+	pressed. Kept as a callback (rather than the panel just hiding itself
+	directly) so ClientMain's tracked "is it open" state and the panel's
+	actual visibility can never drift apart — there's exactly one place
+	(ClientMain) that decides open/closed, and both the tab button and
+	the X button just ask it to change that state rather than mutating
+	Visible directly themselves.
+]]
+function UIController.OnLeaderboardClosePressed(callback: () -> ())
+	leaderboardCloseCallback = callback
+end
+
+function UIController.SetLeaderboardVisible(visible: boolean)
 	if leaderboardPanel then
-		leaderboardPanel.Visible = not leaderboardPanel.Visible
+		leaderboardPanel.Visible = visible
 	end
 end
 

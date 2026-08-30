@@ -46,19 +46,30 @@ UIController.OnFireButtonStateChanged(function(held: boolean)
 	WeaponController.SetFireButtonHeld(held)
 end)
 
--- Leaderboard: toggle via on-screen tab or the L key; request fresh data
--- each time it's opened (not kept live-updating while open — a match
--- result only changes the underlying data at most once every few
--- minutes, so there's no need for anything more than "ask on open").
+-- Leaderboard: opened via the on-screen tab or the L key (both refresh
+-- data on open), closed via the panel's own X button or L again. State
+-- is tracked here as the single source of truth so the tab/X/L-key
+-- paths can never leave the panel's Visible property out of sync with
+-- what the rest of the client thinks is open.
 local leaderboardOpen = false
+local function openLeaderboard()
+	leaderboardOpen = true
+	UIController.SetLeaderboardVisible(true)
+	Remotes.RequestLeaderboard:FireServer()
+end
+local function closeLeaderboard()
+	leaderboardOpen = false
+	UIController.SetLeaderboardVisible(false)
+end
 local function toggleLeaderboard()
-	leaderboardOpen = not leaderboardOpen
-	UIController.ToggleLeaderboard()
 	if leaderboardOpen then
-		Remotes.RequestLeaderboard:FireServer()
+		closeLeaderboard()
+	else
+		openLeaderboard()
 	end
 end
-UIController.OnLeaderboardTabPressed(toggleLeaderboard)
+UIController.OnLeaderboardTabPressed(openLeaderboard) -- re-tapping the tab while open just refreshes, which is harmless
+UIController.OnLeaderboardClosePressed(closeLeaderboard)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return

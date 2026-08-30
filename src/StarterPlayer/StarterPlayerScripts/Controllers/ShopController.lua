@@ -91,6 +91,12 @@ local function buildUI()
 	screenGui.ResetOnSpawn = false
 	screenGui.Parent = player:WaitForChild("PlayerGui")
 
+	-- Matches UIController's HUD scaling so the upgrade panel doesn't
+	-- look oversized relative to the rest of the shrunk-down HUD.
+	local uiScale = Instance.new("UIScale")
+	uiScale.Scale = 0.5
+	uiScale.Parent = screenGui
+
 	-- Tab button: always visible, toggles the panel. Bottom-left, clear
 	-- of the HP bar / ammo / fire button clusters elsewhere on screen.
 	tabButton = Instance.new("TextButton")
@@ -118,6 +124,26 @@ local function buildUI()
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 8)
 	corner.Parent = panel
+
+	local closeButton = Instance.new("TextButton")
+	closeButton.Name = "CloseButton"
+	closeButton.AnchorPoint = Vector2.new(1, 0)
+	closeButton.Position = UDim2.new(1, -8, 0, 8)
+	closeButton.Size = UDim2.fromOffset(24, 24)
+	closeButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	closeButton.TextColor3 = Color3.new(1, 1, 1)
+	closeButton.Font = Enum.Font.GothamBold
+	closeButton.TextSize = 16
+	closeButton.Text = "X"
+	closeButton.Parent = panel
+
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(0, 4)
+	closeCorner.Parent = closeButton
+
+	closeButton.Activated:Connect(function()
+		setPanelVisible(false)
+	end)
 
 	local title = Instance.new("TextLabel")
 	title.Size = UDim2.new(1, 0, 0, 36)
