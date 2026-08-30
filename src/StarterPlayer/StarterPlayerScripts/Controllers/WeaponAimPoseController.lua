@@ -151,17 +151,24 @@ local function createArmIK(character: Model, humanoid: Humanoid, chainRootPart: 
 	targetAnchor.Size = Vector3.new(0.2, 0.2, 0.2)
 	targetAnchor.Parent = character
 
-	trySet(ikControl, "ChainRoot", chainRootPart)
-	trySet(ikControl, "EndEffector", endEffectorPart)
-	trySet(ikControl, "Target", targetAnchor)
-	trySetType(ikControl)
-	trySet(ikControl, "Weight", 1)
-	trySet(ikControl, "Enabled", true)
+	-- Target is an Attachment (identity offset, so it exactly tracks
+	-- targetAnchor's own CFrame every frame), not the Part directly —
+	-- Roblox's constraint system consistently anchors to Attachments
+	-- (BallSocketConstraint, RopeConstraint, etc.), and assigning a raw
+	-- Part where an Attachment was expected can be silently accepted as
+	-- "a valid Instance reference" without actually being usable,
+	-- which fits the symptom: no error, but zero actual effect.
+	local targetAttachment = Instance.new("Attachment")
+	targetAttachment.Name = "IKTargetAttachment_" .. label
+	targetAttachment.Parent = targetAnchor
 
-	-- Uncertain where this actually needs to live to take effect —
-	-- trying Humanoid first as the most likely candidate. If nothing
-	-- visibly happens even with all properties above reporting success,
-	-- this parenting choice is the next thing to question.
+	-- Parent BEFORE setting the functional properties, not after —
+	-- diagnostic data showed every property "succeeding" (no errors)
+	-- but the hand never actually converging toward the target, which
+	-- is consistent with IKControl needing to already be part of the
+	-- character/Humanoid hierarchy before ChainRoot/EndEffector/Target
+	-- actually take hold, rather than just being set on a
+	-- not-yet-parented instance and carried over on Parent assignment.
 	local parentOk, parentErr = pcall(function()
 		ikControl.Parent = humanoid
 	end)
@@ -170,6 +177,13 @@ local function createArmIK(character: Model, humanoid: Humanoid, chainRootPart: 
 	else
 		warn(("[WeaponAimPose] Failed to parent IKControl for %s under Humanoid: %s"):format(label, tostring(parentErr)))
 	end
+
+	trySet(ikControl, "ChainRoot", chainRootPart)
+	trySet(ikControl, "EndEffector", endEffectorPart)
+	trySet(ikControl, "Target", targetAttachment)
+	trySetType(ikControl)
+	trySet(ikControl, "Weight", 1)
+	trySet(ikControl, "Enabled", true)
 
 	return ikControl, targetAnchor
 end
@@ -313,21 +327,22 @@ local function updateR15(character: Model)
 		leftTargetAnchor.CFrame = CFrame.new(targetPosition)
 
 		-- DIAGNOSTIC (throttled to once every 3s so it doesn't spam):
-		-- if the gun still points wrong after the pitch-clamp fix,
-		-- this distinguishes "target is at a sensible height but the
-		-- hand's ROTATION is still wrong" (an axis-convention issue
-		-- with IKControl.Type=LookAt, needing a different approach)
-		-- from "the target itself is still off" (position math still
-		-- wrong) — compares the target's height to the torso's, and
-		-- the hand's actual current world position, to the target.
+		-- the KEY number now is handToTargetDistance — if IK is
+		-- actually pulling the hand toward the target, this should
+		-- shrink toward ~0. Previous data showed it staying flat
+		-- around IK_TARGET_DISTANCE regardless of camera direction,
+		-- which is the actual signal that IK wasn't taking effect at
+		-- all (the hand was just sitting wherever the default holding
+		-- animation put it, never actually converging on the target).
 		local now = os.clock()
 		if rightHand and now - lastDiagnosticPrintTime > 3 then
 			lastDiagnosticPrintTime = now
+			local handToTargetDistance = (rightHand.Position - targetPosition).Magnitude
 			print(
-				("[WeaponAimPose] target.Y-torso.Y=%.2f (should be small/moderate, not sharply negative) | hand pos=%s | target pos=%s"):format(
-					targetPosition.Y - upperTorso.Position.Y,
-					tostring(rightHand.Position),
-					tostring(targetPosition)
+				("[WeaponAimPose] handToTargetDistance=%.2f (should shrink toward 0 if IK is working; ~%.0f regardless of camera = IK not converging) | target.Y-torso.Y=%.2f"):format(
+					handToTargetDistance,
+					IK_TARGET_DISTANCE,
+					targetPosition.Y - upperTorso.Position.Y
 				)
 			)
 		end
