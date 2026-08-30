@@ -4,6 +4,10 @@
 *.rbxm
 *.rbxmx
 
+# ...except source model assets synced in via Rojo $path (not build output)
+!src/**/*.rbxm
+!src/**/*.rbxmx
+
 # OS / editor cruft
 .DS_Store
 .vscode/*

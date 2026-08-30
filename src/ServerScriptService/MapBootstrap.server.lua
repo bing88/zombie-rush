@@ -2,17 +2,28 @@
 	MapBootstrap.server.lua
 
 	Tier 1 map: Lobby (shop + upgrade stalls, teleport pad, safe — no
-	zombies) and Arena (cover crates/barrels + dividing walls carving
-	sub-corridors + a raised catwalk for verticality), per the Tier 1
-	checklist ("1 map... cover, corridors, shop area"). The two are
-	sealed off from each other — no walkable path between them — since
-	the teleport pad (see WaveService) is the only way a match actually
-	starts; a corridor connecting them physically was removed once that
-	became true, since nothing ever needed to walk through it. Still
-	placeholder blocky geometry — no art pipeline exists yet, same
-	rationale as Tier 0's baseplate — but laid out with actual
-	level-design intent instead of one flat slab, plus basic
-	Lighting-service atmosphere (dusk, fog, ambient tint).
+	zombies) and Arena, per the Tier 1 checklist ("1 map... cover,
+	corridors, shop area"). The two are sealed off from each other — no
+	walkable path between them — since the teleport pad (see
+	WaveService) is the only way a match actually starts.
+
+	Both the lobby and the arena now load real provided assets instead
+	of placeholder blocky geometry, each via the same pattern: a synced-
+	in local .rbxm (see below) as the primary source, falling back to a
+	hand-built procedural version if that's ever missing or turns out to
+	contain no usable geometry — so the bootstrap never leaves the map
+	half-built. The **lobby** uses the "Lobby" sub-model out of the
+	"Game Lobby" kit (see loadGameLobbyArena), synced in from
+	src/ServerStorage/MapAssets/Game_Lobby.rbxm; every functional lobby
+	fixture (spawn, shop/upgrade stalls, monument, teleport pad) is
+	positioned relative to — and scaled to fit — whichever lobby
+	actually got built, rather than assuming a fixed size. The **arena**
+	uses the "L4D Subway Map" community asset (see loadSubwayMapArena),
+	synced in from src/ServerStorage/MapAssets/L4D_Subway_Map.rbxm — no
+	live AssetService:LoadAssetAsync call needed for either asset in the
+	common case (that's kept only as a secondary fallback if a local
+	file is ever missing). Plus basic Lighting-service atmosphere (dusk,
+	fog, ambient tint).
 
 	Idempotent: skips building if the "Map" folder already exists (e.g. a
 	server soft-restart without a full place reload).
@@ -25,6 +36,8 @@
 
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
+local AssetService = game:GetService("AssetService")
+local ServerStorage = game:GetService("ServerStorage")
 
 if Workspace:FindFirstChild("Map") then
 	return
@@ -143,32 +156,155 @@ end
 -- ============================== LOBBY ==============================
 -- Safe zone: no zombies ever spawn here (WaveService only spawns in Wave/Boss states, always in the arena).
 
-makePart("LobbyFloor", Vector3.new(50, 2, 50), Vector3.new(0, 0, 0), Color3.fromRGB(65, 65, 72))
+--[[
+	Original hand-built lobby (flat floor slab + 4 solid perimeter
+	walls) — kept as the fallback for loadGameLobbyArena() below, the
+	same role buildProceduralArenaFallback plays for the arena. Returns
+	the lobby's world-space horizontal center at floor height (Y = 1)
+	and its (X, Y, Z) extents, matching that same convention, so every
+	functional lobby fixture below (spawn, stalls, monument, teleport
+	pad) can be positioned relative to it regardless of which lobby
+	actually got built.
+]]
+local function buildProceduralLobbyFallback(): (Vector3, Vector3)
+	makePart("LobbyFloor", Vector3.new(50, 2, 50), Vector3.new(0, 0, 0), Color3.fromRGB(65, 65, 72))
 
+	local LOBBY_WALL_HEIGHT = 12
+	local lobbyWallColor = Color3.fromRGB(50, 50, 58)
+	makePart("LobbyWallSouth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, -25), lobbyWallColor)
+	makePart("LobbyWallWest", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(-25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
+	makePart("LobbyWallEast", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
+	makePart("LobbyWallNorth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, 25), lobbyWallColor)
+
+	return Vector3.new(0, 1, 0), Vector3.new(50, LOBBY_WALL_HEIGHT, 50)
+end
+
+-- "Game Lobby" asset, provided directly as
+-- src/ServerStorage/MapAssets/Game_Lobby.rbxm, synced in by Rojo at
+-- ServerStorage.MapAssets.Game_Lobby. Verified by inspecting the file
+-- directly: it's a big multi-purpose kit — 2 police cars w/ lightbars +
+-- sirens, a gate, a road/tunnel test track, ~30 repeated barrier "Wall"
+-- pieces, its own scripted systems (steering, gate triggers, siren/
+-- light toggles) — bundled alongside the actual lobby building, which
+-- is its own child Model specifically named "Lobby". Only that one
+-- child is used below; everything else in the kit (vehicles, gate,
+-- road, tunnel, and all of its scripts) is ignored entirely.
+local GAME_LOBBY_CHILD_NAME = "Lobby"
+
+local function getLocalGameLobbyTemplate(): Model?
+	local mapAssets = ServerStorage:FindFirstChild("MapAssets")
+	local kit = mapAssets and mapAssets:FindFirstChild("Game_Lobby")
+	local lobbyPiece = kit and kit:FindFirstChild(GAME_LOBBY_CHILD_NAME, true)
+	if not lobbyPiece or not lobbyPiece:IsA("Model") then
+		return nil
+	end
+	return lobbyPiece:Clone()
+end
+
+--[[
+	Loads the Game_Lobby asset's "Lobby" sub-model to use instead of
+	buildProceduralLobbyFallback() above. Same defensive pattern as
+	loadSubwayMapArena: strips any Script/LocalScript, force-Anchors
+	every part, and — since there's no reliable signal for which way it
+	"faces" or how big it really is — does a translate-only move so its
+	bounding box's bottom-center sits at the world origin (floor Y = 1),
+	then reports its real size back so every fixture below (spawn,
+	stalls, monument, teleport pad) can scale its position to actually
+	land inside it instead of assuming the old fixed 50x50 footprint.
+	Falls back to the procedural lobby if the local asset is missing,
+	the "Lobby" child isn't found inside it, or it turns out to contain
+	no usable geometry.
+]]
+local function loadGameLobbyArena(): (Model?, Vector3?, Vector3?)
+	local template = getLocalGameLobbyTemplate()
+	if not template then
+		warn("MapBootstrap: no usable 'Lobby' model found in ServerStorage.MapAssets.Game_Lobby — falling back to the built-in procedural lobby.")
+		return nil, nil, nil
+	end
+
+	local partCount = 0
+	for _, descendant in template:GetDescendants() do
+		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
+			descendant:Destroy()
+		elseif descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.Archivable = true
+			partCount += 1
+		end
+	end
+
+	if partCount == 0 then
+		warn("MapBootstrap: Game_Lobby's 'Lobby' model contained no usable parts — falling back to the built-in procedural lobby.")
+		template:Destroy()
+		return nil, nil, nil
+	end
+
+	template.Name = "GameLobbyBuilding"
+	template.Archivable = true
+
+	local boundingOk, boundingCFrame, boundingSize = pcall(function()
+		return template:GetBoundingBox()
+	end)
+	if not boundingOk then
+		warn(("MapBootstrap: Game_Lobby's 'Lobby' model GetBoundingBox() failed (%s) — falling back to the built-in procedural lobby."):format(tostring(boundingCFrame)))
+		template:Destroy()
+		return nil, nil, nil
+	end
+
+	local currentBottomCenter = boundingCFrame.Position - Vector3.new(0, boundingSize.Y / 2, 0)
+	local targetFloorCenter = Vector3.new(0, 1, 0)
+	local delta = targetFloorCenter - currentBottomCenter
+	template:PivotTo(template:GetPivot() + delta)
+	template.Parent = map
+
+	return template, targetFloorCenter, boundingSize
+end
+
+local lobbyModel, lobbyWorldCenter, lobbyWorldSize = loadGameLobbyArena()
+if not lobbyModel then
+	lobbyWorldCenter, lobbyWorldSize = buildProceduralLobbyFallback()
+end
+assert(lobbyWorldCenter and lobbyWorldSize)
+
+-- Every fixture below was originally designed for the procedural
+-- lobby's fixed 50x50 footprint (half-extent 25 on both axes) — scaled
+-- here so they still land inside whichever lobby actually got built
+-- above instead of assuming that exact size. Clamped so a wildly
+-- small/large real asset doesn't push fixtures absurdly close together
+-- or out past its walls. Still just a best-effort fit — verify in
+-- Studio that nothing lands inside a wall/pillar of the real building.
+local LOBBY_REFERENCE_HALF_EXTENT = 25
+local lobbyScaleX = math.clamp((lobbyWorldSize.X / 2) / LOBBY_REFERENCE_HALF_EXTENT, 0.4, 3)
+local lobbyScaleZ = math.clamp((lobbyWorldSize.Z / 2) / LOBBY_REFERENCE_HALF_EXTENT, 0.4, 3)
+
+local function lobbyPoint(offsetX: number, height: number, offsetZ: number): Vector3
+	return lobbyWorldCenter + Vector3.new(offsetX * lobbyScaleX, height, offsetZ * lobbyScaleZ)
+end
+
+local playerSpawnPosition = lobbyPoint(0, 0.5, -18)
 local playerSpawn = Instance.new("SpawnLocation")
 playerSpawn.Name = "PlayerSpawn"
 playerSpawn.Anchored = true
 playerSpawn.Size = Vector3.new(8, 1, 8)
-playerSpawn.Position = Vector3.new(0, 1.5, -18)
+playerSpawn.Position = playerSpawnPosition
 playerSpawn.Transparency = 1
 playerSpawn.CanCollide = true
 playerSpawn.Duration = 0 -- no forcefield after spawning
 playerSpawn.Parent = map
 
-makeMarker("LobbySpawnPoint", Vector3.new(0, 3, -18))
+makeMarker("LobbySpawnPoint", playerSpawnPosition + Vector3.new(0, 1.5, 0))
 
 -- Lobby landmark: a simple abstract monument between spawn and the
 -- teleport pad, purely decorative — gives the lobby a focal point
 -- instead of just being a flat room with stalls around the edges.
--- Small footprint so it doesn't block the walk path in a 50x50 room.
-local monumentBase = makePart("MonumentBase", Vector3.new(4, 1, 4), Vector3.new(0, 0.5, -6), Color3.fromRGB(50, 50, 55))
-local monumentPillar = makePart("MonumentPillar", Vector3.new(1.5, 6, 1.5), Vector3.new(0, 4, -6), Color3.fromRGB(80, 80, 88))
+local monumentBase = makePart("MonumentBase", Vector3.new(4, 1, 4), lobbyPoint(0, 0.5, -6), Color3.fromRGB(50, 50, 55))
+local monumentPillar = makePart("MonumentPillar", Vector3.new(1.5, 6, 1.5), lobbyPoint(0, 4, -6), Color3.fromRGB(80, 80, 88))
 local monumentTop = Instance.new("Part")
 monumentTop.Name = "MonumentTop"
 monumentTop.Shape = Enum.PartType.Ball
 monumentTop.Anchored = true
 monumentTop.Size = Vector3.new(2.5, 2.5, 2.5)
-monumentTop.Position = Vector3.new(0, 8.5, -6)
+monumentTop.Position = lobbyPoint(0, 8.5, -6)
 monumentTop.Material = Enum.Material.Neon
 monumentTop.Color = Color3.fromRGB(90, 220, 130)
 monumentTop.Parent = map
@@ -176,8 +312,8 @@ addPointLight(monumentTop, Color3.fromRGB(90, 220, 130), 3, 24)
 addLabel(monumentPillar, "ZOMBIE RUSH")
 
 local weaponStalls = {
-	{ Name = "Stall_BuyAssaultRifle", Position = Vector3.new(-18, 2.5, -20), Title = "Assault Rifle", Price = 150 },
-	{ Name = "Stall_BuyShotgun", Position = Vector3.new(-18, 2.5, -8), Title = "Shotgun", Price = 300 },
+	{ Name = "Stall_BuyAssaultRifle", Position = lobbyPoint(-18, 2.5, -20), Title = "Assault Rifle", Price = 150 },
+	{ Name = "Stall_BuyShotgun", Position = lobbyPoint(-18, 2.5, -8), Title = "Shotgun", Price = 300 },
 }
 for _, data in weaponStalls do
 	local podium = makePart(data.Name, Vector3.new(4, 3, 4), data.Position, Color3.fromRGB(60, 90, 140))
@@ -187,9 +323,9 @@ for _, data in weaponStalls do
 end
 
 local upgradeStalls = {
-	{ Name = "Stall_UpgradePistol", Position = Vector3.new(18, 2.5, -20), Title = "Pistol Upgrade" },
-	{ Name = "Stall_UpgradeAssaultRifle", Position = Vector3.new(18, 2.5, -8), Title = "AR Upgrade" },
-	{ Name = "Stall_UpgradeShotgun", Position = Vector3.new(18, 2.5, 4), Title = "Shotgun Upgrade" },
+	{ Name = "Stall_UpgradePistol", Position = lobbyPoint(18, 2.5, -20), Title = "Pistol Upgrade" },
+	{ Name = "Stall_UpgradeAssaultRifle", Position = lobbyPoint(18, 2.5, -8), Title = "AR Upgrade" },
+	{ Name = "Stall_UpgradeShotgun", Position = lobbyPoint(18, 2.5, 4), Title = "Shotgun Upgrade" },
 }
 for _, data in upgradeStalls do
 	local podium = makePart(data.Name, Vector3.new(4, 3, 4), data.Position, Color3.fromRGB(140, 110, 40))
@@ -205,7 +341,7 @@ end
 local teleportPad = makePart(
 	"Stall_TeleportPad",
 	Vector3.new(10, 1, 10),
-	Vector3.new(0, 0.5, 5),
+	lobbyPoint(0, 0.5, 5),
 	Color3.fromRGB(60, 200, 220),
 	{ Material = Enum.Material.Neon }
 )
@@ -213,158 +349,280 @@ addLabel(teleportPad, "START MATCH", "Step here")
 addPrompt(teleportPad, "StartMatch", "Start Match", "Teleporter")
 addPointLight(teleportPad, Color3.fromRGB(60, 200, 220), 4, 20)
 
--- Perimeter walls flush with the lobby floor's actual edges (X ±25,
--- Z -25). Fully solid on all 4 sides — no corridor to leave a doorway
--- gap for anymore (see below): the lobby and arena are only connected
--- via the teleport pad now, not a walkable path, so there's nothing to
--- physically open a wall for.
-local LOBBY_WALL_HEIGHT = 12
-local lobbyWallColor = Color3.fromRGB(50, 50, 58)
-makePart("LobbyWallSouth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, -25), lobbyWallColor)
-makePart("LobbyWallWest", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(-25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
-makePart("LobbyWallEast", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
-makePart("LobbyWallNorth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, 25), lobbyWallColor)
-
 -- Match starts via the teleport pad now (see WaveService), not by
 -- walking from the lobby into the arena — the corridor that used to
 -- physically connect them served no purpose once that changed and was
 -- removed. LOBBY_ARENA_BOUNDARY_Z is kept as a plain reference value
 -- (not real geometry) purely because the fall-safety-net recovery logic
 -- further down still needs a Z threshold to guess "were they in the
--- lobby or the arena" when someone falls through the map.
-local LOBBY_ARENA_BOUNDARY_Z = 95
+-- lobby or the arena" when someone falls through the map — now derived
+-- from the lobby's real far edge (whichever lobby actually got built)
+-- plus a fixed gap, instead of a fixed 95, and loadSubwayMapArena below
+-- uses it the same way to place the arena just past that edge.
+local LOBBY_ARENA_GAP = 20
+local LOBBY_ARENA_BOUNDARY_Z = lobbyWorldCenter.Z + lobbyWorldSize.Z / 2 + LOBBY_ARENA_GAP
 
 -- ============================== ARENA ==============================
--- X range widened east (-55..80, vs. a symmetric -55..55) to actually
--- reach under the CoverBarrel cluster below (placed as far out as
--- X = 75) — that cluster used to float past the floor's old edge with
--- nothing underneath, an easy way to fall straight through the map.
-
+-- Target footprint used as the placement target below regardless of
+-- which arena actually ends up getting built — X widened east (vs. a
+-- symmetric range) purely so the procedural fallback's CoverBarrel
+-- cluster (placed as far out as X = 75) has floor underneath it. Z
+-- starts right at LOBBY_ARENA_BOUNDARY_Z (just past whichever lobby
+-- actually got built above) instead of a fixed 95, so it can't end up
+-- overlapping a much bigger real lobby asset.
 local ARENA_X_MIN, ARENA_X_MAX = -55, 80
-local ARENA_Z_MIN, ARENA_Z_MAX = 95, 205
+local ARENA_Z_MIN, ARENA_Z_MAX = LOBBY_ARENA_BOUNDARY_Z, LOBBY_ARENA_BOUNDARY_Z + 110
 local arenaWidth = ARENA_X_MAX - ARENA_X_MIN
 local arenaDepth = ARENA_Z_MAX - ARENA_Z_MIN
 local arenaCenterX = (ARENA_X_MIN + ARENA_X_MAX) / 2
 local arenaCenterZ = (ARENA_Z_MIN + ARENA_Z_MAX) / 2
 
-makePart("ArenaFloor", Vector3.new(arenaWidth, 2, arenaDepth), Vector3.new(arenaCenterX, 0, arenaCenterZ), Color3.fromRGB(70, 60, 55))
+--[[
+	The original hand-built arena (cover crates/barrels, dividing walls,
+	a raised catwalk with ramps + railings, its own perimeter walls) —
+	kept intact as the fallback for loadSubwayMapArena() below, since
+	that loads an unknown community asset that might fail to load or
+	turn out not to actually contain usable geometry.
 
--- Overhead lamp posts spread across the arena floor — previously this
--- whole area had zero light fixtures (only the lobby/corridor did),
--- making it read as near-pitch-black despite the global Lighting
--- brightening above. A 3x3 grid rather than one central light so there's
--- no single dark corner, including out toward the widened east edge
--- where the CoverBarrel cluster sits.
-local arenaLampPositions = {
-	Vector3.new(-40, 0, 115), Vector3.new(10, 0, 115), Vector3.new(60, 0, 115),
-	Vector3.new(-40, 0, 150), Vector3.new(10, 0, 150), Vector3.new(60, 0, 150),
-	Vector3.new(-40, 0, 190), Vector3.new(10, 0, 190), Vector3.new(60, 0, 190),
-}
-for i, basePosition in arenaLampPositions do
-	makePart(
-		"ArenaLampPost" .. i,
-		Vector3.new(0.6, 10, 0.6),
-		basePosition + Vector3.new(0, 5, 0),
-		Color3.fromRGB(40, 40, 45)
-	)
-	local fixture = Instance.new("Part")
-	fixture.Name = "ArenaLampHead" .. i
-	fixture.Shape = Enum.PartType.Ball
-	fixture.Anchored = true
-	fixture.CanCollide = false
-	fixture.Size = Vector3.new(1.4, 1.4, 1.4)
-	fixture.Position = basePosition + Vector3.new(0, 10, 0)
-	fixture.Material = Enum.Material.Neon
-	fixture.Color = Color3.fromRGB(255, 238, 200)
-	fixture.Parent = map
-	addPointLight(fixture, Color3.fromRGB(255, 232, 190), 3, 32)
+	Returns the arena's world-space horizontal center at floor height
+	(Y = 1, matching every other floor's top surface) and its (X, Y, Z)
+	extents, so the caller can place ArenaSpawnPoint/ZombieSpawns and
+	size the outer boundary the same way regardless of which arena
+	actually got built.
+]]
+local function buildProceduralArenaFallback(): (Vector3, Vector3)
+	makePart("ArenaFloor", Vector3.new(arenaWidth, 2, arenaDepth), Vector3.new(arenaCenterX, 0, arenaCenterZ), Color3.fromRGB(70, 60, 55))
+
+	-- Overhead lamp posts spread across the arena floor — a 3x3 grid
+	-- rather than one central light so there's no single dark corner,
+	-- including out toward the widened east edge where the CoverBarrel
+	-- cluster sits.
+	local arenaLampPositions = {
+		Vector3.new(-40, 0, 115), Vector3.new(10, 0, 115), Vector3.new(60, 0, 115),
+		Vector3.new(-40, 0, 150), Vector3.new(10, 0, 150), Vector3.new(60, 0, 150),
+		Vector3.new(-40, 0, 190), Vector3.new(10, 0, 190), Vector3.new(60, 0, 190),
+	}
+	for i, basePosition in arenaLampPositions do
+		makePart(
+			"ArenaLampPost" .. i,
+			Vector3.new(0.6, 10, 0.6),
+			basePosition + Vector3.new(0, 5, 0),
+			Color3.fromRGB(40, 40, 45)
+		)
+		local fixture = Instance.new("Part")
+		fixture.Name = "ArenaLampHead" .. i
+		fixture.Shape = Enum.PartType.Ball
+		fixture.Anchored = true
+		fixture.CanCollide = false
+		fixture.Size = Vector3.new(1.4, 1.4, 1.4)
+		fixture.Position = basePosition + Vector3.new(0, 10, 0)
+		fixture.Material = Enum.Material.Neon
+		fixture.Color = Color3.fromRGB(255, 238, 200)
+		fixture.Parent = map
+		addPointLight(fixture, Color3.fromRGB(255, 232, 190), 3, 32)
+	end
+
+	-- Cover crates scattered through the arena so gunfights aren't just kiting across open ground.
+	local coverPositions = {
+		Vector3.new(-25, 3, 120), Vector3.new(20, 3, 115), Vector3.new(0, 3, 138),
+		Vector3.new(-15, 3, 158), Vector3.new(35, 3, 165), Vector3.new(-38, 3, 178),
+		Vector3.new(15, 3, 188), Vector3.new(-5, 3, 200), Vector3.new(42, 3, 130),
+		Vector3.new(-45, 3, 145),
+	}
+	for i, position in coverPositions do
+		makePart("CoverCrate" .. i, Vector3.new(4, 4, 4), position, Color3.fromRGB(110, 85, 55), { Material = Enum.Material.WoodPlanks })
+	end
+
+	-- Low dividing walls carve the open arena into flankable sub-corridors.
+	makePart("ArenaWall1", Vector3.new(2, 6, 30), Vector3.new(-30, 3, 150), Color3.fromRGB(60, 55, 60))
+	makePart("ArenaWall2", Vector3.new(2, 6, 30), Vector3.new(30, 3, 170), Color3.fromRGB(60, 55, 60))
+	makePart("ArenaWall3", Vector3.new(30, 6, 2), Vector3.new(0, 3, 195), Color3.fromRGB(60, 55, 60))
+
+	-- Extra cover reclaiming the space east of the arena — barrels
+	-- instead of crates for visual variety, plus a couple of stacked
+	-- pairs for partial cover you can peek over.
+	local barrelPositions = {
+		Vector3.new(60, 3, 130), Vector3.new(70, 3, 145), Vector3.new(55, 3, 160),
+		Vector3.new(68, 3, 175), Vector3.new(48, 3, 185), Vector3.new(75, 3, 120),
+	}
+	for i, position in barrelPositions do
+		local barrel = Instance.new("Part")
+		barrel.Name = "CoverBarrel" .. i
+		barrel.Shape = Enum.PartType.Cylinder
+		barrel.Anchored = true
+		barrel.Size = Vector3.new(4, 3, 3)
+		barrel.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
+		barrel.Color = Color3.fromRGB(120, 90, 40)
+		barrel.Material = Enum.Material.Metal
+		barrel.Parent = map
+	end
+
+	-- Catwalk: a raised platform reachable by ramps on both ends, giving
+	-- the arena a vertical option instead of everything happening at
+	-- ground level.
+	local CATWALK_HEIGHT = 10
+	local catwalkPlatform = makePart("CatwalkPlatform", Vector3.new(16, 1, 10), Vector3.new(0, CATWALK_HEIGHT, 175), Color3.fromRGB(70, 70, 78))
+	addPointLight(catwalkPlatform, Color3.fromRGB(150, 200, 255), 2, 22)
+	makePart("CatwalkRailingLeft", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 170.25), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
+	makePart("CatwalkRailingRight", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 179.75), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
+	makePart("CatwalkRailingWest", Vector3.new(0.5, 3, 10), Vector3.new(-8.25, CATWALK_HEIGHT + 2, 175), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
+	makePart("CatwalkRailingEast", Vector3.new(0.5, 3, 10), Vector3.new(8.25, CATWALK_HEIGHT + 2, 175), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
+
+	local function makeRamp(name: string, position: Vector3, rotationY: number)
+		local ramp = Instance.new("WedgePart")
+		ramp.Name = name
+		ramp.Anchored = true
+		ramp.Size = Vector3.new(6, CATWALK_HEIGHT, 12)
+		ramp.CFrame = CFrame.new(position) * CFrame.Angles(0, math.rad(rotationY), 0)
+		ramp.Color = Color3.fromRGB(70, 70, 78)
+		ramp.Material = Enum.Material.Concrete
+		ramp.Parent = map
+	end
+
+	makeRamp("CatwalkRampSouth", Vector3.new(0, CATWALK_HEIGHT / 2, 187), 180)
+	makeRamp("CatwalkRampNorth", Vector3.new(0, CATWALK_HEIGHT / 2, 163), 0)
+
+	-- Perimeter walls flush with the arena floor's actual edges, solid on all 4 sides.
+	local ARENA_WALL_HEIGHT = 16
+	local arenaWallColor = Color3.fromRGB(55, 50, 55)
+	makePart("ArenaWallSouth", Vector3.new(arenaWidth, ARENA_WALL_HEIGHT, 1), Vector3.new(arenaCenterX, ARENA_WALL_HEIGHT / 2, LOBBY_ARENA_BOUNDARY_Z), arenaWallColor)
+	makePart("ArenaWallNorth", Vector3.new(arenaWidth, ARENA_WALL_HEIGHT, 1), Vector3.new(arenaCenterX, ARENA_WALL_HEIGHT / 2, ARENA_Z_MAX), arenaWallColor)
+	makePart("ArenaWallWest", Vector3.new(1, ARENA_WALL_HEIGHT, arenaDepth), Vector3.new(ARENA_X_MIN, ARENA_WALL_HEIGHT / 2, arenaCenterZ), arenaWallColor)
+	makePart("ArenaWallEast", Vector3.new(1, ARENA_WALL_HEIGHT, arenaDepth), Vector3.new(ARENA_X_MAX, ARENA_WALL_HEIGHT / 2, arenaCenterZ), arenaWallColor)
+
+	return Vector3.new(arenaCenterX, 1, arenaCenterZ), Vector3.new(arenaWidth, ARENA_WALL_HEIGHT, arenaDepth)
 end
 
-makeMarker("ArenaSpawnPoint", Vector3.new(0, 3, 105))
+-- "L4D Subway Map" community asset — https://create.roblox.com/store/asset/32852869/L4D-Subway-Map
+-- The actual .rbxm was provided directly and is synced in by Rojo at
+-- src/ServerStorage/MapAssets/L4D_Subway_Map.rbxm, landing in-game at
+-- ServerStorage.MapAssets.L4D_Subway_Map (a Model). Verified by
+-- inspecting the file's contents directly: 720 Parts / 38 sub-models
+-- forming a subway station — "Subway station", "TurnTile", "Track",
+-- "Subway Train", "Subway Stairs" — built the old-fashioned way (Glue/
+-- Snap/Weld/RotateP legacy joints instead of a single union/MeshPart,
+-- harmless here since everything below gets Anchored regardless), plus
+-- ~147 bundled Sound instances (ambience) and a decorative corpse/
+-- blood-stain prop set ("Corpse", "Blood", "Bloodstain 1/2") that fits
+-- the zombie theme well but is worth a look in Studio in case it's not
+-- wanted. The asset ID is kept only as a secondary fallback in case the
+-- local file is ever missing from a checkout.
+local SUBWAY_MAP_ASSET_ID = 32852869
 
--- Cover crates scattered through the arena so gunfights aren't just kiting across open ground.
-local coverPositions = {
-	Vector3.new(-25, 3, 120), Vector3.new(20, 3, 115), Vector3.new(0, 3, 138),
-	Vector3.new(-15, 3, 158), Vector3.new(35, 3, 165), Vector3.new(-38, 3, 178),
-	Vector3.new(15, 3, 188), Vector3.new(-5, 3, 200), Vector3.new(42, 3, 130),
-	Vector3.new(-45, 3, 145),
-}
-for i, position in coverPositions do
-	makePart("CoverCrate" .. i, Vector3.new(4, 4, 4), position, Color3.fromRGB(110, 85, 55), { Material = Enum.Material.WoodPlanks })
+--[[
+	Loads the subway map to use as the arena instead of
+	buildProceduralArenaFallback() above — preferring the local copy
+	synced in via Rojo (see above) and only falling back to a live
+	AssetService:LoadAssetAsync call (same permissions caveat as
+	ZombieService/WeaponModelFactory: needs "Allow Loading Third Party
+	Assets" on, see README Setup) if that local copy isn't present.
+	Any failure at any step below falls back further to the procedural
+	arena instead of leaving the map half-built or erroring out the
+	whole bootstrap script.
+
+	Positioning is a best-effort, translate-only move (deliberately never
+	rotates it — there's no reliable signal for which way the asset
+	"faces" from here): computes its world bounding box and shifts it so
+	that box's bottom-center sits at the arena's target floor position,
+	roughly where the procedural arena would otherwise be. Whether that
+	puts its actual entrance toward the lobby, whether its multiple
+	floors/stairs are cleanly navigable by our direct-chase and
+	PathfindingService AI, whether its scale matches our other geometry
+	well — all worth checking (and likely manually adjusting, e.g. the
+	ArenaSpawnPoint/ZombieSpawns placement below) in Studio now that it's
+	actually visible.
+]]
+local function getLocalSubwayMapTemplate(): Model?
+	local mapAssets = ServerStorage:FindFirstChild("MapAssets")
+	local template = mapAssets and mapAssets:FindFirstChild("L4D_Subway_Map")
+	if not template or not template:IsA("Model") then
+		return nil
+	end
+	return template:Clone()
 end
 
--- Low dividing walls carve the open arena into flankable sub-corridors.
-makePart("ArenaWall1", Vector3.new(2, 6, 30), Vector3.new(-30, 3, 150), Color3.fromRGB(60, 55, 60))
-makePart("ArenaWall2", Vector3.new(2, 6, 30), Vector3.new(30, 3, 170), Color3.fromRGB(60, 55, 60))
-makePart("ArenaWall3", Vector3.new(30, 6, 2), Vector3.new(0, 3, 195), Color3.fromRGB(60, 55, 60))
+local function loadSubwayMapArena(): (Model?, Vector3?, Vector3?)
+	local template = getLocalSubwayMapTemplate()
 
--- Extra cover reclaiming the space east of the arena (previously a
--- secret room) — barrels instead of crates for visual variety, plus a
--- couple of stacked pairs for partial cover you can peek over.
-local barrelPositions = {
-	Vector3.new(60, 3, 130), Vector3.new(70, 3, 145), Vector3.new(55, 3, 160),
-	Vector3.new(68, 3, 175), Vector3.new(48, 3, 185), Vector3.new(75, 3, 120),
-}
-for i, position in barrelPositions do
-	local barrel = Instance.new("Part")
-	barrel.Name = "CoverBarrel" .. i
-	barrel.Shape = Enum.PartType.Cylinder
-	barrel.Anchored = true
-	barrel.Size = Vector3.new(4, 3, 3)
-	barrel.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
-	barrel.Color = Color3.fromRGB(120, 90, 40)
-	barrel.Material = Enum.Material.Metal
-	barrel.Parent = map
+	if not template then
+		local ok, templateOrError = pcall(function()
+			return AssetService:LoadAssetAsync(SUBWAY_MAP_ASSET_ID)
+		end)
+		if not ok then
+			warn(("MapBootstrap: no local subway map found in ServerStorage.MapAssets, and failed to load subway map asset %d live (%s) — falling back to the built-in procedural arena. If this isn't a permissions error, check that 'Allow Loading Third Party Assets' is on in Game Settings > Security."):format(SUBWAY_MAP_ASSET_ID, tostring(templateOrError)))
+			return nil, nil, nil
+		end
+		template = templateOrError :: Model
+	end
+
+	template.Sandboxed = false
+
+	local partCount = 0
+	for _, descendant in template:GetDescendants() do
+		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
+			-- Strip unconditionally (unlike the Normal zombie's kept
+			-- Animate/RbxNpcSounds) — a map has no business running any
+			-- of its own logic; we only want its static geometry.
+			descendant:Destroy()
+		elseif descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.Archivable = true
+			partCount += 1
+		end
+	end
+
+	if partCount == 0 then
+		warn(("MapBootstrap: subway map asset %d loaded but contained no usable parts — falling back to the built-in procedural arena."):format(SUBWAY_MAP_ASSET_ID))
+		template:Destroy()
+		return nil, nil, nil
+	end
+
+	template.Name = "SubwayMapArena"
+	template.Archivable = true
+
+	local boundingOk, boundingCFrame, boundingSize = pcall(function()
+		return template:GetBoundingBox()
+	end)
+	if not boundingOk then
+		warn(("MapBootstrap: subway map asset %d loaded but GetBoundingBox() failed (%s) — falling back to the built-in procedural arena."):format(SUBWAY_MAP_ASSET_ID, tostring(boundingCFrame)))
+		template:Destroy()
+		return nil, nil, nil
+	end
+
+	local currentBottomCenter = boundingCFrame.Position - Vector3.new(0, boundingSize.Y / 2, 0)
+	-- Bottom-center's X/Z is already the box's horizontal center, so this
+	-- doubles as the "floor height, horizontal center" point the caller
+	-- needs for spawn placement — same convention as
+	-- buildProceduralArenaFallback's return value above.
+	local targetFloorCenter = Vector3.new(arenaCenterX, 1, LOBBY_ARENA_BOUNDARY_Z + boundingSize.Z / 2)
+	local delta = targetFloorCenter - currentBottomCenter
+
+	template:PivotTo(template:GetPivot() + delta)
+	template.Parent = map
+
+	return template, targetFloorCenter, boundingSize
 end
 
--- Catwalk: a raised platform reachable by ramps on both ends, giving the
--- arena a vertical option (per the original plan's "vertical areas"
--- design goal) instead of everything happening at ground level. High
--- ground for players, and a longer sightline for picking off zombies
--- approaching from the north spawn ring.
-local CATWALK_HEIGHT = 10
-local catwalkPlatform = makePart("CatwalkPlatform", Vector3.new(16, 1, 10), Vector3.new(0, CATWALK_HEIGHT, 175), Color3.fromRGB(70, 70, 78))
-addPointLight(catwalkPlatform, Color3.fromRGB(150, 200, 255), 2, 22)
-makePart("CatwalkRailingLeft", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 170.25), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
-makePart("CatwalkRailingRight", Vector3.new(16, 3, 0.5), Vector3.new(0, CATWALK_HEIGHT + 2, 179.75), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
--- The two railings above only guard the north/south edges — without
--- these, the long east/west sides of the platform were completely open,
--- an easy way to fall the 10 studs off the catwalk while sidestepping
--- during a fight up there.
-makePart("CatwalkRailingWest", Vector3.new(0.5, 3, 10), Vector3.new(-8.25, CATWALK_HEIGHT + 2, 175), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
-makePart("CatwalkRailingEast", Vector3.new(0.5, 3, 10), Vector3.new(8.25, CATWALK_HEIGHT + 2, 175), Color3.fromRGB(50, 50, 56), { Transparency = 0.4 })
-
-local function makeRamp(name: string, position: Vector3, rotationY: number)
-	-- NOTE: WedgePart's slope direction depends on Roblox's default local
-	-- axis convention, which isn't something I can visually verify from
-	-- here. This is a best-effort placement — if the ramp looks inverted
-	-- or players can't actually walk up it in Studio, try rotationY + 180
-	-- for that ramp, or swap which face Size.Z faces.
-	local ramp = Instance.new("WedgePart")
-	ramp.Name = name
-	ramp.Anchored = true
-	ramp.Size = Vector3.new(6, CATWALK_HEIGHT, 12)
-	ramp.CFrame = CFrame.new(position) * CFrame.Angles(0, math.rad(rotationY), 0)
-	ramp.Color = Color3.fromRGB(70, 70, 78)
-	ramp.Material = Enum.Material.Concrete
-	ramp.Parent = map
+local subwayModel, arenaWorldCenter, arenaWorldSize = loadSubwayMapArena()
+if not subwayModel then
+	arenaWorldCenter, arenaWorldSize = buildProceduralArenaFallback()
 end
+assert(arenaWorldCenter and arenaWorldSize)
 
--- One ramp up from the south (near ArenaWall3) so it's reachable while
--- fighting through that sub-corridor, one from the north for a second
--- approach so it's not a single-file chokepoint.
-makeRamp("CatwalkRampSouth", Vector3.new(0, CATWALK_HEIGHT / 2, 187), 180)
-makeRamp("CatwalkRampNorth", Vector3.new(0, CATWALK_HEIGHT / 2, 163), 0)
+makeMarker("ArenaSpawnPoint", arenaWorldCenter + Vector3.new(0, 2, 0))
 
--- Zombie spawn ring around the arena perimeter.
+-- Zombie spawn ring, sized to whichever arena actually got built above.
+-- Inset well short of the arena's true edges (60% of the shorter
+-- half-extent) since a ring right up against the real perimeter could
+-- easily clip through a wall on an unknown, community-made layout.
 local zombieSpawns = Instance.new("Folder")
 zombieSpawns.Name = "ZombieSpawns"
 zombieSpawns.Parent = Workspace
-local SPAWN_RING_RADIUS = 50
+local SPAWN_RING_RADIUS = math.min(arenaWorldSize.X, arenaWorldSize.Z) / 2 * 0.6
 local SPAWN_COUNT = 10
 for i = 1, SPAWN_COUNT do
 	local angle = (i / SPAWN_COUNT) * math.pi * 2
-	local position = Vector3.new(math.cos(angle) * SPAWN_RING_RADIUS, 3, 150 + math.sin(angle) * SPAWN_RING_RADIUS)
+	local position = arenaWorldCenter + Vector3.new(math.cos(angle) * SPAWN_RING_RADIUS, 2, math.sin(angle) * SPAWN_RING_RADIUS)
 	local point = Instance.new("Part")
 	point.Name = "SpawnPoint" .. i
 	point.Anchored = true
@@ -375,26 +633,22 @@ for i = 1, SPAWN_COUNT do
 	point.Parent = zombieSpawns
 end
 
--- Perimeter walls flush with the (widened) arena floor's actual edges —
--- fully solid on all 4 sides now. The south wall used to split into two
--- parts with a doorway-width gap for the corridor; with the corridor
--- gone (see the lobby section above — teleport pad is the only
--- lobby<->arena connection now), that gap serves no purpose.
-local ARENA_WALL_HEIGHT = 16
-local arenaWallColor = Color3.fromRGB(55, 50, 55)
-makePart("ArenaWallSouth", Vector3.new(arenaWidth, ARENA_WALL_HEIGHT, 1), Vector3.new(arenaCenterX, ARENA_WALL_HEIGHT / 2, LOBBY_ARENA_BOUNDARY_Z), arenaWallColor)
-makePart("ArenaWallNorth", Vector3.new(arenaWidth, ARENA_WALL_HEIGHT, 1), Vector3.new(arenaCenterX, ARENA_WALL_HEIGHT / 2, ARENA_Z_MAX), arenaWallColor)
-makePart("ArenaWallWest", Vector3.new(1, ARENA_WALL_HEIGHT, arenaDepth), Vector3.new(ARENA_X_MIN, ARENA_WALL_HEIGHT / 2, arenaCenterZ), arenaWallColor)
-makePart("ArenaWallEast", Vector3.new(1, ARENA_WALL_HEIGHT, arenaDepth), Vector3.new(ARENA_X_MAX, ARENA_WALL_HEIGHT / 2, arenaCenterZ), arenaWallColor)
-
 -- ============================== BOUNDARY ==============================
 -- Invisible walls around the whole level so players/zombies can't wander off the edge into the void.
--- Now mostly a defense-in-depth backstop — the lobby/corridor/arena
--- walls above already sit flush with every real floor edge — but cheap
--- insurance against any gap missed in that reasoning.
+-- The lobby's own walls already fully seal it off, so this exists
+-- mainly to wrap whichever arena actually got built (procedural, with
+-- its own perimeter walls, or the loaded subway map, whose real extent/
+-- wall-completeness we can't know ahead of time) — sized dynamically
+-- around both lobbyWorldCenter/lobbyWorldSize AND
+-- arenaWorldCenter/arenaWorldSize (plus a margin) instead of a fixed
+-- rectangle, so it safely contains either real asset regardless of how
+-- big or small either one actually turns out to be.
 
-local BOUNDARY_MIN_X, BOUNDARY_MAX_X = -65, 85
-local BOUNDARY_MIN_Z, BOUNDARY_MAX_Z = -30, 210
+local BOUNDARY_MARGIN = 20
+local BOUNDARY_MIN_X = math.min(lobbyWorldCenter.X - lobbyWorldSize.X / 2, arenaWorldCenter.X - arenaWorldSize.X / 2) - BOUNDARY_MARGIN
+local BOUNDARY_MAX_X = math.max(lobbyWorldCenter.X + lobbyWorldSize.X / 2, arenaWorldCenter.X + arenaWorldSize.X / 2) + BOUNDARY_MARGIN
+local BOUNDARY_MIN_Z = math.min(lobbyWorldCenter.Z - lobbyWorldSize.Z / 2, arenaWorldCenter.Z - arenaWorldSize.Z / 2) - BOUNDARY_MARGIN
+local BOUNDARY_MAX_Z = math.max(lobbyWorldCenter.Z + lobbyWorldSize.Z / 2, arenaWorldCenter.Z + arenaWorldSize.Z / 2) + BOUNDARY_MARGIN
 local boundaryWidth = BOUNDARY_MAX_X - BOUNDARY_MIN_X
 local boundaryDepth = BOUNDARY_MAX_Z - BOUNDARY_MIN_Z
 local boundaryCenterX = (BOUNDARY_MIN_X + BOUNDARY_MAX_X) / 2
@@ -423,8 +677,8 @@ fallSafetyNet.Size = Vector3.new(boundaryWidth + 200, 4, boundaryDepth + 200)
 fallSafetyNet.Position = Vector3.new(boundaryCenterX, -50, boundaryCenterZ)
 fallSafetyNet.Parent = map
 
-local LOBBY_RECOVERY_POSITION = Vector3.new(0, 5, -18)
-local ARENA_RECOVERY_POSITION = Vector3.new(0, 8, 105)
+local LOBBY_RECOVERY_POSITION = playerSpawnPosition + Vector3.new(0, 3.5, 0)
+local ARENA_RECOVERY_POSITION = arenaWorldCenter + Vector3.new(0, 7, 0)
 local recoveringCharacters: { [Model]: boolean } = {}
 
 fallSafetyNet.Touched:Connect(function(hit: BasePart)
