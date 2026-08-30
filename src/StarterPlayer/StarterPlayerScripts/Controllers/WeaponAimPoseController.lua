@@ -379,10 +379,30 @@ local function updateR15(character: Model)
 		if rightHand and now - lastDiagnosticPrintTime > 3 then
 			lastDiagnosticPrintTime = now
 			local handToTargetDistance = (rightHand.Position - targetPosition).Magnitude
+
+			-- The metric that actually matters, reconsidered: Type=LookAt
+			-- most likely ROTATES the hand to face the target rather than
+			-- pulling its POSITION all the way there — the arm's real
+			-- reach from the shoulder is only a couple studs, nowhere
+			-- near IK_TARGET_DISTANCE (6), so a chain respecting its own
+			-- bone-length limits would never close that gap to 0 even
+			-- while working correctly. handToTargetDistance may have
+			-- been the wrong thing to check this whole time. This
+			-- compares the hand's current forward direction against the
+			-- direction TO the target instead — small angle = hand is
+			-- correctly oriented toward the target, regardless of
+			-- whether its position ever gets close.
+			local handToTargetDirection = (targetPosition - rightHand.Position)
+			local angleToTargetDegrees = "n/a"
+			if handToTargetDirection.Magnitude > 0.01 then
+				local dot = handToTargetDirection.Unit:Dot(rightHand.CFrame.LookVector)
+				angleToTargetDegrees = tostring(math.deg(math.acos(math.clamp(dot, -1, 1))))
+			end
+
 			print(
-				("[WeaponAimPose] handToTargetDistance=%.2f (should shrink toward 0 if IK is working; ~%.0f regardless of camera = IK not converging) | target.Y-torso.Y=%.2f"):format(
+				("[WeaponAimPose] handToTargetDistance=%.2f (may not shrink to 0 even if working — see note) | angleBetweenHandForwardAndTargetDir=%s degrees (THIS is what should shrink toward 0 if IK is working) | target.Y-torso.Y=%.2f"):format(
 					handToTargetDistance,
-					IK_TARGET_DISTANCE,
+					angleToTargetDegrees,
 					targetPosition.Y - upperTorso.Position.Y
 				)
 			)
