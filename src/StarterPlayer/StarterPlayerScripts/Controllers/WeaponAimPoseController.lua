@@ -82,11 +82,38 @@ local hasLoggedFirstApply = false
 local hasLoggedError = false
 
 local function findMotor(parent: Instance, name: string): Motor6D?
-	local motor = parent:FindFirstChild(name)
+	-- WaitForChild here too, not just for the arm parts one level up —
+	-- the joint can attach to its part slightly after the part itself
+	-- appears, the same population race, just one level deeper.
+	local motor = parent:WaitForChild(name, 5)
 	if motor and motor:IsA("Motor6D") then
 		return motor
 	end
+	if motor then
+		warn(
+			("[WeaponAimPose] '%s' under %s exists but is a %s, not a Motor6D."):format(
+				name,
+				parent:GetFullName(),
+				motor.ClassName
+			)
+		)
+	else
+		warn(("[WeaponAimPose] '%s' motor did not appear under %s within 5s."):format(name, parent:GetFullName()))
+	end
 	return nil
+end
+
+--[[
+	Same WaitForChild treatment as findMotor, plus an explicit warning
+	naming exactly which part failed to appear — this is what turns
+	"0 motors found" into an actual answer instead of another guess.
+]]
+local function waitForPart(character: Model, name: string): Instance?
+	local part = character:WaitForChild(name, 5)
+	if not part then
+		warn(("[WeaponAimPose] '%s' part did not appear under the character within 5s."):format(name))
+	end
+	return part
 end
 
 local function setupCharacter(character: Model)
@@ -120,10 +147,10 @@ local function setupCharacter(character: Model)
 
 	if humanoid.RigType == Enum.HumanoidRigType.R15 then
 		currentRigType = "R15"
-		local rightUpperArm = character:WaitForChild("RightUpperArm", 5)
-		local leftUpperArm = character:WaitForChild("LeftUpperArm", 5)
-		local rightLowerArm = character:WaitForChild("RightLowerArm", 5)
-		local leftLowerArm = character:WaitForChild("LeftLowerArm", 5)
+		local rightUpperArm = waitForPart(character, "RightUpperArm")
+		local leftUpperArm = waitForPart(character, "LeftUpperArm")
+		local rightLowerArm = waitForPart(character, "RightLowerArm")
+		local leftLowerArm = waitForPart(character, "LeftLowerArm")
 
 		table.insert(motorsToCapture, rightUpperArm and findMotor(rightUpperArm, "RightShoulder"))
 		table.insert(motorsToCapture, leftUpperArm and findMotor(leftUpperArm, "LeftShoulder"))
@@ -131,7 +158,7 @@ local function setupCharacter(character: Model)
 		table.insert(motorsToCapture, leftLowerArm and findMotor(leftLowerArm, "LeftElbow"))
 	elseif humanoid.RigType == Enum.HumanoidRigType.R6 then
 		currentRigType = "R6"
-		local torso = character:WaitForChild("Torso", 5)
+		local torso = waitForPart(character, "Torso")
 		if torso then
 			table.insert(motorsToCapture, findMotor(torso, "Right Shoulder"))
 			table.insert(motorsToCapture, findMotor(torso, "Left Shoulder"))
