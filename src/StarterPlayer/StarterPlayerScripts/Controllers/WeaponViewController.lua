@@ -136,22 +136,62 @@ local function getPitchOffset(): CFrame
 	return CFrame.Angles(pitch, 0, 0)
 end
 
+local hasLoggedNoTool = false
+local hasLoggedError = false
+local lastDiagnosticPrintTime = 0
+
 local function updatePitchFollow()
 	if os.clock() < reloadingUntilClock then
 		return -- the reload tween currently owns Grip
 	end
 	local tool = getEquippedTool()
 	if not tool then
+		-- DIAGNOSTIC (temporary, logs once): confirms whether "no
+		-- equipped Tool found" is why nothing happens, same check that
+		-- caught a real issue elsewhere in this codebase before.
+		if not hasLoggedNoTool then
+			hasLoggedNoTool = true
+			print("[WeaponView] updatePitchFollow: no equipped Tool found — skipping every frame.")
+		end
 		return
 	end
-	local ok = pcall(function()
-		tool.Grip = getDefaultGrip(tool) * getPitchOffset()
+
+	local defaultGrip = getDefaultGrip(tool)
+	local pitchOffset = getPitchOffset()
+	local newGrip = defaultGrip * pitchOffset
+
+	local ok, err = pcall(function()
+		tool.Grip = newGrip
 	end)
-	-- Deliberately silent on failure (no diagnostic spam) — this is a
-	-- simple, low-risk operation on a plain CFrame property; if it
-	-- somehow fails it's not worth interrupting every frame over.
+
 	if not ok then
+		-- DIAGNOSTIC (temporary, logs once): the previous version
+		-- silently swallowed this every single frame with zero
+		-- visibility — if Grip assignment is erroring on the real
+		-- equipped asset for any reason, this was invisible before.
+		if not hasLoggedError then
+			hasLoggedError = true
+			warn("[WeaponView] tool.Grip assignment errored: " .. tostring(err))
+		end
 		return
+	end
+
+	-- DIAGNOSTIC (throttled to once every 2s): confirms the computed
+	-- values actually change as you look around, and that what we set
+	-- matches what's actually on the Tool a moment later (in case
+	-- something else is silently resetting Grip back after we set it).
+	local now = os.clock()
+	if now - lastDiagnosticPrintTime > 2 then
+		lastDiagnosticPrintTime = now
+		local pitchDegrees = math.deg(math.asin(math.clamp(camera.CFrame.LookVector.Y, -1, 1)))
+		print(
+			("[WeaponView] pitch=%.1f deg | defaultGrip=%s | newGrip set to=%s | tool.Grip actually reads=%s"):format(
+				pitchDegrees,
+				tostring(defaultGrip),
+				tostring(newGrip),
+				tostring(tool.Grip)
+			)
+		)
 	end
 end
 
