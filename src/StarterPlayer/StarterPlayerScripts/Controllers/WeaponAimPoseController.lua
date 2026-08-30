@@ -31,10 +31,13 @@
 	  to change to adjust the look.
 
 	- Supports both R15 (Shoulder + Elbow per arm) and R6 (Shoulder
-	  only) rigs, detected per-character, since a player's avatar type
-	  depends on their own account settings, not something this game
-	  controls. R6's single-joint arm can approximate "raised toward
-	  camera" but not as convincing a two-handed grip as R15's.
+	  only) rigs, detected per-character via `Humanoid.RigType` (not by
+	  guessing from which body parts happen to exist — see
+	  setupCharacter's comments for why that mattered), since a
+	  player's avatar type depends on their own account settings, not
+	  something this game controls. R6's single-joint arm can
+	  approximate "raised toward camera" but not as convincing a
+	  two-handed grip as R15's.
 ]]
 
 local Players = game:GetService("Players")
@@ -94,26 +97,45 @@ local function setupCharacter(character: Model)
 	hasLoggedFirstApply = false
 	hasLoggedError = false
 
-	local upperTorso = character:FindFirstChild("UpperTorso")
-	local torso = character:FindFirstChild("Torso")
+	-- WaitForChild (which actually yields until the part appears, up to
+	-- the timeout), not FindFirstChild (which returns nil immediately if
+	-- the part isn't there YET). This is the actual bug the diagnostics
+	-- caught: CharacterAdded fires as soon as the character Model exists,
+	-- but body parts can still be populating for a moment after that —
+	-- a synchronous FindFirstChild right then reliably missed them,
+	-- which is exactly why rig detection was finding nothing. This
+	-- yields inside its own coroutine (Roblox runs each CharacterAdded
+	-- connection callback in its own thread), so it's safe and doesn't
+	-- block anything else.
+	local humanoid = character:WaitForChild("Humanoid", 10) :: Humanoid?
+	if not humanoid then
+		warn("[WeaponAimPose] No Humanoid appeared within 10s — aborting setup for this character.")
+		return
+	end
 
+	-- Humanoid.RigType is a reliable enum the moment the Humanoid exists
+	-- — checking it directly avoids re-guessing rig type from which body
+	-- parts happen to exist yet, which was the unreliable part before.
 	local motorsToCapture: { Motor6D? } = {}
 
-	if upperTorso then
+	if humanoid.RigType == Enum.HumanoidRigType.R15 then
 		currentRigType = "R15"
-		local rightUpperArm = character:FindFirstChild("RightUpperArm")
-		local leftUpperArm = character:FindFirstChild("LeftUpperArm")
-		local rightLowerArm = character:FindFirstChild("RightLowerArm")
-		local leftLowerArm = character:FindFirstChild("LeftLowerArm")
+		local rightUpperArm = character:WaitForChild("RightUpperArm", 5)
+		local leftUpperArm = character:WaitForChild("LeftUpperArm", 5)
+		local rightLowerArm = character:WaitForChild("RightLowerArm", 5)
+		local leftLowerArm = character:WaitForChild("LeftLowerArm", 5)
 
 		table.insert(motorsToCapture, rightUpperArm and findMotor(rightUpperArm, "RightShoulder"))
 		table.insert(motorsToCapture, leftUpperArm and findMotor(leftUpperArm, "LeftShoulder"))
 		table.insert(motorsToCapture, rightLowerArm and findMotor(rightLowerArm, "RightElbow"))
 		table.insert(motorsToCapture, leftLowerArm and findMotor(leftLowerArm, "LeftElbow"))
-	elseif torso then
+	elseif humanoid.RigType == Enum.HumanoidRigType.R6 then
 		currentRigType = "R6"
-		table.insert(motorsToCapture, findMotor(torso, "Right Shoulder"))
-		table.insert(motorsToCapture, findMotor(torso, "Left Shoulder"))
+		local torso = character:WaitForChild("Torso", 5)
+		if torso then
+			table.insert(motorsToCapture, findMotor(torso, "Right Shoulder"))
+			table.insert(motorsToCapture, findMotor(torso, "Left Shoulder"))
+		end
 	end
 
 	for _, motor in motorsToCapture do
@@ -123,10 +145,10 @@ local function setupCharacter(character: Model)
 		end
 	end
 
-	-- DIAGNOSTIC (temporary): confirms setup actually found what it
-	-- expects. If this prints "rig=NONE" or 0 motors, the problem is
-	-- Motor6D/rig detection, not pose math or render timing — check
-	-- this output first before assuming anything else is broken.
+	-- DIAGNOSTIC: confirms setup actually found what it expects. If this
+	-- still prints "rig=NONE" or 0 motors after this fix, the problem is
+	-- something else entirely (e.g. a genuinely nonstandard rig) — worth
+	-- keeping this in until it's confirmed fixed.
 	local motorNames = {}
 	for _, motor in trackedMotors do
 		table.insert(motorNames, motor.Name)
