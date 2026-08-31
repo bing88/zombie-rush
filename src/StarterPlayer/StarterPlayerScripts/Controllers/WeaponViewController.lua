@@ -94,6 +94,25 @@
 	other players watching you — same limitation as everything else
 	client-side in this codebase; a shared version needs either a real
 	authored Animation asset or a server-synced system.
+
+	FIRST-PERSON VIEWMODEL: everything above (IK reach or hold
+	Animation) poses the real, character-attached RightHand/Handle —
+	fine for third person, but it only tracks camera YAW (see
+	getStabilizedCameraRotation's includePitch and faceCamera in
+	CameraController), never pitch, and is still ultimately anchored to
+	a body bone rather than the camera itself. In first person that
+	reads as the gun visibly sliding around on screen as the camera
+	pitches, instead of the classic FPS "glued to the camera" viewmodel
+	feel. buildFirstPersonViewmodel/updateFirstPersonViewmodel/
+	applyFirstPersonViewmodelState solve that with a SEPARATE, purely
+	decorative clone of the equipped Tool that's re-planted at a fixed
+	camera-relative spot every frame (see FIRST_PERSON_VIEWMODEL_OFFSET)
+	while player.CameraMode == LockFirstPerson, with the real Tool
+	hidden (LocalTransparencyModifier, so only this client stops seeing
+	it) for the duration so the two don't visually double up. No
+	physics/IK/Animation involved in that clone at all, so it can't
+	jitter or lag behind camera movement the way the real bone-attached
+	Tool does.
 ]]
 
 local Players = game:GetService("Players")
@@ -146,6 +165,19 @@ local MAX_PITCH_DEGREES = 35
 local GUN_OFFSET_FIRST_PERSON = CFrame.new(0.5, -0.5, -0.8)
 local GUN_OFFSET_THIRD_PERSON = CFrame.new(0.55, 0.15, -1.1)
 
+--[[
+	Bottom-right "viewmodel" placement for the camera-glued first-person
+	clone (see buildFirstPersonViewmodel below) — deliberately a PURE
+	translation, zero extra rotation, so the gun's own -Z ("barrel
+	forward", per Tool/Muzzle convention — see WeaponModelFactory) ends
+	up pointing exactly parallel to camera.LookVector, i.e. wherever the
+	crosshair (screen-center, always == camera.LookVector) is currently
+	pointing, no matter how the camera pitches/yaws. Still an aesthetic
+	placement guess, not verified in Studio — retune if it sits at an
+	awkward spot on screen.
+]]
+local FIRST_PERSON_VIEWMODEL_OFFSET = CFrame.new(0.25, -0.65, -0.4)
+
 -- Pitch-follow backs off until this os.clock() timestamp passes, so it
 -- doesn't fight the reload dip/return tween below for control of the
 -- aim target attachment.
@@ -174,6 +206,17 @@ local equipAnimationTrack: AnimationTrack? = nil
 local reloadAnimationTrack: AnimationTrack? = nil
 
 local hasWarnedNoIKRig = false
+
+-- First-person "viewmodel" clone state — see buildFirstPersonViewmodel/
+-- updateFirstPersonViewmodel/applyFirstPersonViewmodelState below. All
+-- nil/empty/false whenever third-person (or no tool) is active.
+local firstPersonViewmodelTool: Tool? = nil
+local firstPersonViewmodelHandle: BasePart? = nil
+local firstPersonViewmodelOffsets: { [BasePart]: CFrame } = {}
+local firstPersonViewmodelCameraOffset: CFrame = FIRST_PERSON_VIEWMODEL_OFFSET -- recomputed per-weapon, see buildFirstPersonViewmodel
+local isShowingFirstPersonViewmodel = false
+local hiddenRealWeaponTool: Tool? = nil -- the real Tool currently hidden (LocalTransparencyModifier) while its viewmodel clone is shown instead
+local lastKnownCameraMode: Enum.CameraMode? = nil
 
 local function getGunOffset(): CFrame
 	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
@@ -319,12 +362,196 @@ local function playReloadSound(tool: Tool)
 	end
 end
 
+--[[
+	LocalTransparencyModifier is a per-client rendering override — it
+	only affects what THIS client sees, exactly like everything else in
+	this LOCAL ONLY file (see the header) — so hiding your own real gun
+	here to avoid it visually doubling up with the viewmodel clone below
+	doesn't hide it from other players watching you.
+]]
+local function setRealWeaponVisible(tool: Tool, visible: boolean)
+	local transparency = visible and 0 or 1
+	for _, descendant in tool:GetDescendants() do
+		if descendant:IsA("BasePart") or descendant:IsA("Decal") or descendant:IsA("Texture") then
+			(descendant :: BasePart).LocalTransparencyModifier = transparency
+		end
+	end
+end
+
+--[[
+	Tears down the camera-glued viewmodel clone (if any) and restores
+	whichever real Tool it was standing in for back to normal
+	visibility. Safe to call even when no viewmodel is currently active
+	(e.g. already in third person) — every field it touches is nil'd
+	out afterward so a repeat call is a clean no-op.
+]]
+local function destroyFirstPersonViewmodel()
+	if firstPersonViewmodelTool then
+		firstPersonViewmodelTool:Destroy()
+	end
+	firstPersonViewmodelTool = nil
+	firstPersonViewmodelHandle = nil
+	table.clear(firstPersonViewmodelOffsets)
+	firstPersonViewmodelCameraOffset = FIRST_PERSON_VIEWMODEL_OFFSET
+	isShowingFirstPersonViewmodel = false
+
+	if hiddenRealWeaponTool then
+		setRealWeaponVisible(hiddenRealWeaponTool, true)
+		hiddenRealWeaponTool = nil
+	end
+end
+
+--[[
+	Determines which of Handle's own local axes is actually "barrel
+	forward" for THIS weapon's mesh, from its real Muzzle Attachment
+	(always present — see WeaponModelFactory's ensureMuzzleAttachment)
+	rather than assuming the generic Tool convention ("-Z is forward")
+	documented elsewhere in this codebase. That convention holds for
+	the placeholder block Tool, but logged data from the real Weapons
+	Kit assets (Pistol/AssaultRifle/Shotgun) shows their own Muzzle
+	sitting at a POSITIVE local Z instead (e.g. the AssaultRifle's at
+	Z=2.46) — i.e. +Z is forward for those meshes, the exact opposite.
+	Getting this backwards visually reads as the barrel pointing back
+	toward the camera instead of away from it.
+
+	Every logged local rotation for these assets (HandleAttachment,
+	Muzzle) already has Up=(0,1,0) — Handle's own +Y already IS "up",
+	no tilt/roll correction needed — so a plain 180° yaw is the whole
+	fix whenever Muzzle's local Z sign says +Z is forward instead of -Z.
+]]
+local function detectNativeForwardCorrection(handle: BasePart): CFrame
+	local muzzle = handle:FindFirstChild("Muzzle")
+	if muzzle and muzzle:IsA("Attachment") and muzzle.Position.Z > 0 then
+		return CFrame.Angles(0, math.rad(180), 0)
+	end
+	return CFrame.new()
+end
+
+--[[
+	Builds the camera-glued first-person viewmodel: a full clone of the
+	equipped Tool (every BasePart it has, not just Handle — some real
+	assets weld extra visual parts alongside Handle rather than nested
+	under it, see WeaponModelFactory's ensureHandle), anchored and
+	freed of collision, with every part's offset relative to its own
+	Handle captured ONCE here. updateFirstPersonViewmodel then just
+	re-plants the clone's Handle at a fixed camera-relative spot every
+	frame and replays those captured offsets onto the rest — no
+	physics/welds/IK/Animation involved at all, so it can never jitter,
+	sway with the walk cycle, or drift out of formation with camera
+	pitch the way the real, character-attached Tool does (see the file
+	header — that's the exact problem this whole system exists to route
+	around for first person specifically).
+]]
+local function buildFirstPersonViewmodel(tool: Tool)
+	destroyFirstPersonViewmodel()
+
+	local sourceHandle = tool:FindFirstChild("Handle")
+	if not sourceHandle or not sourceHandle:IsA("BasePart") then
+		return
+	end
+
+	local clone = tool:Clone()
+	clone.Name = "FirstPersonViewmodel"
+
+	local handleClone = clone:FindFirstChild("Handle") :: BasePart?
+	if not handleClone then
+		clone:Destroy()
+		return
+	end
+
+	local offsets: { [BasePart]: CFrame } = {}
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanTouch = false
+			descendant.CanQuery = false
+			descendant.CastShadow = false
+			offsets[descendant] = handleClone.CFrame:ToObjectSpace(descendant.CFrame)
+		end
+	end
+
+	-- Longer weapons (e.g. the 3-stud-long AssaultRifle Handle, vs the
+	-- 1-stud Pistol) need to sit further from the camera, or their far
+	-- end ends up practically AT/behind the camera's near plane —
+	-- that alone produces a huge, severely distorted, screen-spanning
+	-- mess that's easy to mistake for a rotation bug even when the
+	-- rotation is fine. FIRST_PERSON_VIEWMODEL_OFFSET's X/Y (lateral
+	-- placement) stay fixed; only Z (depth) scales with this weapon's
+	-- actual length.
+	local lateral = FIRST_PERSON_VIEWMODEL_OFFSET.Position
+	local depth = -(0.55 + handleClone.Size.Z * 0.35)
+	firstPersonViewmodelCameraOffset = CFrame.new(lateral.X, lateral.Y, depth) * detectNativeForwardCorrection(handleClone)
+
+	clone.Parent = camera
+	firstPersonViewmodelTool = clone
+	firstPersonViewmodelHandle = handleClone
+	firstPersonViewmodelOffsets = offsets
+	isShowingFirstPersonViewmodel = true
+end
+
+--[[
+	Called right after createIKForTool sets up the just-equipped tool's
+	hold pose, AND every time syncFirstPersonViewmodel notices the
+	camera mode itself changed (V key / VIEW button — owned by
+	CameraController, which this file has no direct event hook into,
+	hence polling once per frame there instead of subscribing) — keeps
+	the viewmodel/real-Tool visibility split in sync with whichever
+	mode is actually active right now.
+]]
+local function applyFirstPersonViewmodelState(tool: Tool)
+	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
+		buildFirstPersonViewmodel(tool)
+		setRealWeaponVisible(tool, false)
+		hiddenRealWeaponTool = tool
+	else
+		destroyFirstPersonViewmodel()
+	end
+end
+
+local function syncFirstPersonViewmodel()
+	local tool = currentTool
+	if not tool or player.CameraMode == lastKnownCameraMode then
+		return
+	end
+	lastKnownCameraMode = player.CameraMode
+	applyFirstPersonViewmodelState(tool)
+end
+
+--[[
+	Every frame while showing the viewmodel: plants Handle at a fixed
+	camera-relative spot (see firstPersonViewmodelCameraOffset — a
+	per-weapon combination of FIRST_PERSON_VIEWMODEL_OFFSET's lateral
+	placement, a length-aware depth, and the detected native-forward
+	correction, computed once in buildFirstPersonViewmodel) and replays
+	every other part's captured local offset on top of that, so the
+	whole gun moves as one rigid unit glued to the camera, immune to
+	camera pitch and to whatever the real arm/RightHand is actually
+	doing underneath.
+]]
+local function updateFirstPersonViewmodel()
+	if not isShowingFirstPersonViewmodel or not firstPersonViewmodelHandle then
+		return
+	end
+
+	local handleCFrame = camera.CFrame * firstPersonViewmodelCameraOffset
+	firstPersonViewmodelHandle.CFrame = handleCFrame
+
+	for part, offset in firstPersonViewmodelOffsets do
+		if part ~= firstPersonViewmodelHandle and part.Parent then
+			part.CFrame = handleCFrame * offset
+		end
+	end
+end
+
 local function destroyIK()
 	WeaponIK.Destroy(rightHandIK)
 	WeaponIK.Destroy(leftHandIK)
 	rightHandIK = nil
 	leftHandIK = nil
 	currentArmParts = nil
+	destroyFirstPersonViewmodel()
+	lastKnownCameraMode = nil
 	if aimTargetAttachment then
 		aimTargetAttachment:Destroy()
 		aimTargetAttachment = nil
@@ -559,6 +786,13 @@ local function createIKForTool(character: Model, tool: Tool)
 		equipAnimationTrack.TimePosition = 0
 		equipAnimationTrack:Play(0.1)
 	end
+
+	-- Covers "already in first person when this tool was equipped"
+	-- (weapon switch, initial spawn) — syncFirstPersonViewmodel's own
+	-- per-frame poll only catches the camera MODE changing, not a new
+	-- tool arriving while the mode stays the same.
+	lastKnownCameraMode = player.CameraMode
+	applyFirstPersonViewmodelState(tool)
 end
 
 local function onToolEquipped(tool: Tool)
@@ -833,6 +1067,8 @@ function WeaponViewController.Init()
 
 	RunService.RenderStepped:Connect(function()
 		updateAimFollow()
+		syncFirstPersonViewmodel()
+		updateFirstPersonViewmodel()
 		debugTick()
 	end)
 end

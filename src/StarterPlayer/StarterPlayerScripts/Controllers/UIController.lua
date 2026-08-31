@@ -90,10 +90,15 @@ local function buildCrosshair(parent: ScreenGui)
 		line.Parent = crosshair
 	end
 
-	tick("Top", UDim2.fromOffset(0, -(GAP + TICK_LENGTH / 2)), UDim2.fromOffset(THICKNESS, TICK_LENGTH))
-	tick("Bottom", UDim2.fromOffset(0, GAP + TICK_LENGTH / 2), UDim2.fromOffset(THICKNESS, TICK_LENGTH))
-	tick("Left", UDim2.fromOffset(-(GAP + TICK_LENGTH / 2), 0), UDim2.fromOffset(TICK_LENGTH, THICKNESS))
-	tick("Right", UDim2.fromOffset(GAP + TICK_LENGTH / 2, 0), UDim2.fromOffset(TICK_LENGTH, THICKNESS))
+	-- NOTE: must be UDim2.new(0.5, offset, 0.5, offset) — NOT
+	-- UDim2.fromOffset(offset, offset) (which is scale (0,0), i.e.
+	-- measured from the crosshair Frame's top-left corner, not its
+	-- center) — that mismatch was exactly why the ticks used to render
+	-- ~14px up-and-left of CenterDot below instead of concentric with it.
+	tick("Top", UDim2.new(0.5, 0, 0.5, -(GAP + TICK_LENGTH / 2)), UDim2.fromOffset(THICKNESS, TICK_LENGTH))
+	tick("Bottom", UDim2.new(0.5, 0, 0.5, GAP + TICK_LENGTH / 2), UDim2.fromOffset(THICKNESS, TICK_LENGTH))
+	tick("Left", UDim2.new(0.5, -(GAP + TICK_LENGTH / 2), 0.5, 0), UDim2.fromOffset(TICK_LENGTH, THICKNESS))
+	tick("Right", UDim2.new(0.5, GAP + TICK_LENGTH / 2, 0.5, 0), UDim2.fromOffset(TICK_LENGTH, THICKNESS))
 
 	local centerDot = Instance.new("Frame")
 	centerDot.Name = "CenterDot"

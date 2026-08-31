@@ -57,6 +57,16 @@ local camera = workspace.CurrentCamera
 local SHOULDER_OFFSET = Vector3.new(0.9, 0.3, 0)
 local FIRST_PERSON_TOGGLE_KEY = Enum.KeyCode.V
 
+-- Roblox's own default (0.5 studs) lets players scroll the mouse wheel
+-- in close enough to put the camera almost inside the character's own
+-- head — since the crosshair is a fixed screen-center UI element (see
+-- UIController's buildCrosshair), that reads as "the crosshair is
+-- overlapping/stuck on my character" any time someone scrolls all the
+-- way in. Clamping the minimum keeps the head/shoulders from ever
+-- filling the screen center in Classic (third-person) mode; irrelevant
+-- in LockFirstPerson, which ignores zoom distance entirely.
+local THIRD_PERSON_MIN_ZOOM_DISTANCE = 8
+
 -- Higher = snappier lock-on (reaches ~63% of the way to the target's
 -- direction every 1/LOCK_TURN_RATE seconds). Tune to taste.
 local LOCK_TURN_RATE = 10
@@ -124,6 +134,7 @@ local function applyCameraMode(character: Model)
 	else
 		player.CameraMode = Enum.CameraMode.Classic
 		humanoid.CameraOffset = SHOULDER_OFFSET
+		player.CameraMinZoomDistance = THIRD_PERSON_MIN_ZOOM_DISTANCE
 	end
 end
 
