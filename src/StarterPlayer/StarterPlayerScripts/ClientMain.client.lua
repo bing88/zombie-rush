@@ -52,6 +52,10 @@ UIController.OnReloadPressed(function()
 	WeaponController.RequestReload()
 end)
 
+UIController.OnViewTogglePressed(function()
+	CameraController.ToggleFirstPerson()
+end)
+
 UIController.OnFireButtonStateChanged(function(held: boolean)
 	WeaponController.SetFireButtonHeld(held)
 end)

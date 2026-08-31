@@ -8,7 +8,8 @@
 	   Roblox's default behavior of only turning to face the movement
 	   direction.
 
-	2. Over-the-shoulder third-person camera offset, with a toggle (V) to
+	2. Over-the-shoulder third-person camera offset, with a toggle (V key
+	   or the on-screen VIEW button — see UIController/ClientMain) to
 	   switch into true first-person (LockFirstPerson).
 
 	3. Auto-aim lock-on: when a zombie is within a small cone around the
@@ -126,6 +127,23 @@ local function applyCameraMode(character: Model)
 	end
 end
 
+local function toggleFirstPerson()
+	isFirstPerson = not isFirstPerson
+	local character = player.Character
+	if character then
+		applyCameraMode(character)
+	end
+end
+
+--[[
+	Exposed so the on-screen VIEW button (see UIController) can trigger
+	the same toggle the V key does — one shared function, two input
+	paths, so they can never drift into different behavior.
+]]
+function CameraController.ToggleFirstPerson()
+	toggleFirstPerson()
+end
+
 function CameraController.Init()
 	local function onCharacterAdded(character: Model)
 		local humanoid = character:WaitForChild("Humanoid") :: Humanoid
@@ -143,11 +161,7 @@ function CameraController.Init()
 			return
 		end
 		if input.KeyCode == FIRST_PERSON_TOGGLE_KEY then
-			isFirstPerson = not isFirstPerson
-			local character = player.Character
-			if character then
-				applyCameraMode(character)
-			end
+			toggleFirstPerson()
 		end
 	end)
 

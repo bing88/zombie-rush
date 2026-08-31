@@ -47,6 +47,7 @@ local leaderboardPanel: Frame
 local leaderboardRowsHolder: Frame
 local leaderboardTabButton: TextButton
 local leaderboardCloseCallback: (() -> ())? = nil
+local viewToggleButton: TextButton
 
 local toastHideThread: thread? = nil
 local downedCountdownThread: thread? = nil
@@ -553,6 +554,20 @@ local function buildUI()
 	leaderboardTabButton.Text = "LEADERBOARD (L)"
 	leaderboardTabButton.Parent = screenGui
 
+	-- Same row as Upgrades/Leaderboard, next available x-offset (20 + 120
+	-- + 10 gap = 150 for Leaderboard, 150 + 140 + 10 = 300 for this one).
+	viewToggleButton = Instance.new("TextButton")
+	viewToggleButton.Name = "ViewToggleButton"
+	viewToggleButton.Size = UDim2.fromOffset(100, 32)
+	viewToggleButton.Position = UDim2.new(0, 300, 1, -100)
+	viewToggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	viewToggleButton.BackgroundTransparency = 0.2
+	viewToggleButton.TextColor3 = Color3.new(1, 1, 1)
+	viewToggleButton.Font = Enum.Font.GothamBold
+	viewToggleButton.TextSize = 14
+	viewToggleButton.Text = "VIEW (V)"
+	viewToggleButton.Parent = screenGui
+
 	leaderboardPanel = Instance.new("Frame")
 	leaderboardPanel.Name = "LeaderboardPanel"
 	leaderboardPanel.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -764,6 +779,12 @@ function UIController.OnReloadPressed(callback: () -> ())
 		-- Activated covers both mouse clicks and touch taps, unlike
 		-- MouseButton1Click which is desktop-only.
 		reloadButton.Activated:Connect(callback)
+	end
+end
+
+function UIController.OnViewTogglePressed(callback: () -> ())
+	if viewToggleButton then
+		viewToggleButton.Activated:Connect(callback)
 	end
 end
 
