@@ -6,9 +6,14 @@
 	on death). AttackType drives which branch of ZombieService's AI runs
 	the attack; Melee is the default/existing behavior.
 
-	Only Tank/Boss use PathfindingService per the reconciled plan's open
-	decision #2 — Ranged/Exploder stay on cheap direct-chase like
-	Normal/Fast to keep server cost down with many concurrent zombies.
+	UsesPathfinding is now true for every type — the loaded subway map
+	has real multi-level geometry (walls, stairs, platforms) a straight-
+	line MoveTo has no way to route around, unlike the old open-box
+	procedural arena this was originally tuned for ("keep server cost
+	down with many concurrent zombies" no longer holds once basic
+	navigation requires it). Kept as a per-type toggle rather than
+	removed, in case a future very-cheap/very-numerous enemy type wants
+	to opt back out of the pathfinding cost.
 ]]
 
 export type ZombieStats = {
@@ -38,7 +43,7 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		AttackRange = 5,
 		AttackCooldown = 1.0,
 		CoinReward = 5,
-		UsesPathfinding = false,
+		UsesPathfinding = true,
 		Scale = 1,
 		Color = Color3.fromRGB(90, 120, 70),
 		AttackType = "Melee",
@@ -50,7 +55,7 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		AttackRange = 4,
 		AttackCooldown = 0.8,
 		CoinReward = 7,
-		UsesPathfinding = false,
+		UsesPathfinding = true,
 		Scale = 0.85,
 		Color = Color3.fromRGB(205, 190, 60),
 		AttackType = "Melee",
@@ -74,7 +79,7 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		AttackRange = 28, -- stops well back and fires rather than closing to melee
 		AttackCooldown = 2.2,
 		CoinReward = 10,
-		UsesPathfinding = false,
+		UsesPathfinding = true,
 		Scale = 0.95,
 		Color = Color3.fromRGB(120, 180, 90),
 		AttackType = "Ranged",
@@ -86,7 +91,7 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		AttackRange = 4, -- detonation trigger distance
 		AttackCooldown = 0,
 		CoinReward = 12,
-		UsesPathfinding = false,
+		UsesPathfinding = true,
 		Scale = 1.1,
 		Color = Color3.fromRGB(200, 120, 30),
 		AttackType = "Explode",

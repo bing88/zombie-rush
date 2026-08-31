@@ -611,18 +611,143 @@ assert(arenaWorldCenter and arenaWorldSize)
 
 makeMarker("ArenaSpawnPoint", arenaWorldCenter + Vector3.new(0, 2, 0))
 
--- Zombie spawn ring, sized to whichever arena actually got built above.
--- Inset well short of the arena's true edges (60% of the shorter
--- half-extent) since a ring right up against the real perimeter could
--- easily clip through a wall on an unknown, community-made layout.
+--[[
+	Builds zombie spawn points by sampling a grid across the arena's
+	actual X/Z footprint and raycasting straight down to find real floor
+	surfaces, instead of a purely geometric ring around the bounding-box
+	center. The ring approach (still used as a fallback below) works
+	fine for the simple, flat, open-box procedural arena it was
+	originally built for, but for the loaded subway map — multiple
+	floors, platforms, a train, stairs — a ring computed purely from the
+	overall bounding box's center/radius could easily land inside walls,
+	in the void between separate structures, or on the wrong level
+	entirely. In practice only a handful of the ring's 10 points ever
+	landed on real open floor, which read as "zombies only ever spawn
+	from one spot" even though 10 points were technically created.
+
+	geometryModel is whatever real Model to raycast against (the loaded
+	subway map); bottomCenter/size describe its bounding box using the
+	SAME convention as this file's other arena-building functions —
+	bottomCenter's Y is the floor level (not the box's vertical center),
+	X/Z are the horizontal center.
+]]
+local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCenter: Vector3, size: Vector3, desiredCount: number): { Vector3 }
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Include
+	raycastParams.FilterDescendantsInstances = { geometryModel }
+
+	local margin = 10
+	local rayStartY = bottomCenter.Y + size.Y + margin -- safely above the model's actual top
+	local rayLength = size.Y + margin * 2
+
+	-- Grid across the real footprint, inset from the outer edges so a
+	-- hit isn't immediately against a boundary wall.
+	local GRID_STEP = 12
+	local EDGE_MARGIN = 6
+	local minX, maxX = bottomCenter.X - size.X / 2 + EDGE_MARGIN, bottomCenter.X + size.X / 2 - EDGE_MARGIN
+	local minZ, maxZ = bottomCenter.Z - size.Z / 2 + EDGE_MARGIN, bottomCenter.Z + size.Z / 2 - EDGE_MARGIN
+
+	local candidates: { Vector3 } = {}
+	local x = minX
+	while x <= maxX do
+		local z = minZ
+		while z <= maxZ do
+			local origin = Vector3.new(x, rayStartY, z)
+			local result = Workspace:Raycast(origin, Vector3.new(0, -rayLength, 0), raycastParams)
+			if result then
+				table.insert(candidates, result.Position + Vector3.new(0, 2, 0))
+			end
+			z += GRID_STEP
+		end
+		x += GRID_STEP
+	end
+
+	if #candidates == 0 then
+		return {}
+	end
+
+	-- Shuffle so picking desiredCount below doesn't systematically favor
+	-- whichever corner of the grid happened to be scanned first.
+	for i = #candidates, 2, -1 do
+		local j = math.random(1, i)
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	end
+
+	-- Greedily pick points that are reasonably spread out from each
+	-- other, so spawns don't cluster even if the grid found a lot of
+	-- valid floor concentrated in one area (e.g. one big open platform).
+	local MIN_SEPARATION = 10
+	local selected: { Vector3 } = {}
+	for _, candidate in candidates do
+		if #selected >= desiredCount then
+			break
+		end
+		local tooClose = false
+		for _, existing in selected do
+			if (candidate - existing).Magnitude < MIN_SEPARATION then
+				tooClose = true
+				break
+			end
+		end
+		if not tooClose then
+			table.insert(selected, candidate)
+		end
+	end
+
+	-- If the spread-out pass alone didn't reach the desired count (e.g.
+	-- a small map with limited open floor), backfill with whatever
+	-- candidates are left, ignoring separation, rather than shipping
+	-- fewer spawn points than requested.
+	if #selected < desiredCount then
+		for _, candidate in candidates do
+			if #selected >= desiredCount then
+				break
+			end
+			local alreadyPicked = false
+			for _, existing in selected do
+				if (candidate - existing).Magnitude < 0.1 then
+					alreadyPicked = true
+					break
+				end
+			end
+			if not alreadyPicked then
+				table.insert(selected, candidate)
+			end
+		end
+	end
+
+	return selected
+end
+
 local zombieSpawns = Instance.new("Folder")
 zombieSpawns.Name = "ZombieSpawns"
 zombieSpawns.Parent = Workspace
-local SPAWN_RING_RADIUS = math.min(arenaWorldSize.X, arenaWorldSize.Z) / 2 * 0.6
+
 local SPAWN_COUNT = 10
-for i = 1, SPAWN_COUNT do
-	local angle = (i / SPAWN_COUNT) * math.pi * 2
-	local position = arenaWorldCenter + Vector3.new(math.cos(angle) * SPAWN_RING_RADIUS, 2, math.sin(angle) * SPAWN_RING_RADIUS)
+local spawnPositions: { Vector3 } = {}
+
+if subwayModel then
+	spawnPositions = buildGeometryAwareSpawnPositions(subwayModel, arenaWorldCenter, arenaWorldSize, SPAWN_COUNT)
+	if #spawnPositions == 0 then
+		warn("MapBootstrap: geometry-aware spawn point search found zero valid floor points on the subway map — falling back to the simple ring formula, which may land inside walls on this specific map layout.")
+	end
+end
+
+if #spawnPositions == 0 then
+	-- Simple ring: fine for the flat, open procedural fallback arena
+	-- this was originally built for, and a last-resort fallback for the
+	-- subway map too if raycasting somehow found nothing above.
+	local SPAWN_RING_RADIUS = math.min(arenaWorldSize.X, arenaWorldSize.Z) / 2 * 0.6
+	for i = 1, SPAWN_COUNT do
+		local angle = (i / SPAWN_COUNT) * math.pi * 2
+		table.insert(
+			spawnPositions,
+			arenaWorldCenter + Vector3.new(math.cos(angle) * SPAWN_RING_RADIUS, 2, math.sin(angle) * SPAWN_RING_RADIUS)
+		)
+	end
+end
+
+for i, position in spawnPositions do
 	local point = Instance.new("Part")
 	point.Name = "SpawnPoint" .. i
 	point.Anchored = true

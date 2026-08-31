@@ -7,12 +7,18 @@
 	into a ModuleScript so WaveService can drive spawning explicitly
 	instead of an endless trickle loop.
 
-	AI: Normal/Fast stay on cheap direct-chase (no PathfindingService).
-	Tank/Boss use PathfindingService per the reconciled plan's open
-	decision #2, since there are far fewer of them concurrently and they
-	benefit more from routing around cover. Boss additionally has a
-	simple 2-phase "enrage" at low HP (faster, harder-hitting, visibly
-	redder) — see ZombieConfig's Enrage* fields.
+	AI: every Melee/Ranged type (Normal/Fast/Tank/Boss/Ranged) shares a
+	single runChaseAI, using PathfindingService when
+	stats.UsesPathfinding is true — now true for every type, since the
+	loaded subway map has real multi-level geometry (walls, stairs,
+	platforms) a straight-line MoveTo has no way to route around. Kept
+	as a per-type toggle rather than deleted outright, in case a future
+	very-cheap/very-numerous enemy type wants to opt back out of the
+	pathfinding cost. Boss additionally has a simple 2-phase "enrage" at
+	low HP (faster, harder-hitting, visibly redder) — see ZombieConfig's
+	Enrage* fields. Exploder stays on its own separate runExploderAI
+	(detonate-once-on-approach, not a repeating attack) but shares the
+	same pathfinding movement helper.
 
 	WeaponService tags a zombie with the attribute "LastHitPlayerId"
 	whenever it damages it; this module reads that attribute on death to
@@ -472,57 +478,214 @@ local function findNearestPlayerRoot(fromPosition: Vector3): BasePart?
 	return nearestRoot
 end
 
---[[ Cheap direct-chase AI for Normal/Fast/Ranged — no PathfindingService. ]]
-local function runDirectChaseAI(model: Model, stats, humanoid: Humanoid, rootPart: BasePart, damageMultiplier: number, onDeath: () -> ())
-	local lastAttackTime = 0
-	local aiConnection: RBXScriptConnection
+--[[
+	Shared PathfindingService-driven movement, used by every chasing
+	zombie type now (previously Tank/Boss only — see runChaseAI's own
+	comment for why that changed). Periodically recomputes a path (not
+	every tick — pathfinding is comparatively expensive) and includes a
+	stuck watchdog that forces a fresh path if barely any progress was
+	made recently (e.g. wedged against a wall corner the path routed
+	too close to), instead of grinding in place forever. Blocks
+	internally via task.wait for roughly one "tick" worth of time —
+	callers should call this from within their own loop rather than
+	wrapping it in an additional task.wait.
+
+	pathState is a small per-zombie table the caller owns and passes in
+	every call (see newPathState()) — keeps this function reentrant
+	rather than tying it to one specific zombie via upvalues.
+]]
+local PATH_RECOMPUTE_INTERVAL = 1.5
+local STUCK_CHECK_INTERVAL = 1
+local STUCK_DISTANCE_THRESHOLD = 1.5
+
+local function newPathState()
+	return {
+		-- Jittered so many zombies spawned at once (e.g. a whole wave)
+		-- don't all recompute paths on the same cadence — now that most
+		-- zombie types use real pathfinding (previously just Tank/Boss,
+		-- far fewer concurrent instances), synchronized recomputes could
+		-- otherwise create periodic CPU spikes.
+		lastPathComputeTime = os.clock() - math.random() * PATH_RECOMPUTE_INTERVAL,
+		waypoints = {} :: { PathWaypoint },
+		waypointIndex = 1,
+		lastStuckCheckTime = os.clock(),
+		lastStuckCheckPosition = nil :: Vector3?,
+	}
+end
+
+local function moveTowardWithPathfinding(pathState, humanoid: Humanoid, rootPart: BasePart, targetPosition: Vector3, walkSpeed: number, isAlive: () -> boolean)
+	local now = os.clock()
+
+	if not pathState.lastStuckCheckPosition then
+		pathState.lastStuckCheckPosition = rootPart.Position
+	end
+
+	if now - pathState.lastStuckCheckTime > STUCK_CHECK_INTERVAL then
+		local moved = (rootPart.Position - pathState.lastStuckCheckPosition).Magnitude
+		if moved < STUCK_DISTANCE_THRESHOLD then
+			pathState.lastPathComputeTime = 0 -- force a fresh path below
+		end
+		pathState.lastStuckCheckTime = now
+		pathState.lastStuckCheckPosition = rootPart.Position
+	end
+
+	if now - pathState.lastPathComputeTime > PATH_RECOMPUTE_INTERVAL or pathState.waypointIndex > #pathState.waypoints then
+		pathState.lastPathComputeTime = now
+		local path = PathfindingService:CreatePath({
+			AgentRadius = 2,
+			AgentHeight = 5,
+			AgentCanJump = false,
+		})
+		local computeOk = pcall(function()
+			path:ComputeAsync(rootPart.Position, targetPosition)
+		end)
+		if computeOk and path.Status == Enum.PathStatus.Success then
+			pathState.waypoints = path:GetWaypoints()
+			pathState.waypointIndex = 2 -- waypoint 1 is just the zombie's current position
+		else
+			pathState.waypoints = {}
+			pathState.waypointIndex = 1
+		end
+	end
+
+	local waypoint = pathState.waypoints[pathState.waypointIndex]
+	if waypoint then
+		humanoid:MoveTo(waypoint.Position)
+		-- Scale the wait by how far this waypoint actually is (a flat
+		-- cap could abandon a long leg early, or make a slow zombie cut
+		-- a corner into the very obstacle the path was routing around);
+		-- a "close enough" break lets it move on immediately without
+		-- waiting out the full timeout if MoveToFinished doesn't fire
+		-- cleanly.
+		local waypointDistance = (waypoint.Position - rootPart.Position).Magnitude
+		local timeout = math.clamp(waypointDistance / math.max(walkSpeed, 1) + 1, 1, 4)
+		local reached = false
+		local moveToFinishedConnection = humanoid.MoveToFinished:Connect(function()
+			reached = true
+		end)
+		local waited = 0
+		while not reached and waited < timeout and isAlive() do
+			task.wait(0.1)
+			waited += 0.1
+			if (waypoint.Position - rootPart.Position).Magnitude < 3 then
+				break
+			end
+		end
+		moveToFinishedConnection:Disconnect()
+		pathState.waypointIndex += 1
+	else
+		-- No usable path this cycle; fall back to direct movement so
+		-- the zombie doesn't stand still forever.
+		humanoid:MoveTo(targetPosition)
+		task.wait(0.3)
+	end
+end
+
+--[[
+	Unified chase AI for every Melee/Ranged zombie type (Normal/Fast/
+	Tank/Boss/Ranged) — handles both attack styles, and, for Boss
+	specifically, the enrage phase-2 swap.
+
+	Movement uses real PathfindingService routing (via the shared
+	moveTowardWithPathfinding helper above) whenever stats.
+	UsesPathfinding is true, instead of a raw straight-line
+	humanoid:MoveTo with zero obstacle awareness. Previously only Tank/
+	Boss opted into this ("keep server cost down with many concurrent
+	zombies" — see ZombieConfig's old comment); every other type just
+	walked straight at the player's current position. That was fine for
+	the old open-box procedural arena, but the loaded subway map has
+	real multi-level geometry (walls, stairs, platforms) a straight
+	line has no way to route around, which is what was causing zombies
+	to visibly get stuck against walls/ladders instead of actually
+	pathing to the player. UsesPathfinding is kept as a per-type
+	config toggle (now true for every type except Exploder, which has
+	its own separate runExploderAI) rather than deleted outright, in
+	case a future very-cheap/very-numerous enemy type wants to opt back
+	out of the pathfinding cost.
+]]
+local function runChaseAI(model: Model, statsName: string, stats, humanoid: Humanoid, rootPart: BasePart, damageMultiplier: number, onDeath: () -> ())
+	local alive = true
+	local enraged = false
 
 	humanoid.Died:Connect(function()
-		if aiConnection then
-			aiConnection:Disconnect()
-		end
+		alive = false
 		activeZombieCount -= 1
 		onDeath()
 	end)
 
-	aiConnection = RunService.Heartbeat:Connect(function()
-		if not model.Parent or humanoid.Health <= 0 then
-			return
-		end
+	if statsName == "Boss" and stats.EnrageHPFraction then
+		humanoid.HealthChanged:Connect(function(health)
+			if enraged or health <= 0 then
+				return
+			end
+			if health <= humanoid.MaxHealth * stats.EnrageHPFraction then
+				enraged = true
+				humanoid.WalkSpeed = stats.EnrageWalkSpeed
+				for _, descendant in model:GetDescendants() do
+					if descendant:IsA("BasePart") then
+						descendant.Color = Color3.fromRGB(255, 50, 50)
+					end
+				end
+			end
+		end)
+	end
 
-		local targetRoot = findNearestPlayerRoot(rootPart.Position)
-		if not targetRoot then
-			humanoid:MoveTo(rootPart.Position) -- idle in place
-			return
-		end
+	local function isAlive()
+		return alive and model.Parent ~= nil
+	end
 
-		local distance = (targetRoot.Position - rootPart.Position).Magnitude
-		local canAttack = distance <= stats.AttackRange
-			and hasLineOfSight(rootPart.Position, targetRoot.Position, model)
+	task.spawn(function()
+		local pathState = newPathState()
+		local lastAttackTime = 0
 
-		if not canAttack then
-			-- Still moving toward the target even when "in range" but
-			-- blocked by cover, instead of stopping dead at the obstacle.
-			humanoid:MoveTo(targetRoot.Position)
-		else
-			humanoid:MoveTo(rootPart.Position) -- stop to attack
+		while isAlive() do
+			local targetRoot = findNearestPlayerRoot(rootPart.Position)
+			if not targetRoot then
+				task.wait(0.5)
+				continue
+			end
 
 			local now = os.clock()
-			if now - lastAttackTime >= stats.AttackCooldown then
-				lastAttackTime = now
-				local targetHumanoid = targetRoot.Parent and targetRoot.Parent:FindFirstChildOfClass("Humanoid")
+			local distance = (targetRoot.Position - rootPart.Position).Magnitude
+			local canAttack = distance <= stats.AttackRange
+				and hasLineOfSight(rootPart.Position, targetRoot.Position, model)
 
-				if stats.AttackType == "Ranged" then
-					-- Broadcast first so the visual and the damage land
-					-- in the same frame — this is a hitscan attack
-					-- (instant damage), the travel-time look is purely
-					-- cosmetic on the client.
-					ZombieRangedAttack:FireAllClients(model.Name, rootPart.Position, targetRoot.Position)
-				end
+			if canAttack then
+				humanoid:MoveTo(rootPart.Position) -- stop to attack
+				local cooldown = enraged and stats.EnrageAttackCooldown or stats.AttackCooldown
+				if now - lastAttackTime >= cooldown then
+					lastAttackTime = now
+					local targetHumanoid = targetRoot.Parent and targetRoot.Parent:FindFirstChildOfClass("Humanoid")
 
-				if targetHumanoid and targetHumanoid.Health > 0 then
-					targetHumanoid:TakeDamage(stats.AttackDamage * damageMultiplier)
+					if stats.AttackType == "Ranged" then
+						-- Broadcast first so the visual and the damage
+						-- land in the same frame — this is a hitscan
+						-- attack (instant damage), the travel-time look
+						-- is purely cosmetic on the client.
+						ZombieRangedAttack:FireAllClients(model.Name, rootPart.Position, targetRoot.Position)
+					end
+
+					if targetHumanoid and targetHumanoid.Health > 0 then
+						local damage = enraged and stats.EnrageAttackDamage or stats.AttackDamage
+						targetHumanoid:TakeDamage(damage * damageMultiplier)
+					end
 				end
+				-- Don't let time spent attacking count against the
+				-- stuck watchdog once it resumes chasing.
+				pathState.lastStuckCheckTime = now
+				pathState.lastStuckCheckPosition = rootPart.Position
+				task.wait(0.2)
+				continue
+			end
+
+			if stats.UsesPathfinding then
+				moveTowardWithPathfinding(pathState, humanoid, rootPart, targetRoot.Position, stats.WalkSpeed, isAlive)
+			else
+				-- Still moving toward the target even when "in range"
+				-- but blocked by cover, instead of stopping dead at the
+				-- obstacle.
+				humanoid:MoveTo(targetRoot.Position)
+				task.wait(0.15)
 			end
 		end
 	end)
@@ -535,9 +698,13 @@ end
 	itself. Also detonates if it dies from being shot (see onDeath in
 	SpawnZombie), so a partial-HP Exploder killed by gunfire still pops,
 	which reads more consistently than it just quietly vanishing.
+
+	Movement uses the same shared pathfinding helper as runChaseAI now
+	(previously a raw straight-line MoveTo, same "gets stuck on the new
+	map's real geometry" problem as every other type had).
 ]]
 local function runExploderAI(model: Model, stats, humanoid: Humanoid, rootPart: BasePart, onDeath: () -> ())
-	local aiConnection: RBXScriptConnection
+	local alive = true
 	local detonated = false
 
 	local function detonate()
@@ -570,173 +737,37 @@ local function runExploderAI(model: Model, stats, humanoid: Humanoid, rootPart: 
 	end
 
 	humanoid.Died:Connect(function()
-		if aiConnection then
-			aiConnection:Disconnect()
-		end
+		alive = false
 		detonate() -- still pops even if it died from being shot rather than reaching a player
 		activeZombieCount -= 1
 		onDeath()
 	end)
 
-	aiConnection = RunService.Heartbeat:Connect(function()
-		if not model.Parent or humanoid.Health <= 0 or detonated then
-			return
-		end
-
-		local targetRoot = findNearestPlayerRoot(rootPart.Position)
-		if not targetRoot then
-			humanoid:MoveTo(rootPart.Position)
-			return
-		end
-
-		local distance = (targetRoot.Position - rootPart.Position).Magnitude
-		if distance <= stats.AttackRange and hasLineOfSight(rootPart.Position, targetRoot.Position, model) then
-			detonate()
-		else
-			humanoid:MoveTo(targetRoot.Position)
-		end
-	end)
-end
-
---[[
-	PathfindingService-driven AI for Tank/Boss. Recomputes a path
-	periodically (not every frame — pathfinding is comparatively
-	expensive) and falls back to direct MoveTo if computing a path fails,
-	so a zombie never just stalls forever on a bad path.
-
-	Boss additionally tracks an "enraged" flag: once HP drops to
-	EnrageHPFraction, WalkSpeed/AttackDamage/AttackCooldown swap to the
-	Enrage* stats and every part tints red as a readable phase-2 tell.
-]]
-local function runPathfindingAI(model: Model, statsName: string, stats, humanoid: Humanoid, rootPart: BasePart, damageMultiplier: number, onDeath: () -> ())
-	local alive = true
-	local enraged = false
-
-	humanoid.Died:Connect(function()
-		alive = false
-		activeZombieCount -= 1
-		onDeath()
-	end)
-
-	if statsName == "Boss" and stats.EnrageHPFraction then
-		humanoid.HealthChanged:Connect(function(health)
-			if enraged or health <= 0 then
-				return
-			end
-			if health <= humanoid.MaxHealth * stats.EnrageHPFraction then
-				enraged = true
-				humanoid.WalkSpeed = stats.EnrageWalkSpeed
-				for _, descendant in model:GetDescendants() do
-					if descendant:IsA("BasePart") then
-						descendant.Color = Color3.fromRGB(255, 50, 50)
-					end
-				end
-			end
-		end)
+	local function isAlive()
+		return alive and model.Parent ~= nil and not detonated
 	end
 
 	task.spawn(function()
-		local lastPathComputeTime = 0
-		local waypoints: { PathWaypoint } = {}
-		local waypointIndex = 1
-		local lastAttackTime = 0
-		local lastStuckCheckTime = os.clock()
-		local lastStuckCheckPosition = rootPart.Position
+		local pathState = newPathState()
 
-		while alive and model.Parent do
+		while isAlive() do
 			local targetRoot = findNearestPlayerRoot(rootPart.Position)
 			if not targetRoot then
 				task.wait(0.5)
 				continue
 			end
 
-			local now = os.clock()
 			local distance = (targetRoot.Position - rootPart.Position).Magnitude
-			local canAttack = distance <= stats.AttackRange
-				and hasLineOfSight(rootPart.Position, targetRoot.Position, model)
-
-			if canAttack then
-				humanoid:MoveTo(rootPart.Position)
-				local cooldown = enraged and stats.EnrageAttackCooldown or stats.AttackCooldown
-				if now - lastAttackTime >= cooldown then
-					lastAttackTime = now
-					local targetHumanoid = targetRoot.Parent and targetRoot.Parent:FindFirstChildOfClass("Humanoid")
-					if targetHumanoid and targetHumanoid.Health > 0 then
-						local damage = enraged and stats.EnrageAttackDamage or stats.AttackDamage
-						targetHumanoid:TakeDamage(damage * damageMultiplier)
-					end
-				end
-				-- Don't let time spent attacking count against the stuck
-				-- watchdog below once it resumes chasing.
-				lastStuckCheckTime = now
-				lastStuckCheckPosition = rootPart.Position
-				task.wait(0.2)
-				continue
+			if distance <= stats.AttackRange and hasLineOfSight(rootPart.Position, targetRoot.Position, model) then
+				detonate()
+				break
 			end
 
-			-- Stuck watchdog: if it's supposed to be travelling but has
-			-- barely moved in the last second (wedged against a crate/
-			-- wall corner PathfindingService routed it too close to),
-			-- force a fresh path computation instead of grinding in place
-			-- for the rest of the wave.
-			if now - lastStuckCheckTime > 1 then
-				local moved = (rootPart.Position - lastStuckCheckPosition).Magnitude
-				if moved < 1.5 then
-					lastPathComputeTime = 0
-				end
-				lastStuckCheckTime = now
-				lastStuckCheckPosition = rootPart.Position
-			end
-
-			if now - lastPathComputeTime > 1.5 or waypointIndex > #waypoints then
-				lastPathComputeTime = now
-				local path = PathfindingService:CreatePath({
-					AgentRadius = 2,
-					AgentHeight = 5,
-					AgentCanJump = false,
-				})
-				local computeOk = pcall(function()
-					path:ComputeAsync(rootPart.Position, targetRoot.Position)
-				end)
-				if computeOk and path.Status == Enum.PathStatus.Success then
-					waypoints = path:GetWaypoints()
-					waypointIndex = 2 -- waypoint 1 is just the zombie's current position
-				else
-					waypoints = {}
-					waypointIndex = 1
-				end
-			end
-
-			local waypoint = waypoints[waypointIndex]
-			if waypoint then
-				humanoid:MoveTo(waypoint.Position)
-				-- Scale the wait by how far this waypoint actually is
-				-- (a flat 2s cap could abandon a long leg early, or make
-				-- a slow Tank cut a corner into the very obstacle the
-				-- path was routing around); a "close enough" break lets
-				-- it move on immediately without waiting out the full
-				-- timeout if MoveToFinished doesn't fire cleanly.
-				local waypointDistance = (waypoint.Position - rootPart.Position).Magnitude
-				local timeout = math.clamp(waypointDistance / math.max(stats.WalkSpeed, 1) + 1, 1, 4)
-				local reached = false
-				local moveToFinishedConnection = humanoid.MoveToFinished:Connect(function()
-					reached = true
-				end)
-				local waited = 0
-				while not reached and waited < timeout and alive and model.Parent do
-					task.wait(0.1)
-					waited += 0.1
-					if (waypoint.Position - rootPart.Position).Magnitude < 3 then
-						break
-					end
-				end
-				moveToFinishedConnection:Disconnect()
-				waypointIndex += 1
+			if stats.UsesPathfinding then
+				moveTowardWithPathfinding(pathState, humanoid, rootPart, targetRoot.Position, stats.WalkSpeed, isAlive)
 			else
-				-- No usable path this cycle; fall back to direct movement
-				-- so the zombie doesn't stand still forever.
 				humanoid:MoveTo(targetRoot.Position)
-				task.wait(0.3)
+				task.wait(0.15)
 			end
 		end
 	end)
@@ -768,6 +799,11 @@ local HIT_KNOCKBACK_STUN_SECONDS = 0.15
 local HIT_KNOCKBACK_SPEED = 16
 local HIT_KNOCKBACK_LIFT = 5
 
+-- Shared per-zombie "stun until" clock (os.clock() timestamp), keyed by
+-- Model. See ApplyHitKnockback's comment for why this replaced each
+-- call independently saving/restoring humanoid.PlatformStand.
+local knockbackStunExpiry: { [Model]: number } = {}
+
 --[[
 	Punches a *surviving* hit (see WeaponService's resolvePellet — killing
 	blows keep the separate, more theatrical applyDeathKnockback instead)
@@ -782,6 +818,23 @@ local HIT_KNOCKBACK_LIFT = 5
 	visible, then hands it back — the AI loops keep calling MoveTo the
 	whole time regardless, so movement just resumes normally afterward
 	with no extra bookkeeping needed here.
+
+	FIXED BUG: this previously captured/restored PlatformStand per-call
+	("wasPlatformStand = humanoid.PlatformStand ... restore to that").
+	A multi-pellet hit (the Shotgun fires 8 at once) or several hits
+	landing within the same 0.15s window each independently captured
+	whatever the PREVIOUS call had already set PlatformStand to (true),
+	then scheduled their own delayed restore back to that captured
+	(already-true) value. Once all the delayed callbacks fired, the
+	LAST one to run would set PlatformStand back to true instead of
+	false, leaving the Humanoid permanently stuck with no movement
+	authority — exactly the reported "zombie gets stuck after being
+	hit" symptom, and worse the more pellets/hits landed together.
+	Fixed by tracking one shared "stun expiry" clock per zombie that
+	each hit only ever EXTENDS (never independently restores from) —
+	only the callback whose delay lands at or after the current latest
+	expiry actually clears PlatformStand, so overlapping hits can no
+	longer race each other into leaving it stuck on.
 ]]
 function ZombieService.ApplyHitKnockback(zombieModel: Model, shotDirection: Vector3)
 	local rootPart = zombieModel.PrimaryPart
@@ -796,7 +849,6 @@ function ZombieService.ApplyHitKnockback(zombieModel: Model, shotDirection: Vect
 	end
 	local impulseVelocity = horizontal.Unit * HIT_KNOCKBACK_SPEED + Vector3.new(0, HIT_KNOCKBACK_LIFT, 0)
 
-	local wasPlatformStand = humanoid.PlatformStand
 	humanoid.PlatformStand = true
 
 	local ok = pcall(function()
@@ -806,9 +858,21 @@ function ZombieService.ApplyHitKnockback(zombieModel: Model, shotDirection: Vect
 		-- Root part may be anchored on some fallback paths; harmless no-op then.
 	end
 
+	local expiryClock = os.clock() + HIT_KNOCKBACK_STUN_SECONDS
+	knockbackStunExpiry[zombieModel] = math.max(knockbackStunExpiry[zombieModel] or 0, expiryClock)
+
 	task.delay(HIT_KNOCKBACK_STUN_SECONDS, function()
-		if humanoid.Parent and humanoid.Health > 0 then
-			humanoid.PlatformStand = wasPlatformStand
+		if not humanoid.Parent or humanoid.Health <= 0 then
+			knockbackStunExpiry[zombieModel] = nil
+			return
+		end
+		-- Only actually clear PlatformStand once we're past the LATEST
+		-- recorded expiry — if a later hit pushed it further out since
+		-- this particular delay was scheduled, some other (later-firing)
+		-- delayed call will be the one that actually clears it instead.
+		if os.clock() >= (knockbackStunExpiry[zombieModel] or 0) then
+			humanoid.PlatformStand = false
+			knockbackStunExpiry[zombieModel] = nil
 		end
 	end)
 end
@@ -894,6 +958,7 @@ function ZombieService.SpawnZombie(
 			killerPlayer = Players:GetPlayerByUserId(killerUserId)
 		end
 		zombieDiedBindable:Fire(statsName, killerPlayer, stats.CoinReward)
+		knockbackStunExpiry[model] = nil -- drop the reference so the destroyed Model can actually be garbage collected
 		task.delay(2, function()
 			model:Destroy()
 		end)
@@ -902,10 +967,8 @@ function ZombieService.SpawnZombie(
 	local effectiveDamageMultiplier = damageMultiplier or 1
 	if stats.AttackType == "Explode" then
 		runExploderAI(model, stats, humanoid, rootPart, onDeath)
-	elseif stats.UsesPathfinding then
-		runPathfindingAI(model, statsName, stats, humanoid, rootPart, effectiveDamageMultiplier, onDeath)
 	else
-		runDirectChaseAI(model, stats, humanoid, rootPart, effectiveDamageMultiplier, onDeath)
+		runChaseAI(model, statsName, stats, humanoid, rootPart, effectiveDamageMultiplier, onDeath)
 	end
 
 	return model
