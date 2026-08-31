@@ -1,0 +1,9 @@
+{
+  "name": "InspectDummyAnimations",
+  "tree": {
+    "$className": "Folder",
+    "Dummy": {
+      "$path": "C:/Users/US/my/zombie-rush/src/ServerStorage/MapAssets/Dummy_Pistol_Rifle_Animations.rbxm"
+    }
+  }
+}

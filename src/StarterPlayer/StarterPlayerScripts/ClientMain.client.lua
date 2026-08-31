@@ -26,7 +26,7 @@ CameraController.Init() -- must init before WeaponController: its RenderStepped
 WeaponController.Init()
 EffectsController.Init()
 ShopController.Init()
-WeaponViewController.Init() -- continuous camera-pitch tracking on the weapon's actual RightGrip/LeftGrip Weld (not Tool.Grip — see the file's own doc comment for why)
+WeaponViewController.Init() -- IKControl-based weapon holding: right-hand aim-follow + left-hand support grip — see the file's own doc comment for the full architecture
 
 WeaponController.OnAmmoChanged(function(weaponName, current, max, isReloading)
 	UIController.SetAmmo(weaponName, current, max, isReloading)
@@ -34,6 +34,7 @@ end)
 
 WeaponController.OnLocalFire(function()
 	UIController.ShakeAmmoUI()
+	WeaponViewController.PlayFireAnimation()
 end)
 
 WeaponController.OnLocalMuzzleFlash(function(position: Vector3)
