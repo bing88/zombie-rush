@@ -46,15 +46,22 @@ local CameraController = {}
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- Shifts the camera's focus point right and slightly up so the character
--- sits toward the left of the screen instead of dead-center, matching
--- standard over-the-shoulder third-person shooter framing. Kept modest
--- (not a large offset) — a wider shift looks more "cinematic" but makes
--- the visual gun barrel increasingly diverge from where the crosshair
--- actually sits, since the crosshair marks camera.LookVector (always
--- exact screen-center, which is what shots actually fire along) while
--- the gun's held orientation doesn't bend to match an offset camera.
-local SHOULDER_OFFSET = Vector3.new(0.9, 0.3, 0)
+-- Shifts the camera's focus point right and up so the character (and the
+-- weapon held in their hands) sits toward the lower-left of the screen
+-- instead of dead-center, matching standard over-the-shoulder third-
+-- person shooter framing — X pushes the character left, Y pushes them
+-- DOWN (the character/gun end up on the OPPOSITE side of the screen from
+-- whichever way the focus point shifts, same reasoning for both axes).
+-- The Y component specifically exists so the held weapon's silhouette
+-- sits clearly below screen-center, leaving clear headroom for the
+-- fixed-center crosshair above it — matching first person's own
+-- analogous fix, see WeaponViewController's FIRST_PERSON_VIEWMODEL_OFFSET.
+-- Kept modest on X (a wider shift looks more "cinematic" but makes the
+-- visual gun barrel increasingly diverge from where the crosshair
+-- actually sits, since the crosshair marks camera.LookVector — always
+-- exact screen-center, which is what shots actually fire along — while
+-- the gun's held orientation doesn't bend to match an offset camera).
+local SHOULDER_OFFSET = Vector3.new(0.9, 2.2, 0)
 local FIRST_PERSON_TOGGLE_KEY = Enum.KeyCode.V
 
 -- Roblox's own default (0.5 studs) lets players scroll the mouse wheel

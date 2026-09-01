@@ -9,6 +9,7 @@
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
+local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 
 local Controllers = script.Parent:WaitForChild("Controllers")
 local WeaponController = require(Controllers.WeaponController)
@@ -43,6 +44,10 @@ end)
 
 WeaponController.OnLocalTracer(function(origin: Vector3, direction: Vector3, range: number)
 	EffectsController.SpawnLocalTracer(origin, direction, range)
+end)
+
+WeaponController.OnWeaponEquipped(function(weaponName: string)
+	UIController.SetEquippedWeapon(weaponName)
 end)
 
 EffectsController.OnLocalHitmarker(function(killed: boolean)
@@ -85,12 +90,35 @@ local function toggleLeaderboard()
 end
 UIController.OnLeaderboardTabPressed(openLeaderboard) -- re-tapping the tab while open just refreshes, which is harmless
 UIController.OnLeaderboardClosePressed(closeLeaderboard)
+
+-- Number-row -> weapon slot, matching WeaponConfig.Order (same order the
+-- custom hotbar lays its slots out in). Needed because hiding Roblox's
+-- default Backpack CoreGui (see UIController.Init) also removes its
+-- built-in 1/2/3 equip-by-number handling.
+local NUMBER_KEYCODES = {
+	Enum.KeyCode.One,
+	Enum.KeyCode.Two,
+	Enum.KeyCode.Three,
+	Enum.KeyCode.Four,
+	Enum.KeyCode.Five,
+}
+
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return
 	end
 	if input.KeyCode == Enum.KeyCode.L then
 		toggleLeaderboard()
+		return
+	end
+	for index, keyCode in NUMBER_KEYCODES do
+		if input.KeyCode == keyCode then
+			local weaponName = WeaponConfig.Order[index]
+			if weaponName then
+				UIController.EquipWeaponByName(weaponName)
+			end
+			return
+		end
 	end
 end)
 
@@ -143,6 +171,7 @@ end)
 
 Remotes.WeaponsOwned.OnClientEvent:Connect(function(owned: { [string]: boolean }, levels: { [string]: number })
 	ShopController.SetOwnedWeapons(owned, levels)
+	UIController.SetOwnedWeapons(owned)
 end)
 
 Remotes.PartyStatusChanged.OnClientEvent:Connect(function(inParty: boolean, joined: number, target: number)

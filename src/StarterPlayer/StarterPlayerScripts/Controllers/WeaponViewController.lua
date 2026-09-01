@@ -172,11 +172,16 @@ local GUN_OFFSET_THIRD_PERSON = CFrame.new(0.55, 0.15, -1.1)
 	forward", per Tool/Muzzle convention — see WeaponModelFactory) ends
 	up pointing exactly parallel to camera.LookVector, i.e. wherever the
 	crosshair (screen-center, always == camera.LookVector) is currently
-	pointing, no matter how the camera pitches/yaws. Still an aesthetic
-	placement guess, not verified in Studio — retune if it sits at an
-	awkward spot on screen.
+	pointing, no matter how the camera pitches/yaws.
+
+	Y is pushed low enough that the weapon's own top rail/sights sit
+	clearly BELOW screen-center — the crosshair must read as floating
+	in front of/above the gun (like most reference shooters), never
+	overlapping or merging with its silhouette. Only X/Y are read here;
+	Z (depth) is recomputed per-weapon in buildFirstPersonViewmodel
+	below since it has to scale with each weapon's own length.
 ]]
-local FIRST_PERSON_VIEWMODEL_OFFSET = CFrame.new(0.25, -0.65, -0.4)
+local FIRST_PERSON_VIEWMODEL_OFFSET = CFrame.new(0.28, -0.85, -0.4)
 
 -- Pitch-follow backs off until this os.clock() timestamp passes, so it
 -- doesn't fight the reload dip/return tween below for control of the

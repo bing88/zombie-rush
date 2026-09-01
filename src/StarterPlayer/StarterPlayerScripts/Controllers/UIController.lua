@@ -10,6 +10,10 @@
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 
 local UIController = {}
 
@@ -19,6 +23,7 @@ local screenGui: ScreenGui
 local hpLabel: TextLabel
 local hpBarFill: Frame
 local ammoContainer: Frame
+local ammoNameLabel: TextLabel
 local ammoLabel: TextLabel
 local reloadButton: TextButton
 local fireButton: TextButton
@@ -61,6 +66,21 @@ local hitmarkerHideThread: thread? = nil
 -- almost the exact same spot, so the jump button's arrow rendered
 -- visibly through/behind it.
 local AMMO_POSITION = UDim2.new(1, -150, 1, -200)
+
+--[[
+	Custom bottom-center weapon hotbar — replaces Roblox's default
+	Backpack CoreGui (see UIController.Init's SetCoreGuiEnabled call),
+	which only ever drew plain text-on-a-box slots. Reference-game-style:
+	fixed-order numbered icon slots, a bright highlight ring on whichever
+	slot is currently equipped, and slots for weapons the player doesn't
+	own yet simply stay hidden (see SetOwnedWeapons/SetEquippedWeapon).
+	Keyed by weapon name (== WeaponConfig.Order entries == Tool.Name).
+]]
+local weaponHotbarContainer: Frame
+local weaponHotbarSlots: { [string]: { Button: TextButton, Stroke: UIStroke } } = {}
+local HOTBAR_SLOT_SIZE = 60
+local HOTBAR_SLOT_GAP = 8
+local HOTBAR_BOTTOM_MARGIN = 20
 
 --[[
 	Gapped tick-mark crosshair (four short lines + a center dot, with a
@@ -169,21 +189,42 @@ local function buildUI()
 	vignette.ZIndex = 5
 	vignette.Parent = screenGui
 
-	-- HP bar (bottom-left)
+	-- HP bar — bottom-CENTER, sitting directly above the weapon hotbar
+	-- (see buildWeaponHotbar below), matching the reference layout where
+	-- the health readout sits right above the weapon slots rather than
+	-- tucked in the bottom-left corner.
+	local HOTBAR_WIDTH = (#WeaponConfig.Order * HOTBAR_SLOT_SIZE) + (math.max(#WeaponConfig.Order - 1, 0) * HOTBAR_SLOT_GAP)
 	local hpBarBackground = Instance.new("Frame")
 	hpBarBackground.Name = "HPBarBackground"
-	hpBarBackground.Size = UDim2.fromOffset(240, 28)
-	hpBarBackground.Position = UDim2.new(0, 20, 1, -60)
-	hpBarBackground.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	hpBarBackground.AnchorPoint = Vector2.new(0.5, 1)
+	hpBarBackground.Size = UDim2.fromOffset(math.max(HOTBAR_WIDTH, 200), 26)
+	hpBarBackground.Position = UDim2.new(0.5, 0, 1, -(HOTBAR_BOTTOM_MARGIN + HOTBAR_SLOT_SIZE + 12))
+	hpBarBackground.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	hpBarBackground.BackgroundTransparency = 0.15
 	hpBarBackground.BorderSizePixel = 0
 	hpBarBackground.Parent = screenGui
+
+	local hpBarCorner = Instance.new("UICorner")
+	hpBarCorner.CornerRadius = UDim.new(0, 6)
+	hpBarCorner.Parent = hpBarBackground
+
+	local hpBarPadding = Instance.new("Frame")
+	hpBarPadding.Name = "HPBarPadding"
+	hpBarPadding.BackgroundTransparency = 1
+	hpBarPadding.Size = UDim2.new(1, -6, 1, -6)
+	hpBarPadding.Position = UDim2.fromOffset(3, 3)
+	hpBarPadding.Parent = hpBarBackground
 
 	hpBarFill = Instance.new("Frame")
 	hpBarFill.Name = "HPBarFill"
 	hpBarFill.Size = UDim2.fromScale(1, 1)
-	hpBarFill.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+	hpBarFill.BackgroundColor3 = Color3.fromRGB(90, 200, 90)
 	hpBarFill.BorderSizePixel = 0
-	hpBarFill.Parent = hpBarBackground
+	hpBarFill.Parent = hpBarPadding
+
+	local hpBarFillCorner = Instance.new("UICorner")
+	hpBarFillCorner.CornerRadius = UDim.new(0, 4)
+	hpBarFillCorner.Parent = hpBarFill
 
 	hpLabel = Instance.new("TextLabel")
 	hpLabel.Name = "HPLabel"
@@ -191,37 +232,50 @@ local function buildUI()
 	hpLabel.BackgroundTransparency = 1
 	hpLabel.TextColor3 = Color3.new(1, 1, 1)
 	hpLabel.Font = Enum.Font.GothamBold
-	hpLabel.TextSize = 16
+	hpLabel.TextSize = 14
+	hpLabel.TextStrokeTransparency = 0.5
 	hpLabel.Text = "100 / 100"
 	hpLabel.Parent = hpBarBackground
 
-	-- Coin counter (top-left)
+	-- Coin counter — bottom-left, level with the HP bar/hotbar row
+	-- (reference keeps currency low on screen, near the HUD it powers,
+	-- rather than up with the wave/match-state readouts).
 	coinLabel = Instance.new("TextLabel")
 	coinLabel.Name = "CoinLabel"
-	coinLabel.Size = UDim2.fromOffset(180, 32)
-	coinLabel.Position = UDim2.new(0, 20, 0, 20)
-	coinLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	coinLabel.BackgroundTransparency = 0.3
+	coinLabel.AnchorPoint = Vector2.new(0, 1)
+	coinLabel.Size = UDim2.fromOffset(140, 32)
+	coinLabel.Position = UDim2.new(0, 20, 1, -HOTBAR_BOTTOM_MARGIN)
+	coinLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	coinLabel.BackgroundTransparency = 0.25
 	coinLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
 	coinLabel.Font = Enum.Font.GothamBold
 	coinLabel.TextSize = 18
 	coinLabel.TextXAlignment = Enum.TextXAlignment.Left
-	coinLabel.Text = "  Coins: 0"
+	coinLabel.Text = "  $0"
 	coinLabel.Parent = screenGui
 
-	-- Wave counter (top-center)
+	local coinCorner = Instance.new("UICorner")
+	coinCorner.CornerRadius = UDim.new(0, 6)
+	coinCorner.Parent = coinLabel
+
+	-- Wave counter (top-center) — pill-shaped like the reference's
+	-- "Wave 3" chip rather than a plain square label.
 	waveLabel = Instance.new("TextLabel")
 	waveLabel.Name = "WaveLabel"
 	waveLabel.AnchorPoint = Vector2.new(0.5, 0)
-	waveLabel.Size = UDim2.fromOffset(320, 32)
+	waveLabel.Size = UDim2.fromOffset(200, 34)
 	waveLabel.Position = UDim2.new(0.5, 0, 0, 20)
-	waveLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	waveLabel.BackgroundTransparency = 0.3
+	waveLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	waveLabel.BackgroundTransparency = 0.2
 	waveLabel.TextColor3 = Color3.new(1, 1, 1)
 	waveLabel.Font = Enum.Font.GothamBold
-	waveLabel.TextSize = 18
+	waveLabel.TextSize = 20
 	waveLabel.Text = ""
 	waveLabel.Parent = screenGui
+
+	local waveCorner = Instance.new("UICorner")
+	waveCorner.CornerRadius = UDim.new(1, 0)
+	waveCorner.Parent = waveLabel
 
 	-- Current wave modifier chip (directly below the wave counter).
 	-- Distinct from stateBanner/FlashBanner — this persists for the
@@ -249,12 +303,20 @@ local function buildUI()
 	bossHPBackground.Visible = false
 	bossHPBackground.Parent = screenGui
 
+	local bossHPCorner = Instance.new("UICorner")
+	bossHPCorner.CornerRadius = UDim.new(0, 6)
+	bossHPCorner.Parent = bossHPBackground
+
 	bossHPFill = Instance.new("Frame")
 	bossHPFill.Name = "BossHPFill"
 	bossHPFill.Size = UDim2.fromScale(1, 1)
 	bossHPFill.BackgroundColor3 = Color3.fromRGB(160, 40, 200)
 	bossHPFill.BorderSizePixel = 0
 	bossHPFill.Parent = bossHPBackground
+
+	local bossHPFillCorner = Instance.new("UICorner")
+	bossHPFillCorner.CornerRadius = UDim.new(0, 6)
+	bossHPFillCorner.Parent = bossHPFill
 
 	bossHPLabel = Instance.new("TextLabel")
 	bossHPLabel.Name = "BossHPLabel"
@@ -266,46 +328,108 @@ local function buildUI()
 	bossHPLabel.Text = "BOSS"
 	bossHPLabel.Parent = bossHPBackground
 
-	-- Ammo counter (bottom-right, above reload/fire buttons). Wrapped in a
-	-- container Frame so the fire-shake tween can animate Position without
-	-- fighting the label's own text updates.
+	-- Ammo counter (bottom-right, above reload/fire buttons) — reference-
+	-- style bordered box: a bright accent-colored outline (UIStroke) with
+	-- the weapon's name on its own line and the ammo count below, rather
+	-- than the old plain dark box. Wrapped in a container Frame so the
+	-- fire-shake tween can animate Position without fighting the labels'
+	-- own text updates.
 	ammoContainer = Instance.new("Frame")
 	ammoContainer.Name = "AmmoContainer"
 	ammoContainer.AnchorPoint = Vector2.new(1, 1)
-	ammoContainer.Size = UDim2.fromOffset(100, 32)
+	ammoContainer.Size = UDim2.fromOffset(120, 52)
 	ammoContainer.Position = AMMO_POSITION
-	ammoContainer.BackgroundTransparency = 1
+	ammoContainer.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	ammoContainer.BackgroundTransparency = 0.15
 	ammoContainer.Parent = screenGui
+
+	local ammoCorner = Instance.new("UICorner")
+	ammoCorner.CornerRadius = UDim.new(0, 8)
+	ammoCorner.Parent = ammoContainer
+
+	local ammoStroke = Instance.new("UIStroke")
+	ammoStroke.Name = "AmmoStroke"
+	ammoStroke.Thickness = 2
+	ammoStroke.Color = Color3.fromRGB(255, 175, 60)
+	ammoStroke.Parent = ammoContainer
+
+	ammoNameLabel = Instance.new("TextLabel")
+	ammoNameLabel.Name = "AmmoNameLabel"
+	ammoNameLabel.Size = UDim2.new(1, 0, 0, 20)
+	ammoNameLabel.Position = UDim2.fromOffset(0, 4)
+	ammoNameLabel.BackgroundTransparency = 1
+	ammoNameLabel.TextColor3 = Color3.fromRGB(255, 175, 60)
+	ammoNameLabel.Font = Enum.Font.GothamBold
+	ammoNameLabel.TextSize = 13
+	ammoNameLabel.Text = "Pistol"
+	ammoNameLabel.Parent = ammoContainer
 
 	ammoLabel = Instance.new("TextLabel")
 	ammoLabel.Name = "AmmoLabel"
-	ammoLabel.Size = UDim2.fromScale(1, 1)
-	ammoLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	ammoLabel.BackgroundTransparency = 0.3
+	ammoLabel.Size = UDim2.new(1, 0, 0, 24)
+	ammoLabel.Position = UDim2.fromOffset(0, 24)
+	ammoLabel.BackgroundTransparency = 1
 	ammoLabel.TextColor3 = Color3.new(1, 1, 1)
 	ammoLabel.Font = Enum.Font.GothamBold
-	ammoLabel.TextSize = 13
+	ammoLabel.TextSize = 18
 	ammoLabel.TextWrapped = true
-	ammoLabel.Text = "Pistol\n12 / 12"
+	ammoLabel.Text = "12 / 12"
 	ammoLabel.Parent = ammoContainer
 
-	local ammoCorner = Instance.new("UICorner")
-	ammoCorner.CornerRadius = UDim.new(0, 4)
-	ammoCorner.Parent = ammoLabel
+	-- Right-side vertical stack of small circular icon buttons (View /
+	-- Aim / Reload), reference-style — right edge aligned with the FIRE
+	-- button/ammo box below via the same -150 offset, so the whole
+	-- right-hand column reads as one deliberate group instead of buttons
+	-- scattered at different indents. Helper keeps all three visually
+	-- consistent (dark circle, thin accent stroke, TextScaled label so
+	-- longer words like "RELOAD" still fit at this small size — no icon
+	-- image assets are available, so a short bold word stands in for
+	-- the reference's glyph).
+	local function circleButton(name: string, text: string, bottomOffset: number): TextButton
+		local button = Instance.new("TextButton")
+		button.Name = name
+		button.AnchorPoint = Vector2.new(1, 1)
+		button.Size = UDim2.fromOffset(56, 56)
+		button.Position = UDim2.new(1, -150, 1, -bottomOffset)
+		button.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		button.BackgroundTransparency = 0.15
+		button.TextColor3 = Color3.new(1, 1, 1)
+		button.Font = Enum.Font.GothamBold
+		button.TextSize = 14
+		button.TextScaled = true
+		button.TextWrapped = true
+		button.Text = text
+		button.Parent = screenGui
 
-	-- Reload button (works via mouse click or touch tap on any platform)
-	reloadButton = Instance.new("TextButton")
-	reloadButton.Name = "ReloadButton"
-	reloadButton.AnchorPoint = Vector2.new(1, 1)
-	reloadButton.Size = UDim2.fromOffset(110, 40)
-	reloadButton.Position = UDim2.new(1, -150, 1, -150)
-	reloadButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-	reloadButton.BackgroundTransparency = 0.2
-	reloadButton.TextColor3 = Color3.new(1, 1, 1)
-	reloadButton.Font = Enum.Font.GothamBold
-	reloadButton.TextSize = 16
-	reloadButton.Text = "RELOAD"
-	reloadButton.Parent = screenGui
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(1, 0) -- circular
+		corner.Parent = button
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 1.5
+		stroke.Color = Color3.fromRGB(90, 90, 90)
+		stroke.Parent = button
+
+		return button
+	end
+
+	-- Offsets start above the (now taller, bordered) ammo box — see
+	-- AMMO_POSITION/ammoContainer above (bottom edge at distance 200,
+	-- 52 tall, so its top edge sits at distance 252 from the bottom).
+	reloadButton = circleButton("ReloadButton", "RELOAD", 272)
+
+	-- Aim/ADS placeholder: visually present (matches the reference's
+	-- 3-icon column) but not wired to real aim-down-sights behavior —
+	-- this game has no ADS mechanic yet. Clicking it just says so via
+	-- the existing toast, rather than doing nothing with no feedback.
+	local aimButton = circleButton("AimButton", "AIM", 342)
+	aimButton.BackgroundTransparency = 0.5
+	aimButton.TextTransparency = 0.35
+	aimButton.Activated:Connect(function()
+		UIController.ShowToast("Aim mode coming soon", true)
+	end)
+
+	viewToggleButton = circleButton("ViewToggleButton", "VIEW", 412)
 
 	-- Fire button: the ONLY manual firing trigger (see WeaponController —
 	-- generic screen-tap/click firing was removed). Works via mouse click
@@ -328,6 +452,77 @@ local function buildUI()
 	local fireButtonCorner = Instance.new("UICorner")
 	fireButtonCorner.CornerRadius = UDim.new(1, 0) -- circular
 	fireButtonCorner.Parent = fireButton
+
+	-- Custom weapon hotbar (bottom-center, above where the HP bar sits) —
+	-- replaces Roblox's default Backpack CoreGui (disabled in Init())
+	-- with reference-style icon slots: numbered, name-labeled, with a
+	-- bright ring around whichever weapon is currently equipped. Slots
+	-- for un-owned weapons start hidden (see SetOwnedWeapons).
+	weaponHotbarContainer = Instance.new("Frame")
+	weaponHotbarContainer.Name = "WeaponHotbar"
+	weaponHotbarContainer.AnchorPoint = Vector2.new(0.5, 1)
+	weaponHotbarContainer.Size = UDim2.fromOffset(HOTBAR_WIDTH, HOTBAR_SLOT_SIZE)
+	weaponHotbarContainer.Position = UDim2.new(0.5, 0, 1, -HOTBAR_BOTTOM_MARGIN)
+	weaponHotbarContainer.BackgroundTransparency = 1
+	weaponHotbarContainer.Parent = screenGui
+
+	for index, weaponName in WeaponConfig.Order do
+		local slot = Instance.new("TextButton")
+		slot.Name = weaponName
+		slot.AnchorPoint = Vector2.new(0, 1)
+		slot.Size = UDim2.fromOffset(HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE)
+		slot.Position = UDim2.fromOffset((index - 1) * (HOTBAR_SLOT_SIZE + HOTBAR_SLOT_GAP), HOTBAR_SLOT_SIZE)
+		slot.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+		slot.BackgroundTransparency = 0.15
+		slot.AutoButtonColor = false
+		slot.Text = ""
+		slot.Visible = weaponName == WeaponConfig.StartingWeapon -- real ownership comes from SetOwnedWeapons once the server replies
+		slot.Parent = weaponHotbarContainer
+
+		local slotCorner = Instance.new("UICorner")
+		slotCorner.CornerRadius = UDim.new(0, 10)
+		slotCorner.Parent = slot
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 2
+		stroke.Color = Color3.fromRGB(255, 210, 80)
+		stroke.Transparency = 1 -- only visible on the currently-equipped slot, see SetEquippedWeapon
+		stroke.Parent = slot
+
+		local keyBadge = Instance.new("TextLabel")
+		keyBadge.Name = "KeyBadge"
+		keyBadge.Size = UDim2.fromOffset(16, 16)
+		keyBadge.Position = UDim2.fromOffset(3, 3)
+		keyBadge.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		keyBadge.BackgroundTransparency = 0.2
+		keyBadge.TextColor3 = Color3.new(1, 1, 1)
+		keyBadge.Font = Enum.Font.GothamBold
+		keyBadge.TextSize = 11
+		keyBadge.Text = tostring(index)
+		keyBadge.Parent = slot
+
+		local keyBadgeCorner = Instance.new("UICorner")
+		keyBadgeCorner.CornerRadius = UDim.new(0, 4)
+		keyBadgeCorner.Parent = keyBadge
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Name = "NameLabel"
+		nameLabel.Size = UDim2.new(1, -6, 0, 14)
+		nameLabel.Position = UDim2.new(0, 3, 1, -16)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.TextColor3 = Color3.new(1, 1, 1)
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextSize = 10
+		nameLabel.TextWrapped = true
+		nameLabel.Text = weaponName
+		nameLabel.Parent = slot
+
+		slot.Activated:Connect(function()
+			UIController.EquipWeaponByName(weaponName)
+		end)
+
+		weaponHotbarSlots[weaponName] = { Button = slot, Stroke = stroke }
+	end
 
 	-- Death overlay (hidden by default)
 	deathLabel = Instance.new("TextLabel")
@@ -617,19 +812,8 @@ local function buildUI()
 	leaderboardTabButton.Text = "LEADERBOARD (L)"
 	leaderboardTabButton.Parent = screenGui
 
-	-- Same row as Upgrades/Leaderboard, next available x-offset (20 + 120
-	-- + 10 gap = 150 for Leaderboard, 150 + 140 + 10 = 300 for this one).
-	viewToggleButton = Instance.new("TextButton")
-	viewToggleButton.Name = "ViewToggleButton"
-	viewToggleButton.Size = UDim2.fromOffset(100, 32)
-	viewToggleButton.Position = UDim2.new(0, 300, 1, -100)
-	viewToggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-	viewToggleButton.BackgroundTransparency = 0.2
-	viewToggleButton.TextColor3 = Color3.new(1, 1, 1)
-	viewToggleButton.Font = Enum.Font.GothamBold
-	viewToggleButton.TextSize = 14
-	viewToggleButton.Text = "VIEW (V)"
-	viewToggleButton.Parent = screenGui
+	-- (View toggle button itself now lives in the right-side circular
+	-- icon stack built above, alongside Reload/Aim — see circleButton.)
 
 	leaderboardPanel = Instance.new("Frame")
 	leaderboardPanel.Name = "LeaderboardPanel"
@@ -691,6 +875,12 @@ function UIController.Init()
 	if not screenGui then
 		buildUI()
 	end
+	-- Replaced by the custom icon hotbar built above (see buildUI's
+	-- "Custom weapon hotbar" block) — the default plain text-box GUI
+	-- would otherwise still draw underneath/alongside it.
+	pcall(function()
+		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+	end)
 end
 
 function UIController.SetHP(current: number, max: number)
@@ -703,13 +893,14 @@ function UIController.SetHP(current: number, max: number)
 end
 
 function UIController.SetAmmo(weaponName: string, current: number, max: number, isReloading: boolean?)
-	if not ammoLabel then
+	if not ammoLabel or not ammoNameLabel then
 		return
 	end
+	ammoNameLabel.Text = weaponName
 	if isReloading then
-		ammoLabel.Text = weaponName .. "\nRELOADING..."
+		ammoLabel.Text = "RELOADING..."
 	else
-		ammoLabel.Text = string.format("%s\n%d / %d", weaponName, current, max)
+		ammoLabel.Text = string.format("%d / %d", current, max)
 	end
 end
 
@@ -743,7 +934,50 @@ end
 
 function UIController.SetCoins(amount: number)
 	if coinLabel then
-		coinLabel.Text = "  Coins: " .. tostring(amount)
+		coinLabel.Text = "  $" .. tostring(amount)
+	end
+end
+
+--[[
+	Fed by ClientMain from the exact same Remotes.WeaponsOwned event that
+	already drives ShopController's shop rows — this just also toggles
+	which hotbar slots are visible, so a weapon shows up in the hotbar
+	the moment it's actually purchased/granted, no separate round trip.
+]]
+function UIController.SetOwnedWeapons(owned: { [string]: boolean })
+	for weaponName, slot in weaponHotbarSlots do
+		slot.Button.Visible = owned[weaponName] == true or weaponName == WeaponConfig.StartingWeapon
+	end
+end
+
+-- Fed by WeaponController.OnWeaponEquipped (fires on every Tool.Equipped,
+-- regardless of whether the switch came from this hotbar, a number key,
+-- or Roblox's own equip handling) — keeps the highlight ring in sync
+-- with whichever weapon is actually equipped right now.
+function UIController.SetEquippedWeapon(weaponName: string)
+	for name, slot in weaponHotbarSlots do
+		slot.Stroke.Transparency = (name == weaponName) and 0 or 1
+	end
+end
+
+--[[
+	The actual equip action, shared by hotbar slot clicks and ClientMain's
+	number-key handler (added because disabling the default Backpack
+	CoreGui — see Init() — also removes its built-in 1/2/3 switching).
+	Tools live directly under Backpack/Character, so no WeaponController
+	round-trip is needed; Humanoid:EquipTool fires the same Tool.Equipped
+	that WeaponController already listens to for its own state.
+]]
+function UIController.EquipWeaponByName(weaponName: string)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return
+	end
+	local backpack = player:FindFirstChild("Backpack")
+	local tool = (character and character:FindFirstChild(weaponName)) or (backpack and backpack:FindFirstChild(weaponName))
+	if tool and tool:IsA("Tool") then
+		humanoid:EquipTool(tool)
 	end
 end
 

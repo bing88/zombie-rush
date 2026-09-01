@@ -66,6 +66,7 @@ local ammoChangedCallback: ((string, number, number, boolean) -> ())? = nil
 local localFireCallback: (() -> ())? = nil
 local localMuzzleFlashCallback: ((Vector3) -> ())? = nil
 local localTracerCallback: ((Vector3, Vector3, number) -> ())? = nil
+local weaponEquippedCallback: ((string) -> ())? = nil
 
 local function statsFor(weaponName: string)
 	return WeaponConfig[weaponName]
@@ -257,6 +258,9 @@ local function trackTool(tool: Instance)
 		currentWeapon = tool.Name
 		ensureAmmo(currentWeapon)
 		updateAmmoUI()
+		if weaponEquippedCallback then
+			weaponEquippedCallback(currentWeapon)
+		end
 	end)
 end
 
@@ -374,6 +378,14 @@ end
 ]]
 function WeaponController.OnLocalTracer(callback: (Vector3, Vector3, number) -> ())
 	localTracerCallback = callback
+end
+
+-- Fires with the weapon's name every time ANY Tool.Equipped happens
+-- (hotbar click, number key, or Roblox's own equip handling) — lets
+-- UIController keep its custom hotbar's highlight ring in sync without
+-- duplicating this controller's Backpack/Character tracking.
+function WeaponController.OnWeaponEquipped(callback: (string) -> ())
+	weaponEquippedCallback = callback
 end
 
 return WeaponController
