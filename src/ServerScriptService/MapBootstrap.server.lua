@@ -613,7 +613,7 @@ makeMarker("ArenaSpawnPoint", arenaWorldCenter + Vector3.new(0, 2, 0))
 
 --[[
 	Builds zombie spawn points by sampling a grid across the arena's
-	actual X/Z footprint and raycasting straight down to find real floor
+	actual X/Z footprint and raycasting down to find real floor
 	surfaces, instead of a purely geometric ring around the bounding-box
 	center. The ring approach (still used as a fallback below) works
 	fine for the simple, flat, open-box procedural arena it was
@@ -621,9 +621,18 @@ makeMarker("ArenaSpawnPoint", arenaWorldCenter + Vector3.new(0, 2, 0))
 	floors, platforms, a train, stairs — a ring computed purely from the
 	overall bounding box's center/radius could easily land inside walls,
 	in the void between separate structures, or on the wrong level
-	entirely. In practice only a handful of the ring's 10 points ever
-	landed on real open floor, which read as "zombies only ever spawn
-	from one spot" even though 10 points were technically created.
+	entirely.
+
+	CRITICAL — probe height: rays start only PROBE_HEIGHT_ABOVE_FLOOR
+	studs above the known play-level floor (bottomCenter.Y, which is
+	where ArenaSpawnPoint puts players), NOT above the whole model's
+	bounding box. A first version of this started above the entire
+	model and took the first downward hit, which on an enclosed map like
+	the subway station is its ROOF — so every spawn point landed on the
+	roof, out of sight and unreachable. Zombies did spawn, but nowhere
+	the player could see them, and once MaxConcurrentZombies filled up
+	with roof-stuck zombies WaveService blocked all further spawning:
+	indistinguishable from "zombies never spawn" in-game.
 
 	geometryModel is whatever real Model to raycast against (the loaded
 	subway map); bottomCenter/size describe its bounding box using the
@@ -631,14 +640,16 @@ makeMarker("ArenaSpawnPoint", arenaWorldCenter + Vector3.new(0, 2, 0))
 	bottomCenter's Y is the floor level (not the box's vertical center),
 	X/Z are the horizontal center.
 ]]
+local PROBE_HEIGHT_ABOVE_FLOOR = 12 -- high enough to clear low steps/platforms, low enough to stay under any ceiling
+local REQUIRED_HEADROOM = 6 -- a spawn point needs at least this much clear space above it
+
 local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCenter: Vector3, size: Vector3, desiredCount: number): { Vector3 }
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Include
 	raycastParams.FilterDescendantsInstances = { geometryModel }
 
-	local margin = 10
-	local rayStartY = bottomCenter.Y + size.Y + margin -- safely above the model's actual top
-	local rayLength = size.Y + margin * 2
+	local rayStartY = bottomCenter.Y + PROBE_HEIGHT_ABOVE_FLOOR
+	local rayLength = PROBE_HEIGHT_ABOVE_FLOOR + 8 -- reach a little below the nominal floor for slightly sunken areas
 
 	-- Grid across the real footprint, inset from the outer edges so a
 	-- hit isn't immediately against a boundary wall.
@@ -655,7 +666,19 @@ local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCent
 			local origin = Vector3.new(x, rayStartY, z)
 			local result = Workspace:Raycast(origin, Vector3.new(0, -rayLength, 0), raycastParams)
 			if result then
-				table.insert(candidates, result.Position + Vector3.new(0, 2, 0))
+				local standPosition = result.Position + Vector3.new(0, 3, 0)
+				-- Reject spots wedged inside/under geometry (a pipe, a
+				-- train's underside, a stair's underside) — a zombie
+				-- spawned there would just be stuck immediately, which
+				-- is the same class of problem as the roof bug above.
+				local headroomHit = Workspace:Raycast(
+					standPosition,
+					Vector3.new(0, REQUIRED_HEADROOM, 0),
+					raycastParams
+				)
+				if not headroomHit then
+					table.insert(candidates, standPosition)
+				end
 			end
 			z += GRID_STEP
 		end
@@ -756,6 +779,27 @@ for i, position in spawnPositions do
 	point.Size = Vector3.new(2, 1, 2)
 	point.Position = position
 	point.Parent = zombieSpawns
+end
+
+-- Diagnostic: confirms spawn points landed at a sane height relative to
+-- the arena floor. A previous bug put every one of them on the subway
+-- station's ROOF (raycasting from above the whole model, so the first
+-- downward hit was the roof rather than the interior floor) — zombies
+-- spawned fine but were unreachable and invisible, which in-game was
+-- indistinguishable from "zombies never spawn." If minY/maxY below are
+-- far above arena floor Y, that regression is back.
+do
+	local minY, maxY = math.huge, -math.huge
+	for _, position in spawnPositions do
+		minY = math.min(minY, position.Y)
+		maxY = math.max(maxY, position.Y)
+	end
+	print(("MapBootstrap: created %d zombie spawn point(s); arena floor Y=%.1f, spawn Y range %.1f..%.1f"):format(
+		#spawnPositions,
+		arenaWorldCenter.Y,
+		minY,
+		maxY
+	))
 end
 
 -- ============================== BOUNDARY ==============================
