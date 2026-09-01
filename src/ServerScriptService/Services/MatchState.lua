@@ -10,7 +10,7 @@
 
 local MatchState = {}
 
-local state = "Lobby" -- Lobby | Starting | Wave | Break | BossIncoming | Boss | Victory | Defeat
+local state = "Lobby" -- Lobby | Starting | Wave | Break | BossIncoming | Boss | Defeat (no Victory: runs are endless)
 local changedBindable = Instance.new("BindableEvent")
 
 MatchState.Changed = changedBindable.Event

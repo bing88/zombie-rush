@@ -33,7 +33,7 @@ local stateBanner: TextLabel
 local toastLabel: TextLabel
 local confirmBackdrop: Frame
 local confirmDialog: Frame
-local confirmYesButton: TextButton
+local partySizeButtons: { [number]: TextButton } = {}
 local confirmNoButton: TextButton
 local vignette: Frame
 local hitmarker: Frame
@@ -384,7 +384,7 @@ local function buildUI()
 	confirmDialog.Name = "StartConfirmDialog"
 	confirmDialog.AnchorPoint = Vector2.new(0.5, 0.5)
 	confirmDialog.Position = UDim2.fromScale(0.5, 0.5)
-	confirmDialog.Size = UDim2.fromOffset(320, 150)
+	confirmDialog.Size = UDim2.fromOffset(316, 190)
 	confirmDialog.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 	confirmDialog.ZIndex = 11
 	confirmDialog.Parent = confirmBackdrop
@@ -401,33 +401,44 @@ local function buildUI()
 	dialogTitle.Font = Enum.Font.GothamBold
 	dialogTitle.TextSize = 18
 	dialogTitle.TextWrapped = true
-	dialogTitle.Text = "Start the match now?"
+	dialogTitle.Text = "How many players?"
 	dialogTitle.ZIndex = 11
 	dialogTitle.Parent = confirmDialog
 
-	confirmYesButton = Instance.new("TextButton")
-	confirmYesButton.Size = UDim2.fromOffset(130, 44)
-	confirmYesButton.Position = UDim2.new(0, 20, 1, -60)
-	confirmYesButton.BackgroundColor3 = Color3.fromRGB(60, 150, 70)
-	confirmYesButton.TextColor3 = Color3.new(1, 1, 1)
-	confirmYesButton.Font = Enum.Font.GothamBold
-	confirmYesButton.TextSize = 16
-	confirmYesButton.Text = "YES, START"
-	confirmYesButton.ZIndex = 11
-	confirmYesButton.Parent = confirmDialog
+	-- Party size picker (1-4) plus a cancel. Replaces the old
+	-- yes/no start confirmation now that portals let the host choose how
+	-- many players the run is for (see WaveService's portal/party
+	-- system). Buttons are created here once and reused; ShowStartConfirmation
+	-- rewires their handlers per invocation.
+	partySizeButtons = {}
+	for size = 1, 4 do
+		local button = Instance.new("TextButton")
+		button.Name = ("PartySize%d"):format(size)
+		button.Size = UDim2.fromOffset(62, 44)
+		button.Position = UDim2.new(0, 18 + (size - 1) * 70, 0, 70)
+		button.BackgroundColor3 = Color3.fromRGB(50, 110, 150)
+		button.TextColor3 = Color3.new(1, 1, 1)
+		button.Font = Enum.Font.GothamBold
+		button.TextSize = 20
+		button.Text = tostring(size)
+		button.ZIndex = 11
+		button.Parent = confirmDialog
 
-	local yesCorner = Instance.new("UICorner")
-	yesCorner.CornerRadius = UDim.new(0, 6)
-	yesCorner.Parent = confirmYesButton
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 6)
+		corner.Parent = button
+
+		partySizeButtons[size] = button
+	end
 
 	confirmNoButton = Instance.new("TextButton")
-	confirmNoButton.Size = UDim2.fromOffset(130, 44)
-	confirmNoButton.Position = UDim2.new(1, -150, 1, -60)
+	confirmNoButton.Size = UDim2.fromOffset(280, 36)
+	confirmNoButton.Position = UDim2.new(0, 18, 1, -48)
 	confirmNoButton.BackgroundColor3 = Color3.fromRGB(90, 40, 40)
 	confirmNoButton.TextColor3 = Color3.new(1, 1, 1)
 	confirmNoButton.Font = Enum.Font.GothamBold
-	confirmNoButton.TextSize = 16
-	confirmNoButton.Text = "NOT YET"
+	confirmNoButton.TextSize = 15
+	confirmNoButton.Text = "CANCEL"
 	confirmNoButton.ZIndex = 11
 	confirmNoButton.Parent = confirmDialog
 
@@ -689,16 +700,22 @@ function UIController.SetCoins(amount: number)
 	end
 end
 
-function UIController.SetWave(waveNumber: number, totalWaves: number, state: string)
+--[[
+	totalWaves is unused now that runs are endless (WaveService passes
+	the current wave number for it) — there's no fixed total to count
+	toward, so the label just shows how deep this run has gotten.
+	Kept in the signature so the remote's shape doesn't change.
+]]
+function UIController.SetWave(waveNumber: number, _totalWaves: number, state: string)
 	if not waveLabel then
 		return
 	end
 	if state == "Boss" then
-		waveLabel.Text = "BOSS FIGHT"
+		waveLabel.Text = string.format("BOSS — WAVE %d", waveNumber)
 	elseif state == "Break" then
-		waveLabel.Text = string.format("Wave %d / %d complete", waveNumber, totalWaves)
+		waveLabel.Text = string.format("Wave %d complete", waveNumber)
 	else
-		waveLabel.Text = string.format("Wave %d / %d", waveNumber, totalWaves)
+		waveLabel.Text = string.format("Wave %d", waveNumber)
 	end
 end
 
@@ -838,27 +855,35 @@ end
 	arguments and this is simpler than plumbing a mutable callback
 	reference through a single long-lived connection.
 ]]
-function UIController.ShowStartConfirmation(onAnswer: (boolean) -> ())
+--[[
+	Shows the party size picker. onAnswer receives the chosen size
+	(1-4), or nil if the player cancelled. Connections are made per
+	invocation and torn down on answer, so repeated opens don't stack
+	duplicate handlers.
+]]
+function UIController.ShowStartConfirmation(onAnswer: (number?) -> ())
 	if not confirmBackdrop then
 		return
 	end
 
-	local yesConnection: RBXScriptConnection
-	local noConnection: RBXScriptConnection
+	local connections: { RBXScriptConnection } = {}
 
-	local function respond(answer: boolean)
+	local function respond(size: number?)
 		confirmBackdrop.Visible = false
-		yesConnection:Disconnect()
-		noConnection:Disconnect()
-		onAnswer(answer)
+		for _, connection in connections do
+			connection:Disconnect()
+		end
+		onAnswer(size)
 	end
 
-	yesConnection = confirmYesButton.Activated:Connect(function()
-		respond(true)
-	end)
-	noConnection = confirmNoButton.Activated:Connect(function()
-		respond(false)
-	end)
+	for size, button in partySizeButtons do
+		table.insert(connections, button.Activated:Connect(function()
+			respond(size)
+		end))
+	end
+	table.insert(connections, confirmNoButton.Activated:Connect(function()
+		respond(nil)
+	end))
 
 	confirmBackdrop.Visible = true
 end

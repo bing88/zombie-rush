@@ -21,12 +21,12 @@ local remoteNames = {
 	"CoinsUpdated", -- server -> owning client: authoritative coin balance
 	"WeaponsOwned", -- server -> owning client: which weapons are unlocked + their upgrade levels
 	"WaveStateChanged", -- server -> all clients: wave number/total/state ("InProgress"/"Break"/"Boss")
-	"GameStateChanged", -- server -> all clients: match state ("Lobby"/"Starting"/"BossIncoming"/"Victory") + seconds left
+	"GameStateChanged", -- server -> all clients: match state ("Lobby"/"Starting"/"BossIncoming"/"Defeat") + seconds left
 	"BossHPChanged", -- server -> all clients: boss health bar
 	"ShopResult", -- server -> owning client: toast feedback for a purchase/upgrade/secret attempt
 	"PurchaseUpgradeRequest", -- client -> server: player wants to upgrade a weapon from the anytime UI panel (not a physical stall)
-	"ShowStartConfirmation", -- server -> client: player stepped on the lobby teleport pad, show a Yes/No prompt
-	"ConfirmStartGame", -- client -> server: player's answer to the above
+	"ShowStartConfirmation", -- server -> client: player opened a lobby portal, show the party size (1-4) picker; carries the portal id
+	"ConfirmStartGame", -- client -> server: (portalId, partySize) from the picker; partySize nil = cancelled
 	"PlayerDownedChanged", -- server -> owning client: entered/left the downed (bleeding out) state, + seconds left
 	"ZombieRangedAttack", -- server -> all clients: a Ranged zombie fired, for a visual projectile
 	"ZombieExploded", -- server -> all clients: an Exploder zombie went off, for a visual blast

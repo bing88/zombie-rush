@@ -118,6 +118,7 @@ local function addLabel(part: BasePart, text: string, subText: string?)
 	title.TextScaled = true
 	title.TextColor3 = Color3.new(1, 1, 1)
 	title.TextStrokeTransparency = 0.4
+	title.Name = "Title"
 	title.Text = text
 	title.Parent = billboard
 
@@ -130,6 +131,7 @@ local function addLabel(part: BasePart, text: string, subText: string?)
 		sub.TextScaled = true
 		sub.TextColor3 = Color3.fromRGB(255, 220, 100)
 		sub.TextStrokeTransparency = 0.4
+		sub.Name = "SubText"
 		sub.Text = subText
 		sub.Parent = billboard
 	end
@@ -335,20 +337,41 @@ for _, data in upgradeStalls do
 	addPointLight(podium, Color3.fromRGB(255, 200, 100), 2, 14)
 end
 
--- Teleport pad: stepping up and confirming is what actually starts a
--- match (see WaveService) — the lobby no longer auto-starts just because
--- a player is present. Glowing neon disc, hard to miss, center of the
--- lobby a short walk from the stalls.
-local teleportPad = makePart(
-	"Stall_TeleportPad",
-	Vector3.new(10, 1, 10),
-	lobbyPoint(0, 0.5, 5),
+-- Four match portals. Interacting with one opens a party-size picker
+-- (1-4 players); the host's choice decides whether the match starts on a
+-- short solo countdown or waits for others to join by stepping onto the
+-- SAME portal. See WaveService for the lobby/party state machine.
+--
+-- Four separate portals rather than one shared pad so concurrent groups
+-- have somewhere distinct to gather, and so a portal's own label can
+-- show that portal's live "joined / needed" count.
+local PORTAL_COUNT = 4
+local PORTAL_COLORS = {
 	Color3.fromRGB(60, 200, 220),
-	{ Material = Enum.Material.Neon }
-)
-addLabel(teleportPad, "START MATCH", "Step here")
-addPrompt(teleportPad, "StartMatch", "Start Match", "Teleporter")
-addPointLight(teleportPad, Color3.fromRGB(60, 200, 220), 4, 20)
+	Color3.fromRGB(120, 220, 120),
+	Color3.fromRGB(230, 180, 90),
+	Color3.fromRGB(210, 120, 230),
+}
+local portalsFolder = Instance.new("Folder")
+portalsFolder.Name = "MatchPortals"
+portalsFolder.Parent = map
+
+for i = 1, PORTAL_COUNT do
+	-- Spread along the lobby's x axis, a short walk in front of the stalls.
+	local offsetX = (i - (PORTAL_COUNT + 1) / 2) * 9
+	local color = PORTAL_COLORS[i]
+	local portal = makePart(
+		"MatchPortal" .. i,
+		Vector3.new(7, 1, 7),
+		lobbyPoint(offsetX, 0.5, 5),
+		color,
+		{ Material = Enum.Material.Neon }
+	)
+	portal.Parent = portalsFolder
+	addLabel(portal, ("PORTAL %d"):format(i), "Step here")
+	addPrompt(portal, "StartMatch", "Open Portal", ("Portal %d"):format(i))
+	addPointLight(portal, color, 4, 18)
+end
 
 -- Match starts via the teleport pad now (see WaveService), not by
 -- walking from the lobby into the arena — the corridor that used to

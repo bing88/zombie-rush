@@ -145,9 +145,11 @@ Remotes.WeaponsOwned.OnClientEvent:Connect(function(owned: { [string]: boolean }
 	ShopController.SetOwnedWeapons(owned, levels)
 end)
 
-Remotes.ShowStartConfirmation.OnClientEvent:Connect(function()
-	UIController.ShowStartConfirmation(function(confirmed: boolean)
-		Remotes.ConfirmStartGame:FireServer(confirmed)
+Remotes.ShowStartConfirmation.OnClientEvent:Connect(function(portalId: number)
+	UIController.ShowStartConfirmation(function(partySize: number?)
+		-- partySize nil means cancelled; the server treats a non-number
+		-- as "no party" and ignores it.
+		Remotes.ConfirmStartGame:FireServer(portalId, partySize)
 	end)
 end)
 
@@ -179,9 +181,9 @@ Remotes.GameStateChanged.OnClientEvent:Connect(function(state: string, secondsLe
 		UIController.SetGameStateBanner(("BOSS INCOMING — %ds"):format(secondsLeft))
 	elseif state == "BossStart" then
 		UIController.FlashBanner("BOSS FIGHT!", 2.5)
-	elseif state == "Victory" then
-		UIController.SetGameStateBanner(("Round complete! Returning to lobby in %ds"):format(secondsLeft))
 	elseif state == "Defeat" then
+		-- Endless mode has no victory state — a run only ends by being
+		-- wiped out, and the scoreboard reports how far you got.
 		UIController.SetGameStateBanner(("Wiped out... returning to lobby in %ds"):format(secondsLeft))
 	else
 		UIController.SetGameStateBanner("")

@@ -231,7 +231,7 @@ local function onCharacterAdded(player: Player, character: Model)
 		-- Else: stay dead. A truly-dead (Health == 0, not just downed)
 		-- player mid-match contributes to WaveService's defeat check;
 		-- everyone gets respawned together when the match ends either
-		-- way (see WaveService's runVictory/runDefeat).
+		-- way (see WaveService's runDefeat).
 	end)
 
 	-- Fire once immediately so the UI has correct values on spawn.
