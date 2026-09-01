@@ -38,6 +38,7 @@ local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local AssetService = game:GetService("AssetService")
 local ServerStorage = game:GetService("ServerStorage")
+local PathfindingService = game:GetService("PathfindingService")
 
 if Workspace:FindFirstChild("Map") then
 	return
@@ -643,7 +644,7 @@ makeMarker("ArenaSpawnPoint", arenaWorldCenter + Vector3.new(0, 2, 0))
 local PROBE_HEIGHT_ABOVE_FLOOR = 12 -- high enough to clear low steps/platforms, low enough to stay under any ceiling
 local REQUIRED_HEADROOM = 6 -- a spawn point needs at least this much clear space above it
 
-local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCenter: Vector3, size: Vector3, desiredCount: number): { Vector3 }
+local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCenter: Vector3, size: Vector3, desiredCount: number, playerReferencePosition: Vector3): { Vector3 }
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Include
 	raycastParams.FilterDescendantsInstances = { geometryModel }
@@ -688,6 +689,40 @@ local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCent
 	if #candidates == 0 then
 		return {}
 	end
+
+	-- Reachability filter: keep only candidates PathfindingService can
+	-- actually route from to where players stand. This is the gap that
+	-- let 2 of wave 1's 5 zombies go missing after the roof fix — those
+	-- points WERE real floor with real headroom (so they passed every
+	-- earlier check), but sat in parts of the subway map genuinely
+	-- disconnected from the play area: the track bed below platform
+	-- level, inside the train, behind a barrier. A zombie spawned there
+	-- can't path to anyone, never dies, and — because a wave only
+	-- advances once the arena is clear (see WaveService's
+	-- waitUntilArenaClear) — silently stalls the whole wave too.
+	--
+	-- Uses the same agent dimensions ZombieService's own pathfinding
+	-- does, so "reachable" here means the same thing it will at runtime.
+	local reachable: { Vector3 } = {}
+	for _, candidate in candidates do
+		local path = PathfindingService:CreatePath({
+			AgentRadius = 2,
+			AgentHeight = 5,
+			AgentCanJump = false,
+		})
+		local computeOk = pcall(function()
+			path:ComputeAsync(candidate, playerReferencePosition)
+		end)
+		if computeOk and path.Status == Enum.PathStatus.Success then
+			table.insert(reachable, candidate)
+		end
+	end
+
+	if #reachable == 0 then
+		warn("MapBootstrap: found real floor positions, but PathfindingService couldn't route from ANY of them to the player spawn — falling back to unfiltered floor positions. Zombies may spawn somewhere they can't reach players from.")
+		reachable = candidates
+	end
+	candidates = reachable
 
 	-- Shuffle so picking desiredCount below doesn't systematically favor
 	-- whichever corner of the grid happened to be scanned first.
@@ -750,7 +785,13 @@ local SPAWN_COUNT = 10
 local spawnPositions: { Vector3 } = {}
 
 if subwayModel then
-	spawnPositions = buildGeometryAwareSpawnPositions(subwayModel, arenaWorldCenter, arenaWorldSize, SPAWN_COUNT)
+	spawnPositions = buildGeometryAwareSpawnPositions(
+		subwayModel,
+		arenaWorldCenter,
+		arenaWorldSize,
+		SPAWN_COUNT,
+		arenaWorldCenter + Vector3.new(0, 2, 0) -- where players actually stand (same as ArenaSpawnPoint above)
+	)
 	if #spawnPositions == 0 then
 		warn("MapBootstrap: geometry-aware spawn point search found zero valid floor points on the subway map — falling back to the simple ring formula, which may land inside walls on this specific map layout.")
 	end
@@ -794,7 +835,7 @@ do
 		minY = math.min(minY, position.Y)
 		maxY = math.max(maxY, position.Y)
 	end
-	print(("MapBootstrap: created %d zombie spawn point(s); arena floor Y=%.1f, spawn Y range %.1f..%.1f"):format(
+	print(("MapBootstrap: created %d zombie spawn point(s) (reachability-validated against the player spawn); arena floor Y=%.1f, spawn Y range %.1f..%.1f"):format(
 		#spawnPositions,
 		arenaWorldCenter.Y,
 		minY,

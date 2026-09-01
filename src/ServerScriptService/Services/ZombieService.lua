@@ -498,6 +498,12 @@ local PATH_RECOMPUTE_INTERVAL = 1.5
 local STUCK_CHECK_INTERVAL = 1
 local STUCK_DISTANCE_THRESHOLD = 1.5
 
+-- If a zombie makes essentially no progress for this long, treat it as
+-- genuinely stranded (not merely bumping a corner) and teleport it to a
+-- known-good spawn point. See the rescue block in
+-- moveTowardWithPathfinding for why this exists.
+local STRANDED_SECONDS = 12
+
 local function newPathState()
 	return {
 		-- Jittered so many zombies spawned at once (e.g. a whole wave)
@@ -510,7 +516,45 @@ local function newPathState()
 		waypointIndex = 1,
 		lastStuckCheckTime = os.clock(),
 		lastStuckCheckPosition = nil :: Vector3?,
+		strandedSince = nil :: number?,
 	}
+end
+
+--[[
+	Last-resort rescue for a zombie that's made no meaningful progress
+	for STRANDED_SECONDS: teleport it to a random known-good spawn point
+	(the same reachability-validated ZombieSpawns list WaveService uses).
+
+	Why this is needed even with validated spawn points: a zombie can
+	still end up somewhere unreachable mid-match — knocked off a ledge
+	by the hit-knockback impulse, wedged in a gap between props, or
+	simply on a bit of geometry PathfindingService can't route out of.
+	A permanently stuck zombie doesn't just look wrong, it STALLS THE
+	WHOLE WAVE: WaveService's waitUntilArenaClear only advances once
+	every zombie is dead, so one stranded zombie hangs the match
+	indefinitely. Teleporting is deliberately blunt but self-correcting
+	— strictly better than a match that can never progress.
+]]
+local function rescueStrandedZombie(rootPart: BasePart): boolean
+	local folder = Workspace:FindFirstChild("ZombieSpawns")
+	if not folder then
+		return false
+	end
+	local points = {}
+	for _, point in folder:GetChildren() do
+		if point:IsA("BasePart") then
+			table.insert(points, point.Position)
+		end
+	end
+	if #points == 0 then
+		return false
+	end
+	local destination = points[math.random(1, #points)]
+	local ok = pcall(function()
+		rootPart.CFrame = CFrame.new(destination)
+		rootPart.AssemblyLinearVelocity = Vector3.zero
+	end)
+	return ok
 end
 
 local function moveTowardWithPathfinding(pathState, humanoid: Humanoid, rootPart: BasePart, targetPosition: Vector3, walkSpeed: number, isAlive: () -> boolean)
@@ -524,6 +568,20 @@ local function moveTowardWithPathfinding(pathState, humanoid: Humanoid, rootPart
 		local moved = (rootPart.Position - pathState.lastStuckCheckPosition).Magnitude
 		if moved < STUCK_DISTANCE_THRESHOLD then
 			pathState.lastPathComputeTime = 0 -- force a fresh path below
+			-- Track how long this has been going on: a brief snag on a
+			-- corner resolves after a fresh path, but continuous
+			-- no-progress means genuinely stranded.
+			pathState.strandedSince = pathState.strandedSince or now
+			if now - pathState.strandedSince > STRANDED_SECONDS then
+				if rescueStrandedZombie(rootPart) then
+					pathState.strandedSince = nil
+					pathState.waypoints = {}
+					pathState.waypointIndex = 1
+					pathState.lastPathComputeTime = 0
+				end
+			end
+		else
+			pathState.strandedSince = nil -- made real progress; not stranded
 		end
 		pathState.lastStuckCheckTime = now
 		pathState.lastStuckCheckPosition = rootPart.Position
