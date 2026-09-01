@@ -34,6 +34,9 @@ local toastLabel: TextLabel
 local confirmBackdrop: Frame
 local confirmDialog: Frame
 local partySizeButtons: { [number]: TextButton } = {}
+local partyWaitPanel: Frame
+local partyWaitLabel: TextLabel
+local partyExitButton: TextButton
 local confirmNoButton: TextButton
 local vignette: Frame
 local hitmarker: Frame
@@ -445,6 +448,50 @@ local function buildUI()
 	local noCorner = Instance.new("UICorner")
 	noCorner.CornerRadius = UDim.new(0, 6)
 	noCorner.Parent = confirmNoButton
+
+	-- In-portal waiting panel: shown while standing inside a portal
+	-- waiting for the party to fill / the countdown to run out. The exit
+	-- button is the only way back out, since the portal is walled off
+	-- (see MapBootstrap) — without it a player who changed their mind
+	-- would be stuck until the match started.
+	partyWaitPanel = Instance.new("Frame")
+	partyWaitPanel.Name = "PartyWaitPanel"
+	partyWaitPanel.AnchorPoint = Vector2.new(0.5, 0)
+	partyWaitPanel.Position = UDim2.new(0.5, 0, 0, 90)
+	partyWaitPanel.Size = UDim2.fromOffset(240, 84)
+	partyWaitPanel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	partyWaitPanel.BackgroundTransparency = 0.25
+	partyWaitPanel.Visible = false
+	partyWaitPanel.Parent = screenGui
+
+	local waitCorner = Instance.new("UICorner")
+	waitCorner.CornerRadius = UDim.new(0, 8)
+	waitCorner.Parent = partyWaitPanel
+
+	partyWaitLabel = Instance.new("TextLabel")
+	partyWaitLabel.Size = UDim2.new(1, -16, 0, 34)
+	partyWaitLabel.Position = UDim2.new(0, 8, 0, 6)
+	partyWaitLabel.BackgroundTransparency = 1
+	partyWaitLabel.TextColor3 = Color3.new(1, 1, 1)
+	partyWaitLabel.Font = Enum.Font.GothamBold
+	partyWaitLabel.TextSize = 16
+	partyWaitLabel.Text = "Waiting for players..."
+	partyWaitLabel.Parent = partyWaitPanel
+
+	partyExitButton = Instance.new("TextButton")
+	partyExitButton.Name = "PartyExitButton"
+	partyExitButton.Size = UDim2.new(1, -16, 0, 32)
+	partyExitButton.Position = UDim2.new(0, 8, 0, 44)
+	partyExitButton.BackgroundColor3 = Color3.fromRGB(90, 40, 40)
+	partyExitButton.TextColor3 = Color3.new(1, 1, 1)
+	partyExitButton.Font = Enum.Font.GothamBold
+	partyExitButton.TextSize = 15
+	partyExitButton.Text = "EXIT PORTAL"
+	partyExitButton.Parent = partyWaitPanel
+
+	local exitCorner = Instance.new("UICorner")
+	exitCorner.CornerRadius = UDim.new(0, 6)
+	exitCorner.Parent = partyExitButton
 
 	-- Downed banner (hidden by default) — separate from deathLabel since
 	-- downed and true-death are visually/semantically distinct states.
@@ -886,6 +933,28 @@ function UIController.ShowStartConfirmation(onAnswer: (number?) -> ())
 	end))
 
 	confirmBackdrop.Visible = true
+end
+
+--[[
+	Shows/hides the in-portal waiting panel. joined/target drive the
+	label; the panel hides entirely when not in a party.
+]]
+function UIController.SetPartyStatus(inParty: boolean, joined: number, target: number)
+	if not partyWaitPanel then
+		return
+	end
+	partyWaitPanel.Visible = inParty
+	if inParty and partyWaitLabel then
+		partyWaitLabel.Text = (target > 1)
+				and ("Waiting in portal — %d / %d"):format(joined, target)
+			or "Starting solo..."
+	end
+end
+
+function UIController.OnPartyExitPressed(callback: () -> ())
+	if partyExitButton then
+		partyExitButton.Activated:Connect(callback)
+	end
 end
 
 --[[

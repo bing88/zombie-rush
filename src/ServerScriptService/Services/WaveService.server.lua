@@ -38,6 +38,8 @@ local ShowStartConfirmation = Remotes.ShowStartConfirmation
 local ConfirmStartGame = Remotes.ConfirmStartGame
 local WaveModifierAnnounced = Remotes.WaveModifierAnnounced
 local MatchScoreboard = Remotes.MatchScoreboard
+local LeaveParty = Remotes.LeaveParty
+local PartyStatusChanged = Remotes.PartyStatusChanged
 
 local DEFAULT_ARENA_SPAWN = Vector3.new(0, 5, 105)
 local DEFAULT_LOBBY_SPAWN = Vector3.new(0, 3, -18)
@@ -481,18 +483,59 @@ end
 local function updatePortalLabels()
 	for portalId, part in portalParts do
 		local label = part:FindFirstChild("Label")
-		local subText = label and label:FindFirstChild("SubText")
-		if subText and subText:IsA("TextLabel") then
-			if partyPortalId == portalId then
-				subText.Text = ("%d / %d joined"):format(#partyMembers, partyTargetSize)
-			else
-				subText.Text = "Step here"
-			end
+		local title = label and label:FindFirstChild("Title")
+		if title and title:IsA("TextLabel") then
+			-- Blank unless a party is actually forming here — the portals
+			-- carry no permanent caption (see MapBootstrap).
+			title.Text = (partyPortalId == portalId)
+					and ("%d / %d joined"):format(#partyMembers, partyTargetSize)
+				or ""
 		end
 	end
 end
 
-local function clearParty()
+--[[ Where inside a portal to place a waiting party member. ]]
+local function getPortalStandPosition(portalId: number, memberIndex: number): Vector3
+	local part = portalParts[portalId]
+	if not part then
+		return getLobbySpawnPosition()
+	end
+	-- Fan members around the pad's center so they don't all stack in
+	-- exactly the same spot.
+	local angle = (memberIndex - 1) * (math.pi * 2 / 4)
+	return part.Position + Vector3.new(math.cos(angle) * 1.8, 3, math.sin(angle) * 1.8)
+end
+
+local function teleportPlayerTo(player: Player, position: Vector3)
+	local character = player.Character
+	if character and character.PrimaryPart then
+		character:PivotTo(CFrame.new(position))
+	end
+end
+
+--[[
+	Pushes each member their own party status, which drives the in-portal
+	waiting UI (join count + the exit button). Sent per-member rather than
+	broadcast since only members should see the exit affordance.
+]]
+local function broadcastPartyStatus()
+	for _, member in partyMembers do
+		PartyStatusChanged:FireClient(member, true, #partyMembers, partyTargetSize)
+	end
+end
+
+--[[
+	Ends the forming party. notifyMembers=false is used when the party is
+	being consumed to actually start a match — those players are about to
+	be teleported into the arena, so telling their clients "you left the
+	party" first would flash the wrong UI state.
+]]
+local function clearParty(notifyMembers: boolean?)
+	if notifyMembers then
+		for _, member in partyMembers do
+			PartyStatusChanged:FireClient(member, false, 0, 0)
+		end
+	end
 	partyPortalId = nil
 	partyTargetSize = 0
 	partyMembers = {}
@@ -500,6 +543,13 @@ local function clearParty()
 	updatePortalLabels()
 end
 
+--[[
+	Adds a player to the forming party and teleports them INSIDE the
+	portal to wait. The portal is ringed by an invisible barrier (see
+	MapBootstrap) so being inside it is only reachable this way — which
+	keeps "standing in the portal" and "actually in the party" the same
+	thing, rather than something a player could get wrong by walking in.
+]]
 local function addToParty(player: Player)
 	if not isPartyForming() or isInParty(player) then
 		return
@@ -508,7 +558,37 @@ local function addToParty(player: Player)
 		return -- already full; they'll have to wait for the next run
 	end
 	table.insert(partyMembers, player)
+	teleportPlayerTo(player, getPortalStandPosition(partyPortalId :: number, #partyMembers))
 	updatePortalLabels()
+	broadcastPartyStatus()
+end
+
+--[[
+	Voluntary exit: leaves the party AND teleports back out of the portal
+	(the barrier means they can't walk out themselves). If the host
+	leaves and nobody else is left, the party dissolves entirely.
+]]
+local function removeFromParty(player: Player)
+	if not isPartyForming() or not isInParty(player) then
+		return
+	end
+	local remaining = {}
+	for _, member in partyMembers do
+		if member ~= player then
+			table.insert(remaining, member)
+		end
+	end
+	partyMembers = remaining
+
+	teleportPlayerTo(player, getLobbySpawnPosition())
+	PartyStatusChanged:FireClient(player, false, 0, 0)
+
+	if #partyMembers == 0 then
+		clearParty(false) -- nobody left to notify; the leaver already was
+		return
+	end
+	updatePortalLabels()
+	broadcastPartyStatus()
 end
 
 --[[
@@ -534,7 +614,7 @@ local function runPartyCountdown()
 		end
 
 		if #partyMembers == 0 then
-			clearParty()
+			clearParty(false)
 			return
 		end
 
@@ -548,7 +628,10 @@ local function runPartyCountdown()
 
 		if secondsLeft <= 0 or isFull then
 			matchParticipants = partyMembers
-			clearParty()
+			-- No "you left the party" notify — these players are being
+			-- moved into the match, not ejected. Their waiting UI is
+			-- cleared client-side when the match state changes.
+			clearParty(false)
 			startRequested = true
 			return
 		end
@@ -561,9 +644,10 @@ local function runPartyCountdown()
 end
 
 --[[
-	Wires each portal's ProximityPrompt (opens the size picker) and its
-	Touched event (join a party already forming there). Only meaningful
-	in the Lobby state; both are no-ops mid-match.
+	Wires each portal's ProximityPrompt. That prompt is the only way into
+	a party: it opens the size picker for the first player, and joins
+	(plus teleports in) for anyone after. Only meaningful in the Lobby
+	state — a no-op mid-match.
 ]]
 local function connectPortals()
 	local mapFolder = Workspace:WaitForChild("Map", 10)
@@ -594,19 +678,11 @@ local function connectPortals()
 				end)
 			end
 
-			portal.Touched:Connect(function(hit: BasePart)
-				if MatchState.Get() ~= "Lobby" or not isPartyForming() then
-					return
-				end
-				if partyPortalId ~= portalId then
-					return -- wrong portal; the party is forming elsewhere
-				end
-				local character = hit.Parent
-				local player = character and Players:GetPlayerFromCharacter(character)
-				if player then
-					addToParty(player)
-				end
-			end)
+			-- No Touched-to-join handler: the portal is walled off (see
+			-- MapBootstrap), so the ONLY way in is the prompt above,
+			-- which both joins the party and teleports the player
+			-- inside. That keeps "inside the portal" and "in the party"
+			-- exactly equivalent.
 		end
 	end
 	updatePortalLabels()
@@ -618,6 +694,10 @@ connectPortals()
 	cancelled. Validated server-side (1..PORTAL_COUNT) rather than
 	trusting the client's number.
 ]]
+LeaveParty.OnServerEvent:Connect(function(player: Player)
+	removeFromParty(player)
+end)
+
 ConfirmStartGame.OnServerEvent:Connect(function(player: Player, portalId: number?, partySize: number?)
 	if MatchState.Get() ~= "Lobby" then
 		return
@@ -639,7 +719,10 @@ ConfirmStartGame.OnServerEvent:Connect(function(player: Player, portalId: number
 	partyMembers = { player }
 	partyDeadline = os.clock()
 		+ (partySize == 1 and WaveConfig.SoloCountdownSeconds or WaveConfig.LobbyCountdownSeconds)
+	-- Host waits inside the portal like everyone else.
+	teleportPlayerTo(player, getPortalStandPosition(portalId, 1))
 	updatePortalLabels()
+	broadcastPartyStatus()
 
 	task.spawn(runPartyCountdown)
 end)

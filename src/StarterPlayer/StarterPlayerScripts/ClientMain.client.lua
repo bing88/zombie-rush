@@ -145,6 +145,14 @@ Remotes.WeaponsOwned.OnClientEvent:Connect(function(owned: { [string]: boolean }
 	ShopController.SetOwnedWeapons(owned, levels)
 end)
 
+Remotes.PartyStatusChanged.OnClientEvent:Connect(function(inParty: boolean, joined: number, target: number)
+	UIController.SetPartyStatus(inParty, joined, target)
+end)
+
+UIController.OnPartyExitPressed(function()
+	Remotes.LeaveParty:FireServer()
+end)
+
 Remotes.ShowStartConfirmation.OnClientEvent:Connect(function(portalId: number)
 	UIController.ShowStartConfirmation(function(partySize: number?)
 		-- partySize nil means cancelled; the server treats a non-number
@@ -177,6 +185,11 @@ Remotes.GameStateChanged.OnClientEvent:Connect(function(state: string, secondsLe
 	elseif state == "WaveStart" then
 		-- secondsLeft doubles as the wave number for this event.
 		UIController.FlashBanner(("WAVE %d"):format(secondsLeft), 2.5)
+		-- The party was consumed to start this match rather than
+		-- disbanded, so the server deliberately doesn't send a
+		-- "you left the party" status here — clear the waiting panel off
+		-- the match starting instead, or it would linger all run.
+		UIController.SetPartyStatus(false, 0, 0)
 	elseif state == "BossIncoming" then
 		UIController.SetGameStateBanner(("BOSS INCOMING — %ds"):format(secondsLeft))
 	elseif state == "BossStart" then

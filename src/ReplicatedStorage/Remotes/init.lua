@@ -27,6 +27,8 @@ local remoteNames = {
 	"PurchaseUpgradeRequest", -- client -> server: player wants to upgrade a weapon from the anytime UI panel (not a physical stall)
 	"ShowStartConfirmation", -- server -> client: player opened a lobby portal, show the party size (1-4) picker; carries the portal id
 	"ConfirmStartGame", -- client -> server: (portalId, partySize) from the picker; partySize nil = cancelled
+	"LeaveParty", -- client -> server: player pressed the exit button while waiting inside a portal
+	"PartyStatusChanged", -- server -> owning client: (inParty, joined, target) — drives the in-portal waiting UI
 	"PlayerDownedChanged", -- server -> owning client: entered/left the downed (bleeding out) state, + seconds left
 	"ZombieRangedAttack", -- server -> all clients: a Ranged zombie fired, for a visual projectile
 	"ZombieExploded", -- server -> all clients: an Exploder zombie went off, for a visual blast

@@ -368,9 +368,39 @@ for i = 1, PORTAL_COUNT do
 		{ Material = Enum.Material.Neon }
 	)
 	portal.Parent = portalsFolder
-	addLabel(portal, ("PORTAL %d"):format(i), "Step here")
+	-- Label starts blank and is only filled in by WaveService while a
+	-- party is forming here ("2 / 4 joined") — a permanent "PORTAL 1 /
+	-- Step here" caption was just visual noise once the portals are
+	-- self-evidently interactable.
+	addLabel(portal, "", "")
 	addPrompt(portal, "StartMatch", "Open Portal", ("Portal %d"):format(i))
 	addPointLight(portal, color, 4, 18)
+
+	-- Invisible barrier ringing the pad: players can't simply walk in,
+	-- they're teleported inside on joining the party (see WaveService)
+	-- and teleported back out if they leave. Without this, someone could
+	-- wander into the staging area without ever being added to a party,
+	-- which reads as "I'm standing in the portal but the match ignores
+	-- me". Teleports aren't affected by collision, so this only blocks
+	-- walking.
+	local barrierHeight = 10
+	local halfSpan = 4 -- pad is 7 wide; barrier sits just outside it
+	local barrierSpecs = {
+		{ size = Vector3.new(8, barrierHeight, 1), offset = Vector3.new(0, barrierHeight / 2, halfSpan) },
+		{ size = Vector3.new(8, barrierHeight, 1), offset = Vector3.new(0, barrierHeight / 2, -halfSpan) },
+		{ size = Vector3.new(1, barrierHeight, 8), offset = Vector3.new(halfSpan, barrierHeight / 2, 0) },
+		{ size = Vector3.new(1, barrierHeight, 8), offset = Vector3.new(-halfSpan, barrierHeight / 2, 0) },
+	}
+	for wallIndex, spec in barrierSpecs do
+		local wall = makePart(
+			("MatchPortal%dBarrier%d"):format(i, wallIndex),
+			spec.size,
+			lobbyPoint(offsetX, 0.5, 5) + spec.offset,
+			color,
+			{ Transparency = 1, CanCollide = true }
+		)
+		wall.Parent = portalsFolder
+	end
 end
 
 -- Match starts via the teleport pad now (see WaveService), not by
@@ -633,7 +663,97 @@ if not subwayModel then
 end
 assert(arenaWorldCenter and arenaWorldSize)
 
-makeMarker("ArenaSpawnPoint", arenaWorldCenter + Vector3.new(0, 2, 0))
+local PROBE_HEIGHT_ABOVE_FLOOR = 12 -- high enough to clear low steps/platforms, low enough to stay under any ceiling
+local REQUIRED_HEADROOM = 6 -- a standable spot needs at least this much clear space above it
+
+--[[
+	Raycasts down at one X/Z column and returns a standable position, or
+	nil. Rays start only PROBE_HEIGHT_ABOVE_FLOOR above the known
+	play-level floor, NOT above the whole model — on an enclosed map like
+	the subway station, starting above the model means the first downward
+	hit is its ROOF. Also rejects spots without headroom (under a train,
+	stairs, a pipe), which are standable in the raycast sense but
+	instantly trap whatever spawns there.
+]]
+local function probeFloorAt(geometryModel: Model, x: number, z: number, floorY: number): Vector3?
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Include
+	raycastParams.FilterDescendantsInstances = { geometryModel }
+
+	local origin = Vector3.new(x, floorY + PROBE_HEIGHT_ABOVE_FLOOR, z)
+	local result = Workspace:Raycast(origin, Vector3.new(0, -(PROBE_HEIGHT_ABOVE_FLOOR + 8), 0), raycastParams)
+	if not result then
+		return nil
+	end
+
+	local standPosition = result.Position + Vector3.new(0, 3, 0)
+	local headroomHit = Workspace:Raycast(standPosition, Vector3.new(0, REQUIRED_HEADROOM, 0), raycastParams)
+	if headroomHit then
+		return nil
+	end
+	return standPosition
+end
+
+--[[
+	Finds somewhere players can actually stand, starting at the arena's
+	center and spiralling outward until real floor turns up.
+
+	FIXED BUG: ArenaSpawnPoint used to be the bounding box's center,
+	unvalidated. On the subway map that lands in open space (the track
+	pit / the gap between platforms), so starting a match teleported
+	everyone into the void and killed them instantly. The bounding box
+	center of a real building is not reliably inside the building.
+
+	This is also the reference point zombie spawn reachability is tested
+	against below, so a bad value here silently degraded that too —
+	pathfinding to a point in the void fails for every candidate, which
+	made the reachability filter give up and fall back to unfiltered.
+]]
+local function findStandablePosition(geometryModel: Model?, center: Vector3, size: Vector3): Vector3
+	local fallback = center + Vector3.new(0, 2, 0)
+	if not geometryModel then
+		return fallback -- procedural arena: flat and open, center is fine
+	end
+
+	local direct = probeFloorAt(geometryModel, center.X, center.Z, center.Y)
+	if direct then
+		return direct
+	end
+
+	-- Expanding square-ring search outward from the center.
+	local step = 8
+	local maxRings = math.ceil(math.max(size.X, size.Z) / 2 / step)
+	for ring = 1, maxRings do
+		local offset = ring * step
+		for _, candidate in {
+			Vector3.new(center.X + offset, 0, center.Z),
+			Vector3.new(center.X - offset, 0, center.Z),
+			Vector3.new(center.X, 0, center.Z + offset),
+			Vector3.new(center.X, 0, center.Z - offset),
+			Vector3.new(center.X + offset, 0, center.Z + offset),
+			Vector3.new(center.X - offset, 0, center.Z - offset),
+			Vector3.new(center.X + offset, 0, center.Z - offset),
+			Vector3.new(center.X - offset, 0, center.Z + offset),
+		} do
+			local found = probeFloorAt(geometryModel, candidate.X, candidate.Z, center.Y)
+			if found then
+				return found
+			end
+		end
+	end
+
+	warn("MapBootstrap: no standable floor found anywhere in the arena — falling back to the bounding box center, which may be mid-air.")
+	return fallback
+end
+
+local arenaPlayerSpawn = findStandablePosition(subwayModel, arenaWorldCenter, arenaWorldSize)
+makeMarker("ArenaSpawnPoint", arenaPlayerSpawn)
+print(("MapBootstrap: ArenaSpawnPoint at %.1f, %.1f, %.1f (arena floor Y=%.1f)"):format(
+	arenaPlayerSpawn.X,
+	arenaPlayerSpawn.Y,
+	arenaPlayerSpawn.Z,
+	arenaWorldCenter.Y
+))
 
 --[[
 	Builds zombie spawn points by sampling a grid across the arena's
@@ -664,17 +784,7 @@ makeMarker("ArenaSpawnPoint", arenaWorldCenter + Vector3.new(0, 2, 0))
 	bottomCenter's Y is the floor level (not the box's vertical center),
 	X/Z are the horizontal center.
 ]]
-local PROBE_HEIGHT_ABOVE_FLOOR = 12 -- high enough to clear low steps/platforms, low enough to stay under any ceiling
-local REQUIRED_HEADROOM = 6 -- a spawn point needs at least this much clear space above it
-
 local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCenter: Vector3, size: Vector3, desiredCount: number, playerReferencePosition: Vector3): { Vector3 }
-	local raycastParams = RaycastParams.new()
-	raycastParams.FilterType = Enum.RaycastFilterType.Include
-	raycastParams.FilterDescendantsInstances = { geometryModel }
-
-	local rayStartY = bottomCenter.Y + PROBE_HEIGHT_ABOVE_FLOOR
-	local rayLength = PROBE_HEIGHT_ABOVE_FLOOR + 8 -- reach a little below the nominal floor for slightly sunken areas
-
 	-- Grid across the real footprint, inset from the outer edges so a
 	-- hit isn't immediately against a boundary wall.
 	local GRID_STEP = 12
@@ -687,22 +797,11 @@ local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCent
 	while x <= maxX do
 		local z = minZ
 		while z <= maxZ do
-			local origin = Vector3.new(x, rayStartY, z)
-			local result = Workspace:Raycast(origin, Vector3.new(0, -rayLength, 0), raycastParams)
-			if result then
-				local standPosition = result.Position + Vector3.new(0, 3, 0)
-				-- Reject spots wedged inside/under geometry (a pipe, a
-				-- train's underside, a stair's underside) — a zombie
-				-- spawned there would just be stuck immediately, which
-				-- is the same class of problem as the roof bug above.
-				local headroomHit = Workspace:Raycast(
-					standPosition,
-					Vector3.new(0, REQUIRED_HEADROOM, 0),
-					raycastParams
-				)
-				if not headroomHit then
-					table.insert(candidates, standPosition)
-				end
+			-- Shared with the player-spawn search above: same roof
+			-- avoidance, same headroom rejection.
+			local standPosition = probeFloorAt(geometryModel, x, z, bottomCenter.Y)
+			if standPosition then
+				table.insert(candidates, standPosition)
 			end
 			z += GRID_STEP
 		end
@@ -813,7 +912,7 @@ if subwayModel then
 		arenaWorldCenter,
 		arenaWorldSize,
 		SPAWN_COUNT,
-		arenaWorldCenter + Vector3.new(0, 2, 0) -- where players actually stand (same as ArenaSpawnPoint above)
+		arenaPlayerSpawn -- the validated ArenaSpawnPoint, not the raw bounding-box center
 	)
 	if #spawnPositions == 0 then
 		warn("MapBootstrap: geometry-aware spawn point search found zero valid floor points on the subway map — falling back to the simple ring formula, which may land inside walls on this specific map layout.")
