@@ -45,7 +45,7 @@ local WeaponModelFactory = {}
 -- these prints are no longer needed. Server-side only, prints once per
 -- weapon (template build is cached — see getWeaponTemplate) rather than
 -- once per Clone(), so this is cheap to leave on.
-WeaponModelFactory.DEBUG_LOGGING = true
+WeaponModelFactory.DEBUG_LOGGING = false
 
 -- Exposed so other scripts (e.g. the reload animation) can fall back to
 -- this if a Tool has no "DefaultGrip" attribute for some reason.

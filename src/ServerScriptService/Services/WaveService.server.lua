@@ -451,9 +451,10 @@ end
 	the scoreboard (where "you reached wave N" actually lands for the
 	player) and returns everyone, with fresh characters, to the lobby.
 
-	BUG FIX: this doc comment used to be missing its closing `]]`, which
-	silently swallowed the ENTIRE runDefeat function definition (and the
-	"PORTAL / PARTY SYSTEM" comment after it) into one giant comment —
+	BUG FIX: this doc comment used to be missing its own closing bracket
+	pair, which silently swallowed the ENTIRE runDefeat function
+	definition (and the "PORTAL / PARTY SYSTEM" comment after it) into
+	one giant comment —
 	runDefeat was never actually defined, so the call to it at the
 	bottom of this file (main match loop) would throw "attempt to call a
 	nil value" the very first time any match ever reached Defeat,
