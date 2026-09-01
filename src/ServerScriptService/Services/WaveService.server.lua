@@ -27,6 +27,7 @@ local WaveModifiers = require(ReplicatedStorage.Shared.WaveModifiers)
 local ZombieService = require(script.Parent.ZombieService)
 local DataService = require(script.Parent.DataService)
 local MatchState = require(script.Parent.MatchState)
+local DownedState = require(script.Parent.DownedState)
 local StatsService = require(script.Parent.StatsService)
 local LeaderboardService = require(script.Parent.LeaderboardService)
 
@@ -352,6 +353,36 @@ local function runBossWave(waveNumber: number)
 end
 
 --[[
+	Called once per wave, right as the Break between waves starts: any
+	match participant who bled out (see PlayerService's downed system)
+	and truly died during the wave just finished gets a fresh character
+	now, rather than staying dead for the rest of the run. This is the
+	"die -> sit out the rest of THIS wave -> come back next wave" design
+	the downed/bleed-out system is meant to lead into — a full party
+	wipe (everyone dead/downed at once, nobody left to clear the
+	current wave) still ends the match immediately via the separate
+	defeat watchdog (allPlayersDefeated, checked every second,
+	independent of wave timing), so this only ever runs for players
+	whose teammates kept the wave going without them.
+
+	LoadCharacter() alone is enough to fully reset them: PlayerService's
+	own CharacterAdded hook (re-arms HealthChanged/Died, gives weapons
+	back, resets HP) and this module's OWN CharacterAdded hook just
+	below (teleporting any match participant's fresh character into the
+	arena) both already fire from the CharacterAdded event it triggers.
+]]
+local function respawnDeadParticipants()
+	for _, player in getActiveParticipants() do
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health <= 0 then
+			DownedState.SetDowned(player, false) -- defensive; Died already clears this in the normal case
+			player:LoadCharacter()
+		end
+	end
+end
+
+--[[
 	Endless wave loop: runs until the team is wiped, rather than stopping
 	at a fixed final wave. Every WaveConfig.BossEveryNWaves-th wave is a
 	boss wave. WaveConfig.GetWave supplies composition/pacing for any wave
@@ -395,6 +426,8 @@ local function runWaves()
 			return
 		end
 
+		respawnDeadParticipants()
+
 		MatchState.Set("Break")
 		WaveStateChanged:FireAllClients(waveNumber, waveNumber, "Break")
 		for secondsLeft = WaveConfig.BetweenWaveBreakSeconds, 1, -1 do
@@ -417,6 +450,16 @@ end
 	there is no victory state anymore, since waves never run out. Shows
 	the scoreboard (where "you reached wave N" actually lands for the
 	player) and returns everyone, with fresh characters, to the lobby.
+
+	BUG FIX: this doc comment used to be missing its closing `]]`, which
+	silently swallowed the ENTIRE runDefeat function definition (and the
+	"PORTAL / PARTY SYSTEM" comment after it) into one giant comment —
+	runDefeat was never actually defined, so the call to it at the
+	bottom of this file (main match loop) would throw "attempt to call a
+	nil value" the very first time any match ever reached Defeat,
+	silently killing that whole background coroutine (no more lobby
+	phases, no more matches, for the rest of the server's life).
+]]
 local function runDefeat()
 	MatchState.Set("Defeat")
 	GameStateChanged:FireAllClients("Defeat", WaveConfig.EndOfRunSeconds)
