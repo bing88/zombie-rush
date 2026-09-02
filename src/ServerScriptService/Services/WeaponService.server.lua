@@ -34,7 +34,6 @@ local FireWeapon = Remotes.FireWeapon
 local ReloadWeapon = Remotes.ReloadWeapon
 local AmmoUpdated = Remotes.AmmoUpdated
 local WeaponFired = Remotes.WeaponFired
-local ZombieHPChanged = Remotes.ZombieHPChanged
 local BossHPChanged = Remotes.BossHPChanged
 local WeaponExploded = Remotes.WeaponExploded
 
@@ -289,7 +288,6 @@ local function applyExplosionSplash(
 		humanoid:TakeDamage(splashDamage)
 		StatsService.RecordDamage(player, splashDamage)
 
-		ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)
 		if zombieModel:HasTag("Boss") then
 			BossHPChanged:FireAllClients(humanoid.Health, humanoid.MaxHealth)
 		end
@@ -391,7 +389,20 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 		ZombieService.ApplyHitKnockback(zombieModel, direction)
 	end
 
-	ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)
+	-- Only the BOSS broadcasts its health, because it's the only zombie
+	-- with a health bar on screen. There used to be a ZombieHPChanged
+	-- broadcast for every zombie right here; it was fired to every
+	-- client on every pellet of every hit and NOTHING ever listened to
+	-- it, which is what filled Roblox's remote-event queue and printed
+	-- "invocation queue exhausted ... did you forget to implement
+	-- OnClientEvent?" with a doubling drop count. It also couldn't have
+	-- worked as designed: it identified the zombie by `zombieModel.Name`,
+	-- which is only ever "<Type>Zombie" (see ZombieService's
+	-- createZombieModel), so all 20 concurrent zombies of a type share
+	-- one name and a client could never tell which one a health update
+	-- referred to. Per-zombie health bars would need a genuinely unique
+	-- per-spawn id instead; hit feedback itself (damage numbers,
+	-- hitmarkers, blood) already rides on the WeaponFired hit results.
 	if zombieModel:HasTag("Boss") then
 		BossHPChanged:FireAllClients(humanoid.Health, humanoid.MaxHealth)
 	end

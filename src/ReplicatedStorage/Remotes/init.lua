@@ -8,6 +8,16 @@
 	its own — it rides on Roblox's default Backpack hotbar (number keys /
 	clicking a Tool), which already replicates Tool.Equipped to the server
 	for free.
+
+	EVERY remote listed here must actually be listened to on the receiving
+	side. Roblox queues events fired at a remote with no connected handler
+	and then drops them, printing "Remote event invocation queue exhausted
+	for ...; did you forget to implement OnClientEvent?" with a doubling
+	drop count. A `ZombieHPChanged` entry was removed from this list for
+	exactly that reason: the server broadcast it to all clients on every
+	pellet of every hit and no client ever connected to it (see the note
+	in WeaponService's resolvePellet). If a remote here has no listener,
+	delete it rather than leaving it firing into the void.
 ]]
 
 local remoteNames = {
@@ -15,7 +25,6 @@ local remoteNames = {
 	"ReloadWeapon", -- client -> server: player requested a manual reload of the equipped weapon
 	"AmmoUpdated", -- server -> owning client: authoritative ammo/reload state for a given weapon
 	"WeaponFired", -- server -> all clients: origin + per-pellet hit results, for tracer/flash/damage-number effects
-	"ZombieHPChanged", -- server -> client: for hit feedback / health bars
 	"PlayerHPChanged", -- server -> client: for HP UI
 	"PlayerDied", -- server -> client: for death UI
 	"CoinsUpdated", -- server -> owning client: authoritative coin balance

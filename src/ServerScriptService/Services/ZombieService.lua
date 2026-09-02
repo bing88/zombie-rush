@@ -53,6 +53,15 @@ local BOSS_TAG = "Boss"
 -- for its documented structure); Fast/Tank/Boss are unofficial community
 -- models of unknown internal structure, handled more defensively below.
 -- Ranged/Exploder have no asset yet and always use the placeholder rig.
+-- Careful with these values: every id here had picked up a stray
+-- trailing "1" (e.g. Tank was 3058978681 for what should be 305897868,
+-- Boss 3193866641 for 319386664 — all four off by exactly one appended
+-- digit versus the ids documented in the README). The result was
+-- "Could not find asset" / "didn't contain a Model" warnings at spawn
+-- and EVERY type silently falling back to the placeholder blocky rig,
+-- which looks like "the models just don't load" rather than a typo.
+-- If a type regresses to the placeholder, check the digit count here
+-- against the README's list first.
 local ZOMBIE_ASSET_IDS: { [string]: number } = {
 	Normal = 39242386251,
 	Fast = 3065429261, -- "Skeleton Dog"
@@ -64,7 +73,7 @@ local ZOMBIE_ASSET_IDS: { [string]: number } = {
 	-- Types with no entry here (Ranged, Exploder, Spitter, Bomber) fall
 	-- back to the placeholder rig automatically, which is a supported
 	-- path — see getZombieTemplate/createZombieModel.
-	Runner = 3065429261, -- same "Skeleton Dog" rig as Fast
+1	Runner = 3065429261, -- same "Skeleton Dog" rig as Fast
 	Brute = 3058978681, -- same "NERF Zombie" rig as Tank
 }
 
