@@ -117,36 +117,49 @@
 	FIRST-PERSON HANDS + FIRE/RELOAD REACTIVITY: buildFirstPersonViewmodelArms
 	extends the clone above with the character's own R15
 	Right/LeftUpperArm+LowerArm+Hand parts (skipped gracefully on R6 —
-	shaped nothing like a first-person hand), each one's offset from the
-	real Handle captured once and folded into the SAME
-	firstPersonViewmodelOffsets table the rest of the gun's mesh already
-	uses — so the hands ride along as one rigid unit with the gun, with
-	no extra per-frame tracking needed. The real arm parts are hidden
-	the same way the real Tool is, so they don't visually double up with
-	these clones.
+	shaped nothing like a first-person hand). The real arm parts are
+	hidden the same way the real Tool is, so they don't visually double
+	up with these clones.
 
-	CURRENTLY DISABLED (see ENABLE_FIRST_PERSON_ARMS below): the very
-	first live test of this launched the whole character into the sky
-	the instant first person was entered. The obvious suspect — a
-	cloned rig part dragging along a Motor6D/Weld still referencing the
-	REAL, external, unanchored body — is destroyed well before the
-	clone is ever parented anywhere (see buildFirstPersonViewmodelArms),
-	and the already-shipped gun-only viewmodel clones a whole Tool
-	(bringing its own equip-time grip Weld along) the exact same way
-	with no such issue, so that theory doesn't cleanly explain the
-	symptom either. Flipping ENABLE_FIRST_PERSON_ARMS off was the
-	immediate fix while the real cause gets diagnosed from actual
-	Studio Output logs rather than a second blind guess.
+	Unlike the gun's own rigid mesh, whose part offsets are captured
+	once, these hands are re-posed LIVE every frame from the real arms
+	they stand in for (see updateFirstPersonViewmodel's second loop) —
+	measured against the real Handle, replayed against the viewmodel
+	Handle. That's what makes the AUTHORED Fire/Reload/Equip animations
+	(WeaponConfig's *AnimationId, the same ones third person shows)
+	visible in first person: they're always playing on the real rig
+	underneath regardless of camera mode, so handing their relative
+	motion through is all that's needed. A snapshot-once approach
+	instead froze the hands in whatever pose they held the instant
+	first person was entered, which is why reloading used to show no
+	hand movement at all in first person.
 
-	To make PlayFireAnimation/PlayReloadAnimation still read as actions
-	in first person even with hands disabled (the gun alone would
-	otherwise just sit frozen while the hidden real arm does all the
-	animating), getFirstPersonKickOffset layers a small time-based
-	recoil kick / reload dip on top of firstPersonViewmodelCameraOffset
-	every frame; both decay back to identity on their own, so at rest
-	the placement is pixel-identical to the already-tuned
-	FIRST_PERSON_VIEWMODEL_OFFSET. This part is unaffected by the flag
-	above and stays active regardless.
+	The first live test of this launched the whole character into the
+	sky the instant first person was entered. Cause (confirmed from
+	Studio Output, see stripJointsAndConstraints for the full log
+	reasoning): a joint copied along by Clone() still pointed at the
+	real body, welding the character into this ANCHORED, camera-glued
+	clone's assembly — so the per-frame CFrame writes below carried the
+	player across the map at a constant ~125 studs/sec with gravity
+	never applying. stripJointsAndConstraints now severs every
+	JointInstance/Constraint from every clone before it's parented
+	anywhere, and isCharacterGluedToSomethingElse fails the viewmodel
+	closed (cosmetic loss) instead of open (unsurvivable) if one ever
+	slips through again.
+
+	Independently of those hands, getFirstPersonKickOffset layers a
+	small time-based recoil kick / reload dip on top of
+	firstPersonViewmodelCameraOffset every frame. This is what gives
+	the GUN ITSELF motion — the authored animations move the arm, but
+	the viewmodel gun is glued to the camera rather than to the hand,
+	so without this it would sit dead still through both. It's also the
+	entire first-person fire/reload feedback when
+	ENABLE_FIRST_PERSON_ARMS is off. Both decay back to identity on
+	their own, so at rest the placement is pixel-identical to the
+	already-tuned FIRST_PERSON_VIEWMODEL_OFFSET, and it composes
+	cleanly with the live hand poses above (the hands are positioned
+	relative to the already-dipped Handle, so they follow the dip AND
+	articulate on top of it).
 ]]
 
 local Players = game:GetService("Players")
@@ -167,20 +180,16 @@ local DEBUG_LOGGING = false
 local DEBUG_TICK_INTERVAL = 1.5
 local lastDebugTickClock = 0
 
--- DISABLED: switching to first person with this on launched the whole
--- character into the sky (reported live in-game). buildFirstPersonViewmodelArms
--- clones the character's own RightUpperArm/RightLowerArm/RightHand/
--- Left* parts and immediately destroys any Motor6D/Weld found on the
--- clone before ever parenting it anywhere — that should make any
--- rig-joint reference inert, and the already-shipped gun-only viewmodel
--- clones a whole Tool (bringing its own equip-time grip Weld along) the
--- exact same way without issue, so the joint-safety reasoning behind
--- this doesn't obviously explain the symptom. Rather than ship a
--- second guess without being able to test in Studio, this is switched
--- off so the game isn't broken while it gets diagnosed from real
--- Output logs — flip back to true once the actual cause is confirmed
--- fixed. See the file header's "FIRST-PERSON HANDS" section.
-local ENABLE_FIRST_PERSON_ARMS = false
+-- Switching to first person with this on used to launch the whole
+-- character into the sky: a joint that Clone() copied along with the
+-- cloned arm parts still pointed at the real body, welding the
+-- character into the anchored, camera-glued viewmodel assembly. Fixed
+-- by stripJointsAndConstraints (which now runs on the Tool clone too,
+-- where no stripping happened at all before) — see the file header's
+-- "FIRST-PERSON HANDS" section. Safe to leave on; if a joint ever
+-- escapes again, isCharacterGluedToSomethingElse drops the viewmodel
+-- and warns rather than letting the player get carried off the map.
+local ENABLE_FIRST_PERSON_ARMS = true
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
@@ -297,11 +306,18 @@ local hiddenRealWeaponTool: Tool? = nil -- the real Tool currently hidden (Local
 local lastKnownCameraMode: Enum.CameraMode? = nil
 
 -- First-person viewmodel ARM clones (R15 only) — see
--- buildFirstPersonViewmodelArms. Each entry also gets a matching key
--- in firstPersonViewmodelOffsets above (that's what actually moves
--- them every frame); these two lists just exist so
--- destroyFirstPersonViewmodel has something to Destroy()/restore.
+-- buildFirstPersonViewmodelArms. The list exists so
+-- destroyFirstPersonViewmodel has something to Destroy(); the map is
+-- what updateFirstPersonViewmodel reads every frame to re-derive each
+-- clone's pose LIVE from the real arm part it stands in for (clone ->
+-- real part), which is what makes the authored Fire/Reload/Equip
+-- animations actually visible in first person. Deliberately NOT folded
+-- into firstPersonViewmodelOffsets above: that table holds offsets
+-- captured ONCE, which is right for the gun's own rigid mesh and wrong
+-- for anything that animates.
 local firstPersonViewmodelArmClones: { BasePart } = {}
+local firstPersonViewmodelArmSources: { [BasePart]: BasePart } = {}
+local firstPersonViewmodelSourceHandle: BasePart? = nil -- the REAL equipped Handle the live arm poses above are measured against
 local hiddenRealArmParts: { BasePart } = {} -- real arm parts hidden (LocalTransparencyModifier) while their clones above stand in, restored on teardown
 
 -- Fire-kick/reload-dip timers read by getFirstPersonKickOffset — see
@@ -492,6 +508,8 @@ local function destroyFirstPersonViewmodel()
 		armClone:Destroy()
 	end
 	table.clear(firstPersonViewmodelArmClones)
+	table.clear(firstPersonViewmodelArmSources)
+	firstPersonViewmodelSourceHandle = nil
 
 	for _, realPart in hiddenRealArmParts do
 		realPart.LocalTransparencyModifier = 0
@@ -531,26 +549,112 @@ local function detectNativeForwardCorrection(handle: BasePart): CFrame
 end
 
 --[[
+	THIS IS THE FIX FOR "switching to first person launches the whole
+	character into the sky".
+
+	Root cause, straight off the [FPDiag] logs: while first person was
+	active the character's HumanoidRootPart moved ~125 studs/second in a
+	dead-straight line while its AssemblyLinearVelocity stayed pinned at
+	an unchanging denormal (~1.6e-35) and gravity visibly never applied
+	— i.e. it was NOT being pushed by physics at all, it was being
+	*carried*, rigidly, one CFrame write per frame. Its offset from the
+	camera stayed constant to within 0.03 studs the whole flight. Then
+	the instant first person was exited (viewmodel destroyed) it began a
+	normal accelerating free-fall (-22, -43, -62... studs/sec).
+
+	That is the signature of the real character being welded into the
+	ANCHORED, camera-parented viewmodel clone's assembly: every frame
+	updateFirstPersonViewmodel re-plants the clone at a camera-relative
+	spot, the weld drags the character along with it, the
+	LockFirstPerson camera then re-centers on the character it just
+	dragged, and the next frame plants the clone relative to THAT — a
+	positive feedback loop that walks the player across the map at a
+	constant rate and never lets gravity touch them.
+
+	The joint gets there via Clone(): cloning any instance copies the
+	joints parented under it, and any Part0/Part1/Attachment0/Attachment1
+	pointing at something OUTSIDE the cloned subtree is NOT remapped —
+	it keeps pointing at the original, real, still-simulated body. A
+	character rig is full of these (each limb's Motor6D lives inside the
+	limb; the equip-time RightGrip Weld lives inside the hand and points
+	at the real Handle), so cloning arm parts and/or a whole equipped
+	Tool inevitably drags some of them along.
+
+	Rather than keep enumerating the specific classes that turned up in
+	testing (the previous attempt listed Motor6D/Weld/WeldConstraint/
+	NoCollisionConstraint by name and still missed the one that actually
+	caused this), this strips the two base classes wholesale:
+	JointInstance (Weld/Motor6D/Snap/Glue/Rotate/ManualWeld...) and
+	Constraint (WeldConstraint/NoCollisionConstraint/AlignPosition/
+	BallSocket...). Nothing in the viewmodel needs a single one of them:
+	every clone part is Anchored and has its CFrame written directly
+	from firstPersonViewmodelOffsets every frame, so joints could only
+	ever fight that or — as here — reach back into the real character.
+]]
+local function stripJointsAndConstraints(root: Instance)
+	if root:IsA("BasePart") or root:IsA("Model") then
+		root:BreakJoints()
+	end
+	for _, descendant in root:GetDescendants() do
+		if descendant:IsA("JointInstance") or descendant:IsA("Constraint") then
+			descendant:Destroy()
+		end
+	end
+end
+
+--[[
+	Last line of defense behind stripJointsAndConstraints above: if a
+	joint ever slips through again, this catches it in the same frame
+	instead of letting the feedback loop described above fling the
+	player across the map.
+
+	GetRootPart() returns the root of the physics assembly a part
+	belongs to. For a normal, free character that IS HumanoidRootPart
+	itself; the moment anything welds the character to some other
+	assembly (e.g. an anchored viewmodel clone) it becomes that other
+	assembly's root instead. So this single comparison detects "the
+	character got glued to something" generically, whatever the joint
+	class or wherever it lives, and names the offending part in Output.
+]]
+local function isCharacterGluedToSomethingElse(character: Model): (boolean, string?)
+	local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not rootPart then
+		return false, nil
+	end
+
+	local assemblyRoot = rootPart:GetRootPart()
+	if assemblyRoot and assemblyRoot ~= rootPart then
+		return true, assemblyRoot:GetFullName()
+	end
+	return false, nil
+end
+
+--[[
 	Clones the character's own R15 arm parts (both sides — upper arm,
-	lower arm, hand) into the first-person viewmodel, capturing each
-	one's offset from the real Handle and folding it straight into the
-	SAME firstPersonViewmodelOffsets table the rest of the gun's own
-	mesh already uses (see buildFirstPersonViewmodel) — so they ride
-	along as one rigid unit with the gun via updateFirstPersonViewmodel's
-	existing per-part loop, no separate per-frame tracking needed at
-	all. This is what makes the viewmodel read as hands actually
-	holding the gun instead of a bare floating prop (the original
-	version of this system, before this feature existed).
+	lower arm, hand) into the first-person viewmodel and registers each
+	clone against the real part it stands in for
+	(firstPersonViewmodelArmSources), which is what
+	updateFirstPersonViewmodel re-poses from every frame. This is what
+	makes the viewmodel read as hands actually holding the gun instead
+	of a bare floating prop (the original version of this system,
+	before this feature existed) — and, because the pose is live rather
+	than captured once, what carries the authored Fire/Reload/Equip
+	animations through into first person (see the file header).
+
+	Only the SOURCE side of that mapping is the real rig; the clones
+	themselves are anchored, jointless and CFrame-driven like the rest
+	of the viewmodel, so nothing here can feed back into the real
+	character's physics.
 
 	R6 (a single rigid "Right Arm"/"Left Arm" part, no elbow, shaped
 	nothing like a first-person hand) is intentionally skipped — falls
 	back to the bare gun-only clone exactly like before this existed.
 
-	Destroys each clone's own Motor6D/Weld immediately: Clone() brings
-	those along since they're parented under the part being cloned,
-	and left alone they'd still reference the REAL body parts as
-	Part0/Part1, fighting this system's own per-frame CFrame writes
-	(via the shared offsets table) for control of the clone.
+	Runs stripJointsAndConstraints on each clone the instant it's made,
+	before it's parented anywhere: Clone() copies the joints living
+	inside each rig part, and their unremapped Part0/Part1 keep
+	pointing at the REAL body — which is exactly what launched the
+	character into the sky (see that function's own comment).
 
 	Hides the real arm parts (LocalTransparencyModifier) for the same
 	reason setRealWeaponVisible hides the real gun — so the real, still-
@@ -563,28 +667,20 @@ local function buildFirstPersonViewmodelArms(character: Model, sourceHandle: Bas
 		return
 	end
 
+	firstPersonViewmodelSourceHandle = sourceHandle
+
 	for _, partName in FIRST_PERSON_ARM_PART_NAMES do
 		local realPart = character:FindFirstChild(partName)
 		if realPart and realPart:IsA("BasePart") then
 			local armClone = realPart:Clone()
 
-			-- Belt-and-suspenders: BreakJoints() handles the legacy
-			-- JointInstance family (Motor6D/Weld/Glue/Snap/Rotate*), and
-			-- the explicit GetDescendants() sweep (not just GetChildren
-			-- — catches anything nested, e.g. a worn accessory's own
-			-- weld) also covers the newer Constraint-based WeldConstraint/
-			-- NoCollisionConstraint, which BreakJoints() does NOT touch.
-			armClone:BreakJoints()
-			for _, joint in armClone:GetDescendants() do
-				if
-					joint:IsA("Motor6D")
-					or joint:IsA("Weld")
-					or joint:IsA("WeldConstraint")
-					or joint:IsA("NoCollisionConstraint")
-				then
-					joint:Destroy()
-				end
-			end
+			-- Before this clone is parented anywhere (i.e. before it can
+			-- be simulated at all): a cloned arm carries its own
+			-- Motor6D, and a cloned RIGHT HAND additionally carries the
+			-- equip-time RightGrip Weld still pointing at the real
+			-- Handle — either one welds the real body into this
+			-- anchored clone's assembly. See stripJointsAndConstraints.
+			stripJointsAndConstraints(armClone)
 
 			armClone.Name = "FirstPersonViewmodelArm_" .. partName
 			armClone.Anchored = true
@@ -594,7 +690,7 @@ local function buildFirstPersonViewmodelArms(character: Model, sourceHandle: Bas
 			armClone.CastShadow = false
 			armClone.Parent = camera
 
-			firstPersonViewmodelOffsets[armClone] = sourceHandle.CFrame:ToObjectSpace(realPart.CFrame)
+			firstPersonViewmodelArmSources[armClone] = realPart
 			table.insert(firstPersonViewmodelArmClones, armClone)
 
 			realPart.LocalTransparencyModifier = 1
@@ -636,6 +732,17 @@ local function buildFirstPersonViewmodel(tool: Tool)
 		return
 	end
 
+	-- Same treatment the arm clones get, and for the same reason — this
+	-- was previously missing here entirely, on the assumption that a
+	-- Tool contains only its own internal welds. It doesn't
+	-- necessarily: WeaponModelFactory's ensureHandle adds WeldConstraints
+	-- and the Weapons Kit assets ship their own BoltMotor Motor6D, and
+	-- anything the engine or an asset parents under an EQUIPPED Tool can
+	-- reference the character holding it. None of it is wanted here (see
+	-- stripJointsAndConstraints — every part below is Anchored and
+	-- CFrame-driven), so all of it goes.
+	stripJointsAndConstraints(clone)
+
 	local offsets: { [BasePart]: CFrame } = {}
 	for _, descendant in clone:GetDescendants() do
 		if descendant:IsA("BasePart") then
@@ -670,6 +777,20 @@ local function buildFirstPersonViewmodel(tool: Tool)
 	if ENABLE_FIRST_PERSON_ARMS and character then
 		buildFirstPersonViewmodelArms(character, sourceHandle)
 	end
+
+	-- Safety net (see isCharacterGluedToSomethingElse): if anything in
+	-- the tree just built still managed to weld itself to the real
+	-- character, tear the whole viewmodel back down NOW rather than let
+	-- the next frame start carrying the player off the map. Losing the
+	-- viewmodel is a cosmetic downgrade; being launched into the sky is
+	-- not survivable, so failing closed is strictly better.
+	if character then
+		local isGlued, gluedTo = isCharacterGluedToSomethingElse(character)
+		if isGlued then
+			warn(("[WeaponViewController] first-person viewmodel welded the character to %s — tearing it down instead of launching the player. This is the 'flies away' bug; a joint escaped stripJointsAndConstraints."):format(tostring(gluedTo)))
+			destroyFirstPersonViewmodel()
+		end
+	end
 end
 
 --[[
@@ -682,16 +803,17 @@ end
 	mode is actually active right now.
 ]]
 --[[
-	TEMPORARY DIAGNOSTIC — see CameraController's matching "[FPDiag]"
-	block for the "switching to first person launches the character
-	into the sky" bug report. Wraps this function's actual body calls
-	in pcall so an error here (which wouldn't itself explain a physics
-	launch, but is cheap to rule out) is visible in Output instead of
-	silently aborting mid-way — e.g. leaving setRealWeaponVisible(tool,
-	false) never called if buildFirstPersonViewmodel throws partway
-	through. Remove alongside CameraController's block once resolved.
+	DIAGNOSTIC, OFF BY DEFAULT — the counterpart to CameraController's
+	matching "[FPDiag]" block, from the "switching to first person
+	launches the character into the sky" investigation (now fixed, see
+	stripJointsAndConstraints). Logs rootPos/velocity either side of
+	the viewmodel build/teardown, and wraps the body calls in pcall so
+	a throw is visible in Output instead of silently aborting mid-way
+	— e.g. leaving setRealWeaponVisible(tool, false) never called if
+	buildFirstPersonViewmodel fails partway through. Flip to true (and
+	CameraController's) together to re-arm.
 ]]
-local DIAGNOSE_FIRST_PERSON_LAUNCH = true
+local DIAGNOSE_FIRST_PERSON_LAUNCH = false
 
 local function applyFirstPersonViewmodelState(tool: Tool)
 	local character = currentCharacter
@@ -790,6 +912,37 @@ local function updateFirstPersonViewmodel()
 	for part, offset in firstPersonViewmodelOffsets do
 		if part ~= firstPersonViewmodelHandle and part.Parent then
 			part.CFrame = handleCFrame * offset
+		end
+	end
+
+	--[[
+		The hands, unlike the gun's own rigid mesh above, are posed LIVE
+		off the real arms every frame rather than from an offset
+		captured once at build time. That single change is what makes
+		the authored Fire/Reload/Equip animations visible in first
+		person at all: they're always playing on the real rig
+		underneath (that's what third person shows), the real arms are
+		just hidden here — so measuring each real arm part against the
+		REAL Handle and replaying that same relative pose against the
+		VIEWMODEL Handle hands the authored motion straight through.
+
+		Measuring relative to the Handle (rather than the torso/camera)
+		is what keeps the gun rock-steady on screen while the hands
+		move: the gun is welded to the right hand, so the right hand is
+		by definition motionless in Handle space and stays gripping,
+		while the LEFT hand — which the reload animation actually moves,
+		and which PlayReloadAnimation deliberately releases from IK for
+		the duration — swings off to the magazine and back exactly as
+		authored. Whole-body motion (walk cycle, turning) cancels out
+		for free, since both sides of the measurement move with it.
+	]]
+	local sourceHandle = firstPersonViewmodelSourceHandle
+	if sourceHandle and sourceHandle.Parent then
+		local sourceHandleCFrame = sourceHandle.CFrame
+		for armClone, realPart in firstPersonViewmodelArmSources do
+			if armClone.Parent and realPart.Parent then
+				armClone.CFrame = handleCFrame * sourceHandleCFrame:ToObjectSpace(realPart.CFrame)
+			end
 		end
 	end
 end

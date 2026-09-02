@@ -34,6 +34,7 @@ local remoteNames = {
 	"PlayerDownedChanged", -- server -> owning client: entered/left the downed (bleeding out) state, + seconds left
 	"ZombieRangedAttack", -- server -> all clients: a Ranged zombie fired, for a visual projectile
 	"ZombieExploded", -- server -> all clients: an Exploder zombie went off, for a visual blast
+	"WeaponExploded", -- server -> all clients: an ExplodeOnImpact weapon's shot detonated, for a visual blast (see WeaponConfig/WeaponService)
 	"WaveModifierAnnounced", -- server -> all clients: this wave's random modifier, for a banner
 	"MatchScoreboard", -- server -> all clients: final per-player kills/damage/coins at Victory or Defeat
 	"ObjectiveUpdated", -- server -> owning client: session objective progress

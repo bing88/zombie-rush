@@ -113,19 +113,35 @@ local isLocked = false
 local lastManualAimClock = 0
 
 --[[
-	TEMPORARY DIAGNOSTIC — see the "switching to first person launches
-	the character into the sky" bug report. Prints a snapshot of
-	HumanoidRootPart's position/velocity/Humanoid state right before and
-	after the toggle, then every ~0.1s for a few seconds afterward, so
-	whichever exact frame/value first goes wrong is visible in Output.
-	Search Output for "[FPDiag]". Remove this whole block (and its call
-	sites below) once the real cause is found and fixed.
+	DIAGNOSTIC, OFF BY DEFAULT — this is what caught the "switching to
+	first person launches the character into the sky" bug: it prints a
+	snapshot of HumanoidRootPart's position/velocity/Humanoid state
+	around each first-person toggle and every ~0.1s for a while
+	afterward (search Output for "[FPDiag]"), plus always-on teleport
+	and sustained-speed watchdogs. The frozen velocity + perfectly
+	linear drift it showed is what identified the cause as a rigid weld
+	into the camera-glued viewmodel rather than a physics impulse — see
+	WeaponViewController's stripJointsAndConstraints for the fix.
+
+	Left in place (just switched off, since the ~200 lines per toggle
+	drown out everything else in Output) because it's the only thing
+	that can distinguish "carried by a joint" from "pushed by physics"
+	if anything like this ever shows up again. Flip to true to re-arm.
 ]]
-local DIAGNOSE_FIRST_PERSON_LAUNCH = true
+local DIAGNOSE_FIRST_PERSON_LAUNCH = false
 local diagnoseUntilClock = 0
 local lastDiagnoseTickClock = 0
 local lastKnownRootPosition: Vector3? = nil -- always-on jump detector, see the RenderStepped connection below
+local highSpeedEpisodeActive = false -- edge-triggers the sustained-speed warning once per episode instead of every frame
 
+-- BUG FIX (found from the user's own [FPDiag] Output): this was reading
+-- `player.CameraSubject`, but CameraSubject is a Camera property, not a
+-- Player one — Player has no such member at all, so EVERY diagnostic
+-- snapshot's pcall was failing on this exact line before it ever
+-- reached the print() call, meaning none of the actually-useful
+-- position/velocity/state fields below were making it to Output either
+-- — only "snapshot itself errored: ... is not a valid member of Player"
+-- printed, every single time. Fixed to read it off `camera` instead.
 local function diagnoseSnapshot(character: Model, label: string)
 	if not DIAGNOSE_FIRST_PERSON_LAUNCH then
 		return
@@ -147,7 +163,7 @@ local function diagnoseSnapshot(character: Model, label: string)
 			humanoid and tostring(humanoid.Sit) or "?",
 			tostring(player.CameraMode),
 			tostring(camera.CFrame.Position),
-			tostring(player.CameraSubject)
+			tostring(camera.CameraSubject)
 		))
 	end)
 	if not ok then
@@ -264,7 +280,16 @@ local function toggleFirstPerson()
 			print("[FPDiag] applyCameraMode ERRORED: " .. tostring(err))
 		end
 		diagnoseSnapshot(character, "AFTER applyCameraMode")
-		diagnoseUntilClock = os.clock() + 4
+		-- Widened from 4s to 20s: the user's own Output showed the
+		-- anomalous position appearing a good ~5s after the last
+		-- logged-good tick, i.e. well outside the old 4s window — so
+		-- whatever was actually happening during that gap was NEVER
+		-- being logged at all (compounded by the CameraSubject bug
+		-- above, which meant every one of those in-window ticks was
+		-- silently erroring before it could print anything useful
+		-- either). 20s comfortably covers a slow-building drift, not
+		-- just an instant teleport.
+		diagnoseUntilClock = os.clock() + 20
 		lastDiagnoseTickClock = 0
 	end
 end
@@ -361,6 +386,49 @@ function CameraController.Init()
 						tostring(rootPart.AssemblyLinearVelocity)
 					))
 				end
+
+				--[[
+					SUSTAINED-SPEED watchdog — added because the "JUMP
+					DETECTED" check above only fires on a single-frame
+					>15-stud teleport, but the user's own Output showed
+					the character ending up ~530 studs away and ~60
+					studs higher over roughly 5 real seconds with NO
+					jump ever logged — i.e. a smooth, continuous flight
+					(a sustained velocity, not an instant teleport),
+					averaging well under 15 studs/frame at 60fps despite
+					covering that much ground. This instead watches
+					AssemblyLinearVelocity's raw magnitude directly —
+					catches the instant it becomes implausibly high
+					(normal WalkSpeed here tops out well under this)
+					regardless of how gradually position itself moves
+					frame-to-frame. Edge-triggered (highSpeedEpisodeActive)
+					so one runaway episode prints once at onset rather
+					than spamming every frame it stays fast; resets once
+					speed drops back down so a LATER episode still gets
+					its own report. debug.traceback() is included on the
+					chance this is a LOCAL script directly setting
+					velocity/CFrame (it'll show nothing useful if the
+					actual cause is server-side physics/replication,
+					which won't appear in a client stack trace at all —
+					still worth ruling in/out for free).
+				]]
+				local speed = rootPart.AssemblyLinearVelocity.Magnitude
+				if speed > 50 then
+					if not highSpeedEpisodeActive then
+						highSpeedEpisodeActive = true
+						local humanoidForLog = character:FindFirstChildOfClass("Humanoid")
+						print(("[FPDiag] *** SUSTAINED HIGH SPEED *** %.1f studs/sec at pos=%s camMode=%s platformStand=%s\n%s"):format(
+							speed,
+							tostring(rootPart.Position),
+							tostring(player.CameraMode),
+							tostring(humanoidForLog and humanoidForLog.PlatformStand),
+							debug.traceback()
+						))
+					end
+				else
+					highSpeedEpisodeActive = false
+				end
+
 				lastKnownRootPosition = rootPart.Position
 			end
 		end

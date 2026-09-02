@@ -43,6 +43,30 @@ export type WeaponStats = {
 	FireAnimationId: string, -- played once per shot (recoil kick)
 	EquipAnimationId: string, -- played once when the weapon is drawn
 	ReloadAnimationId: string, -- played once per reload, stretched/squashed via AdjustSpeed to exactly match ReloadTime
+
+	-- Optional "exploding projectiles" support (see the official Weapons
+	-- Kit docs' https://create.roblox.com/docs/resources/weapons-kit
+	-- #exploding-projectiles section). Off (nil/false) for every current
+	-- weapon here — Pistol/AssaultRifle/Shotgun are plain bullets, not
+	-- grenades/rockets — but WeaponService already checks these three
+	-- fields on EVERY hit (see applyExplosionSplash), so a future
+	-- explosive weapon (e.g. a Grenade/Rocket Launcher) only needs to
+	-- set them here; no other code changes required.
+	ExplodeOnImpact: boolean?,
+	BlastRadius: number?, -- studs; WeaponService defaults to 8 if ExplodeOnImpact is true but this is omitted
+	BlastDamage: number?, -- damage at the center of the blast, falling off linearly to ~15% at the edge; defaults to 100
+
+	-- Optional "charging weapon" support (see the kit's "Charging
+	-- weapon"/"Bow weapon" sections). Deliberately NOT wired up to any
+	-- live hold-to-charge mechanic yet — no current weapon needs it, and
+	-- building/tuning that input flow against a weapon nobody uses would
+	-- be untestable dead code. Reserved purely so a future Railgun/
+	-- Crossbow-style weapon has an obvious place to put its numbers
+	-- instead of inventing a new config shape from scratch. See
+	-- README's "Weapons Kit specialized options" section for what's
+	-- left to build (client hold-to-charge input + server charge state)
+	-- if this is ever actually used.
+	ChargeRate: number?,
 }
 
 local WeaponConfig: { [string]: WeaponStats } = {

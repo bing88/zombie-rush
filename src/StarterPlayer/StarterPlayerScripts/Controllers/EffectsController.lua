@@ -29,6 +29,34 @@
 	bundled client sounds — guaranteed to be present with no catalog/
 	ownership dependency, which makes it a safe placeholder until real
 	hit SFX exists (see plan Phase 8 — Polish).
+
+	Weapons Kit specialized options (see
+	https://create.roblox.com/docs/resources/weapons-kit#specialized-
+	options): everything below that touches a "tool" argument looks for
+	the REAL asset's own self-contained descendants first — Bolt/
+	BoltMotor/BoltMotorStart/BoltMotorTarget (+ optional BoltOpenSound/
+	BoltCloseSound), CasingEjectPoint, and a MuzzleFlash Beam — since
+	those live directly on the weapon model per the kit's docs. What we
+	deliberately never have is the kit's separate WeaponsSystem/Assets
+	library (Shots/Casings/HitMarks templates) — see
+	WeaponModelFactory's header for why that whole framework folder is
+	never imported — so muzzle particles, the spent-casing shape itself,
+	the tracer/trail look, and hit-mark decals are all our own
+	procedural substitutes rather than the kit's original art, built
+	from scratch below. Every one of these gracefully no-ops if the
+	expected descendant isn't found (e.g. the placeholder Tool, or a
+	real asset that simply doesn't have a Bolt) — nothing here can error
+	or visually break a weapon that lacks the optional structure.
+
+	Exploding projectiles (WeaponExploded) reuses spawnExplosion — the
+	exact same blast VFX/sound already built for an Exploder zombie's
+	own detonation — since visually "a blast is a blast" regardless of
+	what caused it.
+
+	Charging weapon / Bow weapon (the kit's other two specialized
+	options) are NOT implemented anywhere in this file — see
+	WeaponConfig's ChargeRate doc comment for why (no current weapon
+	needs either, so there's nothing real to wire up or test yet).
 ]]
 
 local Players = game:GetService("Players")
@@ -52,8 +80,73 @@ local HIT_SOUND_ID = "rbxasset://sounds/electronicpingshort.wav" -- placeholder 
 local EXPLOSION_SOUND_ID = "rbxasset://sounds/impact_water.mp3" -- placeholder "boom" -- only bundled sound with any real low-end weight
 local HIT_TAKEN_SOUND_ID = "rbxassetid://79348298352567" -- Official OOF Sound Effect (https://create.roblox.com/store/asset/79348298352567), played locally when the local player takes damage
 
+-- Ejected casings + environment hit marks are physically-simulated/
+-- long-lived (unlike the flash/tracer/spark, which are already gone
+-- within a fraction of a second) — capped so a long session doesn't
+-- slowly accumulate parts forever; oldest gets force-cleaned once over
+-- the cap, well before Debris would've gotten to it naturally.
+local MAX_ACTIVE_CASINGS = 40
+local MAX_ACTIVE_HIT_MARKS = 40
+local activeCasings: { BasePart } = {}
+local activeHitMarks: { BasePart } = {}
+
+local CASING_LIFETIME = 4
+local HIT_MARK_OPAQUE_TIME = 4 -- matches the kit's own BulletHole decal behavior (opaque for 4s, then fades)
+local HIT_MARK_FADE_TIME = 1
+local MUZZLE_FLASH_BEAM_TIME = 0.03 -- kit's own default MuzzleFlashTime
+
 local localHitmarkerCallback: ((boolean) -> ())? = nil
 
+--[[
+	Procedural muzzle-particle template (see spawnMuzzleParticles) —
+	built once and :Clone()'d per shot rather than per-frame, since a
+	brand new ParticleEmitter has to be created either way (Emit()'d
+	particles die with their emitter, so it can't just be a single
+	shared/reused instance across simultaneous shooters). Never itself
+	parented anywhere; only ever cloned.
+]]
+local muzzleParticleTemplate = Instance.new("ParticleEmitter")
+muzzleParticleTemplate.Name = "MuzzleParticlesFX"
+muzzleParticleTemplate.Color = ColorSequence.new(Color3.fromRGB(255, 210, 140), Color3.fromRGB(90, 90, 90))
+muzzleParticleTemplate.Size = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.15),
+	NumberSequenceKeypoint.new(1, 0.55),
+})
+muzzleParticleTemplate.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.15),
+	NumberSequenceKeypoint.new(1, 1),
+})
+muzzleParticleTemplate.Lifetime = NumberRange.new(0.12, 0.28)
+muzzleParticleTemplate.Speed = NumberRange.new(5, 10)
+muzzleParticleTemplate.SpreadAngle = Vector2.new(20, 20)
+muzzleParticleTemplate.Rate = 0 -- never continuous; only ever :Emit()'d on demand below
+muzzleParticleTemplate.Enabled = false
+
+--[[
+	Keeps a rolling window of at most `cap` cosmetic instances, force-
+	destroying the oldest the moment a new one would push it over the
+	cap — see MAX_ACTIVE_CASINGS/MAX_ACTIVE_HIT_MARKS above.
+]]
+local function trackCapped(list: { BasePart }, instance: BasePart, cap: number)
+	table.insert(list, instance)
+	if #list > cap then
+		local oldest = table.remove(list, 1)
+		if oldest and oldest.Parent then
+			oldest:Destroy()
+		end
+	end
+end
+
+--[[
+	"Particle trails" (see the kit's docs) — real projectile flight
+	would need reworking every weapon into a travel-time bullet, which
+	risks the game's whole hitscan feel; instead this keeps the existing
+	instant beam but has it visibly FADE OUT (tween Transparency to 1)
+	rather than just vanish the moment Debris ticks over, so it reads
+	as a dissipating trail left behind rather than a flickering static
+	line — the cheapest version of "a trail behind the shot" that
+	doesn't touch gameplay/hit-timing at all.
+]]
 local function spawnTracer(origin: Vector3, endPoint: Vector3)
 	local distance = (endPoint - origin).Magnitude
 	if distance < 0.1 then
@@ -71,6 +164,7 @@ local function spawnTracer(origin: Vector3, endPoint: Vector3)
 	tracer.CFrame = CFrame.new(origin, endPoint) * CFrame.new(0, 0, -distance / 2)
 	tracer.Parent = workspace
 
+	TweenService:Create(tracer, TweenInfo.new(TRACER_LIFETIME, Enum.EasingStyle.Quad), { Transparency = 1 }):Play()
 	Debris:AddItem(tracer, TRACER_LIFETIME)
 end
 
@@ -171,6 +265,254 @@ local function findFiredSound(shooter: Player, weaponName: string): Sound?
 		return sound
 	end
 	return nil
+end
+
+--[[
+	Finds whichever Tool a given player currently has equipped (Backpack
+	Tools are unequipped/not in the Character, so this only ever returns
+	a Tool while one is actually out) — the shared lookup every
+	specialized-option helper below needs, since all of them read
+	weapon-model-specific descendants off the actual equipped Tool.
+]]
+local function findEquippedTool(player: Player): Tool?
+	local character = player.Character
+	return character and character:FindFirstChildOfClass("Tool") :: Tool?
+end
+
+--[[
+	"Muzzle particles" (see the kit's docs) — a quick smoke/spark puff
+	from the Muzzle attachment on every shot. The kit's own version
+	reads a ShotEffect's particle template out of its separate
+	WeaponsSystem/Assets library, which we never imported (see this
+	file's header) — so this is our own procedural stand-in, cloned from
+	muzzleParticleTemplate above and :Emit()'d once. Cheap even at high
+	fire rates since Rate stays 0 (no continuous emission, ever).
+]]
+local function spawnMuzzleParticles(muzzleAttachment: Attachment)
+	local emitter = muzzleParticleTemplate:Clone()
+	emitter.Parent = muzzleAttachment
+	emitter:Emit(math.random(10, 16))
+	Debris:AddItem(emitter, 1) -- outlives the longest possible particle Lifetime (0.28s) with margin
+end
+
+local CASING_COLOR = Color3.fromRGB(198, 162, 64)
+
+--[[
+	"Ejected bullet casings" (see the kit's docs). Prefers the real
+	asset's own documented CasingEjectPoint attachment (its ORIENTATION,
+	per the docs, decides eject direction) when present; otherwise falls
+	back to a heuristic pop-out-the-right-side offset off the Handle, so
+	every weapon gets a casing even the placeholder/undocumented ones.
+	The casing shape/material itself is entirely ours — the kit's own
+	casing template lives in its separate Assets/Effects/Casings
+	library, which (like the ShotEffect library) was never imported.
+]]
+local function spawnCasingEject(tool: Tool?)
+	if not tool then
+		return
+	end
+	local handle = tool:FindFirstChild("Handle")
+	if not handle or not handle:IsA("BasePart") then
+		return
+	end
+
+	local ejectPoint = handle:FindFirstChild("CasingEjectPoint", true) :: Attachment?
+	local originCFrame: CFrame
+	local ejectDirection: Vector3
+	if ejectPoint and ejectPoint:IsA("Attachment") then
+		originCFrame = ejectPoint.WorldCFrame
+		ejectDirection = originCFrame.LookVector
+	else
+		originCFrame = handle.CFrame * CFrame.new(handle.Size.X * 0.5, handle.Size.Y * 0.15, 0)
+		ejectDirection = handle.CFrame.RightVector
+	end
+
+	local casing = Instance.new("Part")
+	casing.Name = "SpentCasing"
+	casing.Size = Vector3.new(0.06, 0.06, 0.16)
+	casing.Color = CASING_COLOR
+	casing.Material = Enum.Material.Metal
+	casing.CanCollide = true
+	casing.CanQuery = false
+	casing.CastShadow = false
+	casing.CFrame = originCFrame
+	casing.Parent = workspace
+
+	-- CasingEjectSpeedMin/Max defaults per the kit's own docs (15-18 studs/s).
+	local speed = math.random(15, 18)
+	casing.AssemblyLinearVelocity = ejectDirection * speed + Vector3.new(0, math.random(2, 5), 0)
+	casing.AssemblyAngularVelocity = Vector3.new(math.random(-25, 25), math.random(-25, 25), math.random(-25, 25))
+
+	trackCapped(activeCasings, casing, MAX_ACTIVE_CASINGS)
+	Debris:AddItem(casing, CASING_LIFETIME)
+end
+
+--[[
+	"Bolt animations and sounds" (see the kit's docs). Looks for the
+	real asset's own BoltMotor/BoltMotorStart/BoltMotorTarget — all
+	self-contained on the weapon model itself, not part of the separate
+	Assets library, so an asset that ships them works with ZERO extra
+	art from us. Tweens the motor's C0 from its resting pose out to the
+	"open" pose (derived from the two attachments' relative offset) and
+	back, playing BoltOpenSound/BoltCloseSound if present. Silently does
+	nothing for any weapon without this structure (most won't have one)
+	— see WeaponModelFactory's ensureHandle for why a Bolt part's own
+	Motor6D survives Tool-building without also getting a rigid
+	WeldConstraint fighting it.
+]]
+local function cycleBoltAnimation(tool: Tool?)
+	if not tool then
+		return
+	end
+	local boltMotor = tool:FindFirstChild("BoltMotor", true) :: Motor6D?
+	local boltStart = tool:FindFirstChild("BoltMotorStart", true) :: Attachment?
+	local boltTarget = tool:FindFirstChild("BoltMotorTarget", true) :: Attachment?
+	if not (boltMotor and boltMotor:IsA("Motor6D") and boltStart and boltTarget) then
+		return
+	end
+
+	local restC0 = boltMotor.C0
+	local openOffset = boltStart.WorldCFrame:ToObjectSpace(boltTarget.WorldCFrame)
+
+	local openSound = tool:FindFirstChild("BoltOpenSound", true) :: Sound?
+	local closeSound = tool:FindFirstChild("BoltCloseSound", true) :: Sound?
+
+	-- ActionOpenTime/ActionCloseTime defaults per the kit's own docs.
+	local openTween = TweenService:Create(boltMotor, TweenInfo.new(0.025, Enum.EasingStyle.Sine), { C0 = restC0 * openOffset })
+	openTween:Play()
+	if openSound then
+		restartSound(openSound)
+	end
+
+	openTween.Completed:Once(function()
+		if boltMotor.Parent then
+			TweenService:Create(boltMotor, TweenInfo.new(0.075, Enum.EasingStyle.Sine), { C0 = restC0 }):Play()
+		end
+		if closeSound then
+			restartSound(closeSound)
+		end
+	end)
+end
+
+--[[
+	Bundles the three "fires every shot, needs the actual Tool"
+	specialized options together — called once for the local shooter's
+	own instant shot (see SpawnLocalWeaponFireExtras) and once for every
+	OTHER player's shot via the WeaponFired broadcast (mirroring the
+	existing "skip for local, they already got it instantly" pattern
+	used by the muzzle flash/tracer below).
+]]
+local function spawnWeaponFireExtras(tool: Tool?)
+	if not tool then
+		return
+	end
+	local handle = tool:FindFirstChild("Handle")
+	local muzzle = handle and handle:FindFirstChild("Muzzle")
+	if muzzle and muzzle:IsA("Attachment") then
+		spawnMuzzleParticles(muzzle)
+	end
+	spawnCasingEject(tool)
+	cycleBoltAnimation(tool)
+end
+
+--[[
+	"Muzzle flashes" (see the kit's docs). Prefers the real asset's own
+	documented MuzzleFlash Beam (self-contained on the weapon model,
+	between its MuzzleFlash0/MuzzleFlash1 attachments) if present —
+	briefly toggling Enabled with a randomized width, exactly matching
+	the kit's own MuzzleFlashTime/MuzzleFlashSize0-1 behavior — else
+	falls back to the existing procedural neon-ball burst. Either way,
+	also pops a real dynamic PointLight for a moment so the flash
+	actually casts a bit of light on nearby surfaces/the character,
+	which neither the beam nor a flat neon ball do on their own.
+]]
+local function flashRealMuzzleBeam(tool: Tool?): boolean
+	if not tool then
+		return false
+	end
+	local beam = tool:FindFirstChild("MuzzleFlash", true) :: Beam?
+	if not beam or not beam:IsA("Beam") then
+		return false
+	end
+	-- MuzzleFlashSize0/1 default to 1 per the kit's docs; randomized a
+	-- little for some shot-to-shot visual variety.
+	beam.Width0 = math.random(85, 115) / 100
+	beam.Width1 = math.random(85, 115) / 100
+	beam.Enabled = true
+	task.delay(MUZZLE_FLASH_BEAM_TIME, function()
+		if beam.Parent then
+			beam.Enabled = false
+		end
+	end)
+	return true
+end
+
+local function spawnMuzzleFlashLight(position: Vector3)
+	local lightHolder = Instance.new("Part")
+	lightHolder.Name = "MuzzleFlashLight"
+	lightHolder.Anchored = true
+	lightHolder.CanCollide = false
+	lightHolder.CanQuery = false
+	lightHolder.Transparency = 1
+	lightHolder.Size = Vector3.new(0.1, 0.1, 0.1)
+	lightHolder.Position = position
+	lightHolder.Parent = workspace
+
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 200, 120)
+	light.Brightness = 6
+	light.Range = 12
+	light.Shadows = false
+	light.Parent = lightHolder
+
+	Debris:AddItem(lightHolder, 0.08)
+end
+
+local function spawnMuzzleFlash(tool: Tool?, position: Vector3)
+	local usedRealBeam = flashRealMuzzleBeam(tool)
+	if not usedRealBeam then
+		spawnBurst(position, Color3.fromRGB(255, 220, 120), 0.4 + math.random() * 0.25)
+	end
+	spawnMuzzleFlashLight(position)
+end
+
+local HIT_MARK_COLOR = Color3.fromRGB(25, 22, 20)
+
+--[[
+	"Hit marks" (see the kit's docs) — a fading scorch/bullet-hole mark
+	where a shot hit plain environment geometry (see WeaponService's
+	resolvePellet, which only ever sends `normal` for that case, never
+	for a zombie/player hit). No image asset needed: a small flat part,
+	oriented flush against the surface facing outward along the hit
+	normal (AlignHitMarkToNormal-style, per the kit's docs), opaque for
+	HIT_MARK_OPAQUE_TIME then fading over HIT_MARK_FADE_TIME — matching
+	the kit's own BulletHole decal timing.
+]]
+local function spawnHitMark(position: Vector3, normal: Vector3?)
+	if not normal or normal.Magnitude < 0.1 then
+		return
+	end
+
+	local mark = Instance.new("Part")
+	mark.Name = "HitMark"
+	mark.Size = Vector3.new(0.3, 0.3, 0.02)
+	mark.Anchored = true
+	mark.CanCollide = false
+	mark.CanQuery = false
+	mark.CastShadow = false
+	mark.Material = Enum.Material.SmoothPlastic
+	mark.Color = HIT_MARK_COLOR
+	mark.CFrame = CFrame.lookAt(position + normal * 0.03, position + normal * 0.03 + normal)
+	mark.Parent = workspace
+
+	trackCapped(activeHitMarks, mark, MAX_ACTIVE_HIT_MARKS)
+
+	task.delay(HIT_MARK_OPAQUE_TIME, function()
+		if mark.Parent then
+			TweenService:Create(mark, TweenInfo.new(HIT_MARK_FADE_TIME), { Transparency = 1 }):Play()
+		end
+	end)
+	Debris:AddItem(mark, HIT_MARK_OPAQUE_TIME + HIT_MARK_FADE_TIME + 0.1)
 end
 
 --[[
@@ -280,6 +622,8 @@ type HitResult = {
 	Hit: boolean,
 	Damage: number,
 	Killed: boolean,
+	SurfaceNormal: Vector3?,
+	SurfaceMaterial: Enum.Material?,
 }
 
 function EffectsController.Init()
@@ -303,7 +647,9 @@ function EffectsController.Init()
 		-- is what actually removes the trailing feel, since their own
 		-- flash never waited on the network at all.
 		if shooter ~= localPlayer then
-			spawnBurst(origin, Color3.fromRGB(255, 220, 120), 0.5) -- muzzle flash
+			local shooterTool = findEquippedTool(shooter)
+			spawnMuzzleFlash(shooterTool, origin) -- muzzle flash (+ dynamic light)
+			spawnWeaponFireExtras(shooterTool) -- muzzle particles + ejected casing + bolt cycle
 		end
 
 		local firedSound = findFiredSound(shooter, weaponName)
@@ -331,6 +677,13 @@ function EffectsController.Init()
 				if shooter == localPlayer and localHitmarkerCallback then
 					localHitmarkerCallback(hit.Killed == true)
 				end
+			elseif hit.SurfaceNormal then
+				-- Missed a zombie but still hit plain geometry — "hit
+				-- marks" (see the kit's docs), shown for everyone's
+				-- shots (not skipped for the local player) since this
+				-- is about where the bullet landed on the wall, not
+				-- about the shooter's own perceived position.
+				spawnHitMark(hit.EndPosition, hit.SurfaceNormal)
 			end
 		end
 	end)
@@ -340,6 +693,13 @@ function EffectsController.Init()
 	end)
 
 	Remotes.ZombieExploded.OnClientEvent:Connect(function(position: Vector3, radius: number)
+		spawnExplosion(position, radius)
+	end)
+
+	-- "Exploding projectiles" (see the kit's docs) — an ExplodeOnImpact
+	-- weapon's shot detonating; reuses the exact same blast VFX/sound
+	-- as an Exploder zombie's own detonation (see spawnExplosion above).
+	Remotes.WeaponExploded.OnClientEvent:Connect(function(position: Vector3, radius: number)
 		spawnExplosion(position, radius)
 	end)
 end
@@ -355,7 +715,18 @@ end
 	for the shooter at all anymore, just an immediate local visual.
 ]]
 function EffectsController.SpawnLocalMuzzleFlash(origin: Vector3)
-	spawnBurst(origin, Color3.fromRGB(255, 220, 120), 0.5)
+	spawnMuzzleFlash(findEquippedTool(localPlayer), origin)
+end
+
+--[[
+	Instant local counterpart to spawnWeaponFireExtras (muzzle particles
+	+ ejected casing + bolt cycle) for the local player's own shot —
+	same zero-network-wait reasoning as SpawnLocalMuzzleFlash/
+	SpawnLocalTracer above. Call this alongside those two right when the
+	local shot fires (see ClientMain's OnLocalFire wiring).
+]]
+function EffectsController.SpawnLocalWeaponFireExtras()
+	spawnWeaponFireExtras(findEquippedTool(localPlayer))
 end
 
 --[[

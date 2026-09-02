@@ -15,6 +15,7 @@
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
@@ -33,6 +34,7 @@ local AmmoUpdated = Remotes.AmmoUpdated
 local WeaponFired = Remotes.WeaponFired
 local ZombieHPChanged = Remotes.ZombieHPChanged
 local BossHPChanged = Remotes.BossHPChanged
+local WeaponExploded = Remotes.WeaponExploded
 
 -- Per-player runtime state. Never trust the client's copy of any of this.
 type PlayerWeaponState = {
@@ -210,13 +212,78 @@ local function resolveFireOrigin(character: Model, rootPart: BasePart, claimedOr
 end
 
 --[[
+	Applies AOE "splash" damage around an explosion center to every live
+	zombie within BlastRadius — see WeaponConfig's optional
+	ExplodeOnImpact/BlastRadius/BlastDamage fields (mirrors the official
+	Weapons Kit's "Exploding projectiles" option:
+	https://create.roblox.com/docs/resources/weapons-kit#exploding-
+	projectiles). Called once per pellet, at wherever that pellet's
+	raycast ended up (zombie or plain geometry) — a splash weapon still
+	damages nearby zombies even on a direct miss, same as a real
+	grenade/rocket. Also fires WeaponExploded so every client plays the
+	same blast VFX/sound already used for an Exploder zombie's own
+	detonation (see EffectsController.Init's WeaponExploded handler).
+
+	excludeModel skips one zombie (the one that was just directly hit
+	and already took its own finalDamage/headshot-multiplied hit,
+	including StatsService/HP-broadcast bookkeeping) so a dead-center
+	explosion doesn't double-dip that same zombie a second time via the
+	splash pass too.
+]]
+local function applyExplosionSplash(player: Player, stats, center: Vector3, excludeModel: Model?)
+	local radius = stats.BlastRadius or 8
+	local blastDamage = stats.BlastDamage or 100
+
+	for _, zombieModel in CollectionService:GetTagged("Zombie") do
+		if zombieModel == excludeModel then
+			continue
+		end
+
+		local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
+		local rootPart = humanoid and humanoid.RootPart
+		if not humanoid or not rootPart or humanoid.Health <= 0 then
+			continue
+		end
+
+		local distance = (rootPart.Position - center).Magnitude
+		if distance > radius then
+			continue
+		end
+
+		-- Linear falloff: full damage at the blast center, ~15% at the
+		-- radius edge — same shape as the Exploder zombie's own
+		-- detonation damage against players (see ZombieService).
+		local falloff = 1 - (distance / radius)
+		local splashDamage = blastDamage * math.max(falloff, 0.15)
+
+		zombieModel:SetAttribute("LastHitPlayerId", player.UserId)
+		humanoid:TakeDamage(splashDamage)
+		StatsService.RecordDamage(player, splashDamage)
+
+		ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)
+		if zombieModel:HasTag("Boss") then
+			BossHPChanged:FireAllClients(humanoid.Health, humanoid.MaxHealth)
+		end
+	end
+
+	WeaponExploded:FireAllClients(center, radius)
+end
+
+--[[
 	Raycasts a single pellet and applies damage if a live zombie was hit.
 	Tags the zombie with LastHitPlayerId so ZombieService can credit the
 	right player for the kill (and coin reward) on death. Also records
 	damage/headshot-kill stats via StatsService for the scoreboard and
 	session objective.
 	Returns a hit-result table for the WeaponFired broadcast — Killed
-	drives the client's hitmarker/kill-sound distinction.
+	drives the client's hitmarker/kill-sound distinction. SurfaceNormal/
+	SurfaceMaterial are only ever set for a MISS that still hit plain
+	environment geometry (never a zombie, never anything with a
+	Humanoid) — that's the "hit marks" specialized option
+	(https://create.roblox.com/docs/resources/weapons-kit#hit-marks):
+	EffectsController uses them to stick a fading bullet-hole/scorch
+	mark on the wall/floor a shot actually hit, which would look wrong
+	glued to a moving/dying character instead.
 ]]
 local function resolvePellet(player: Player, character: Model, stats, damage: number, origin: Vector3, direction: Vector3)
 	local raycastParams = RaycastParams.new()
@@ -225,13 +292,40 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 
 	local result = Workspace:Raycast(origin, direction * stats.Range, raycastParams)
 	if not result then
-		return { EndPosition = origin + direction * stats.Range, Hit = false, Damage = 0, Killed = false }
+		local endPosition = origin + direction * stats.Range
+		if stats.ExplodeOnImpact then
+			applyExplosionSplash(player, stats, endPosition)
+		end
+		return { EndPosition = endPosition, Hit = false, Damage = 0, Killed = false }
 	end
 
 	local hitInstance = result.Instance
 	local zombieModel = hitInstance:FindFirstAncestorOfClass("Model")
-	if not zombieModel or not zombieModel:HasTag("Zombie") then
-		return { EndPosition = result.Position, Hit = false, Damage = 0, Killed = false }
+	local isZombie = zombieModel ~= nil and zombieModel:HasTag("Zombie")
+
+	if not isZombie then
+		if stats.ExplodeOnImpact then
+			applyExplosionSplash(player, stats, result.Position)
+		end
+
+		-- Skip hit-mark data for anything with a Humanoid ancestor
+		-- (another player's character, or a zombie that's momentarily
+		-- untagged) — only plain static geometry gets a decal. Reuses
+		-- zombieModel from above (the nearest ancestor Model, zombie-
+		-- tagged or not) rather than searching again.
+		local hasHumanoidAncestor = zombieModel ~= nil and zombieModel:FindFirstChildOfClass("Humanoid") ~= nil
+		if hasHumanoidAncestor then
+			return { EndPosition = result.Position, Hit = false, Damage = 0, Killed = false }
+		end
+
+		return {
+			EndPosition = result.Position,
+			Hit = false,
+			Damage = 0,
+			Killed = false,
+			SurfaceNormal = result.Normal,
+			SurfaceMaterial = result.Material,
+		}
 	end
 
 	local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
@@ -265,6 +359,10 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 	ZombieHPChanged:FireAllClients(zombieModel.Name, humanoid.Health, humanoid.MaxHealth)
 	if zombieModel:HasTag("Boss") then
 		BossHPChanged:FireAllClients(humanoid.Health, humanoid.MaxHealth)
+	end
+
+	if stats.ExplodeOnImpact then
+		applyExplosionSplash(player, stats, result.Position, zombieModel)
 	end
 
 	return { EndPosition = result.Position, Hit = true, Damage = finalDamage, Killed = killed }

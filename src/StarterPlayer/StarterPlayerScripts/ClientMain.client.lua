@@ -38,6 +38,7 @@ end)
 WeaponController.OnLocalFire(function()
 	UIController.ShakeAmmoUI()
 	WeaponViewController.PlayFireAnimation()
+	EffectsController.SpawnLocalWeaponFireExtras() -- muzzle particles + ejected casing + bolt cycle (see Weapons Kit specialized options)
 end)
 
 WeaponController.OnLocalMuzzleFlash(function(position: Vector3)

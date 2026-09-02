@@ -165,17 +165,39 @@ local function ensureHandle(tool: Tool): BasePart?
 		return nil
 	end
 
+	-- Some Weapons Kit assets ship a purpose-built Motor6D of their own
+	-- (BoltMotor, per the kit's "Bolt animations and sounds" docs —
+	-- https://create.roblox.com/docs/resources/weapons-kit#bolt-
+	-- animations-and-sounds) so a specific part (the Bolt) can slide
+	-- independently when EffectsController's cycleBoltAnimation tweens
+	-- that motor's C0. Rigidly WeldConstraint-ing that SAME part onto
+	-- mainPart below (as every other loose BasePart gets) would fight
+	-- that Motor6D every frame — two joints both claiming authority over
+	-- the same part's position — and either freeze the bolt in place or
+	-- make it jitter. Collect every part already driven by some Motor6D
+	-- first so the weld loop below can skip them specifically.
+	local motorDrivenParts: { [BasePart]: boolean } = {}
+	for _, descendant in tool:GetDescendants() do
+		if descendant:IsA("Motor6D") and descendant.Part1 then
+			motorDrivenParts[descendant.Part1 :: BasePart] = true
+		end
+	end
+
 	-- Weld every other BasePart anywhere under the Tool (not just inside
 	-- a nested Model — real assets vary) onto mainPart, regardless of
-	-- how deeply nested it is, so nothing gets left behind.
+	-- how deeply nested it is, so nothing gets left behind. Motor-driven
+	-- parts (see above) are still unanchored/non-colliding so they're
+	-- free to actually move, just without the extra rigid weld.
 	for _, part in tool:GetDescendants() do
 		if part:IsA("BasePart") and part ~= mainPart then
 			part.Anchored = false
 			part.CanCollide = false
-			local weld = Instance.new("WeldConstraint")
-			weld.Part0 = mainPart
-			weld.Part1 = part
-			weld.Parent = part
+			if not motorDrivenParts[part] then
+				local weld = Instance.new("WeldConstraint")
+				weld.Part0 = mainPart
+				weld.Part1 = part
+				weld.Parent = part
+			end
 		end
 	end
 
