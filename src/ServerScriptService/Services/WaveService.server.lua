@@ -30,6 +30,7 @@ local MatchState = require(script.Parent.MatchState)
 local DownedState = require(script.Parent.DownedState)
 local StatsService = require(script.Parent.StatsService)
 local PerkService = require(script.Parent.PerkService)
+local RunUpgradeService = require(script.Parent.RunUpgradeService)
 local LeaderboardService = require(script.Parent.LeaderboardService)
 
 local WaveStateChanged = Remotes.WaveStateChanged
@@ -42,6 +43,13 @@ local WaveModifierAnnounced = Remotes.WaveModifierAnnounced
 local MatchScoreboard = Remotes.MatchScoreboard
 local LeaveParty = Remotes.LeaveParty
 local PartyStatusChanged = Remotes.PartyStatusChanged
+
+-- Arms the RunUpgradeChosen listener. Done from here because this
+-- module is what drives the draft lifecycle (offered at each break,
+-- closed when the break ends, wiped at match start) — the same reason
+-- PerkService.Init lives in PerkBootstrap next to its own remote
+-- handling rather than inside the service module.
+RunUpgradeService.Init()
 
 local DEFAULT_ARENA_SPAWN = Vector3.new(0, 5, 105)
 local DEFAULT_LOBBY_SPAWN = Vector3.new(0, 3, -18)
@@ -191,10 +199,15 @@ ZombieService.ZombieDied:Connect(function(_statsName: string, killerPlayer: Play
 	if not killerPlayer or not killerPlayer.Parent then
 		return
 	end
-	-- CoinDoubler stacks on top of the wave's own coin modifier (e.g.
-	-- Payday), and is a neutral 1 when unowned.
+	-- CoinDoubler (Robux) and Scavenger (run-drafted) both stack on top
+	-- of the wave's own coin modifier (e.g. Payday), and each is a
+	-- neutral 1 when the player has none.
 	local finalReward = math.floor(
-		coinReward * currentModifier.CoinMultiplier * PerkService.GetMultiplier(killerPlayer, "CoinDoubler") + 0.5
+		coinReward
+				* currentModifier.CoinMultiplier
+				* PerkService.GetMultiplier(killerPlayer, "CoinDoubler")
+				* RunUpgradeService.GetScale(killerPlayer, "CoinGain")
+			+ 0.5
 	)
 	local newBalance = DataService.AddCoins(killerPlayer, finalReward)
 	if newBalance then
@@ -202,6 +215,26 @@ ZombieService.ZombieDied:Connect(function(_statsName: string, killerPlayer: Play
 	end
 	StatsService.RecordKill(killerPlayer)
 	StatsService.RecordCoinsEarned(killerPlayer, finalReward)
+
+	--[[
+		Bloodthirst (run-drafted): heal per kill. Handled here rather
+		than in WeaponService because this is the one place a kill is
+		already attributed to a player regardless of HOW it happened —
+		a direct shot, splash from a Demolitionist detonation, or an
+		Exploder popping next to another zombie all arrive here.
+
+		Skipped while downed: Health is pinned at 1 by the bleed-out
+		system, and healing a bleeding-out player from a kill they can't
+		make anyway would fight it.
+	]]
+	local healPerKill = RunUpgradeService.GetTotal(killerPlayer, "HealPerKill")
+	if healPerKill > 0 and not DownedState.IsDowned(killerPlayer) then
+		local character = killerPlayer.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 then
+			humanoid.Health = math.min(humanoid.Health + healPerKill, humanoid.MaxHealth)
+		end
+	end
 end)
 
 --[[
@@ -438,13 +471,33 @@ local function runWaves()
 
 		MatchState.Set("Break")
 		WaveStateChanged:FireAllClients(waveNumber, waveNumber, "Break")
+
+		--[[
+			The break is now the run's decision beat, not just dead time
+			between waves: every surviving participant is offered three
+			random run upgrades to pick one from (see RunUpgradeService).
+
+			Offered AFTER respawnDeadParticipants above so a player who
+			died during the wave is back on their feet and included in
+			the draft rather than skipped for it.
+
+			The draft window is exactly the break, and CloseDrafts below
+			auto-resolves anyone who didn't choose — so the wave timer
+			never waits on a player's decision, and an AFK or
+			mid-revive player can't stall the run for everyone else.
+		]]
+		RunUpgradeService.OfferDraftToAll(getActiveParticipants())
+
 		for secondsLeft = WaveConfig.BetweenWaveBreakSeconds, 1, -1 do
 			if matchDefeated then
+				RunUpgradeService.CloseDrafts() -- don't leave a card UI open over the defeat screen
 				return
 			end
 			GameStateChanged:FireAllClients("WaveIncoming", secondsLeft, waveNumber + 1)
 			task.wait(1)
 		end
+
+		RunUpgradeService.CloseDrafts()
 	end
 end
 
@@ -791,6 +844,11 @@ task.spawn(function()
 		if #getActiveParticipants() > 0 then
 			matchDefeated = false
 			StatsService.ResetAll()
+			-- Run upgrades are per-RUN by design (see
+			-- RunUpgradeConfig's header): every match starts from an
+			-- empty build, which is what makes each run take a
+			-- different shape instead of accumulating forever.
+			RunUpgradeService.ResetAll()
 			-- Endless: runWaves only returns once the team is wiped (or
 			-- everyone left), so defeat is the single exit path — there's
 			-- no victory branch anymore.

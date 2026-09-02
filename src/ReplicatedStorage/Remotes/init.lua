@@ -40,6 +40,9 @@ local remoteNames = {
 	"ObjectiveUpdated", -- server -> owning client: session objective progress
 	"LeaderboardData", -- server -> owning client: top entries, sent on request
 	"RequestLeaderboard", -- client -> server: ask for the current top entries
+	"RunUpgradeOffer", -- server -> owning client: the 3 draft cards offered this break (see RunUpgradeConfig/RunUpgradeService)
+	"RunUpgradeChosen", -- client -> server: the card id the player picked from their current offer
+	"RunUpgradesChanged", -- server -> owning client: owned run-upgrade stacks + the client-side scales derived from them
 }
 
 local Remotes = {}

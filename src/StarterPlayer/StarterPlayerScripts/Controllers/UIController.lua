@@ -82,6 +82,12 @@ local HOTBAR_SLOT_SIZE = 60
 local HOTBAR_SLOT_GAP = 8
 local HOTBAR_BOTTOM_MARGIN = 20
 
+-- Hitmarker sizes, read both where it's built and by ShowHitmarker,
+-- which punches it up to the headshot size and back down again — see
+-- that function for why a headshot changes size and not just color.
+local HITMARKER_BASE_SIZE = 24
+local HITMARKER_HEADSHOT_SIZE = 32
+
 --[[
 	Gapped tick-mark crosshair (four short lines + a center dot, with a
 	gap around the middle) instead of a solid connected "+". A solid
@@ -156,13 +162,14 @@ local function buildUI()
 	buildCrosshair(screenGui)
 
 	-- Hitmarker: small X that flashes over the crosshair on a confirmed
-	-- hit (white) or kill (gold), separate from the crosshair itself so
-	-- the two can animate independently.
+	-- hit — white for a body shot, orange-red and larger for a headshot,
+	-- gold for a kill (see ShowHitmarker). Separate from the crosshair
+	-- itself so the two can animate independently.
 	hitmarker = Instance.new("Frame")
 	hitmarker.Name = "Hitmarker"
 	hitmarker.AnchorPoint = Vector2.new(0.5, 0.5)
 	hitmarker.Position = UDim2.fromScale(0.5, 0.5)
-	hitmarker.Size = UDim2.fromOffset(24, 24)
+	hitmarker.Size = UDim2.fromOffset(HITMARKER_BASE_SIZE, HITMARKER_BASE_SIZE)
 	hitmarker.BackgroundTransparency = 1
 	hitmarker.Visible = false
 	hitmarker.Parent = screenGui
@@ -1211,26 +1218,55 @@ function UIController.FlashDamageVignette()
 end
 
 --[[
-	Flashes the crosshair hitmarker — white for a regular hit, gold for a
-	kill. Auto-hides after a short beat regardless of further hits (each
-	call restarts the timer rather than stacking).
+	Flashes the crosshair hitmarker. Three readable states, in priority
+	order: gold for a kill, orange-red and visibly LARGER for a headshot
+	that didn't kill, white for an ordinary body shot. Headshots also
+	linger slightly longer than a body shot so the distinction survives
+	sustained automatic fire, where markers otherwise blur together.
+
+	Scaling the whole marker (not just recoloring it) is deliberate:
+	during rifle fire the color alone is easy to miss, but a size punch
+	registers peripherally. HITMARKER_BASE_SIZE is restored on every
+	call so back-to-back hits of different kinds can't leave it stuck
+	at the enlarged size.
+
+	Auto-hides after a short beat regardless of further hits (each call
+	restarts the timer rather than stacking).
 ]]
-function UIController.ShowHitmarker(killed: boolean)
+function UIController.ShowHitmarker(killed: boolean, headshot: boolean?)
 	if not hitmarker then
 		return
 	end
-	local color = killed and Color3.fromRGB(255, 210, 90) or Color3.new(1, 1, 1)
+
+	local isHeadshot = headshot == true
+	local color = Color3.new(1, 1, 1)
+	if killed then
+		color = Color3.fromRGB(255, 210, 90)
+	elseif isHeadshot then
+		color = Color3.fromRGB(255, 140, 60)
+	end
+
 	for _, child in hitmarker:GetChildren() do
 		if child:IsA("Frame") then
 			child.BackgroundColor3 = color
 		end
 	end
+
+	local size = (isHeadshot and not killed) and HITMARKER_HEADSHOT_SIZE or HITMARKER_BASE_SIZE
+	hitmarker.Size = UDim2.fromOffset(size, size)
 	hitmarker.Visible = true
 
 	if hitmarkerHideThread then
 		task.cancel(hitmarkerHideThread)
 	end
-	hitmarkerHideThread = task.delay(killed and 0.28 or 0.15, function()
+
+	local holdSeconds = 0.15
+	if killed then
+		holdSeconds = 0.28
+	elseif isHeadshot then
+		holdSeconds = 0.22
+	end
+	hitmarkerHideThread = task.delay(holdSeconds, function()
 		if hitmarker then
 			hitmarker.Visible = false
 		end

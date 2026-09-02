@@ -19,6 +19,7 @@ local CameraController = require(Controllers.CameraController)
 local ShopController = require(Controllers.ShopController)
 local WeaponViewController = require(Controllers.WeaponViewController)
 local PerkShopController = require(Controllers.PerkShopController)
+local RunDraftController = require(Controllers.RunDraftController)
 
 UIController.Init()
 CameraController.Init() -- must init before WeaponController: its RenderStepped
@@ -29,6 +30,7 @@ WeaponController.Init()
 EffectsController.Init()
 ShopController.Init()
 PerkShopController.Init()
+RunDraftController.Init() -- between-wave 3-choice upgrade draft + the run's owned-upgrade list
 WeaponViewController.Init() -- IKControl-based weapon holding: right-hand aim-follow + left-hand support grip — see the file's own doc comment for the full architecture
 
 WeaponController.OnAmmoChanged(function(weaponName, current, max, isReloading)
@@ -53,8 +55,8 @@ WeaponController.OnWeaponEquipped(function(weaponName: string)
 	UIController.SetEquippedWeapon(weaponName)
 end)
 
-EffectsController.OnLocalHitmarker(function(killed: boolean)
-	UIController.ShowHitmarker(killed)
+EffectsController.OnLocalHitmarker(function(killed: boolean, headshot: boolean)
+	UIController.ShowHitmarker(killed, headshot)
 end)
 
 UIController.OnReloadPressed(function()
@@ -114,6 +116,13 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		toggleLeaderboard()
 		return
 	end
+	-- While the between-wave upgrade draft is open it owns 1-3 for card
+	-- selection (see RunDraftController.IsDraftOpen) — otherwise a single
+	-- keypress would both pick a card and switch weapons.
+	if RunDraftController.IsDraftOpen() then
+		return
+	end
+
 	for index, keyCode in NUMBER_KEYCODES do
 		if input.KeyCode == keyCode then
 			local weaponName = WeaponConfig.Order[index]

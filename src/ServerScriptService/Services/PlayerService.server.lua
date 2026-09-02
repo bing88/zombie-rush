@@ -41,6 +41,7 @@ local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local DataService = require(script.Parent.DataService)
 local DownedState = require(script.Parent.DownedState)
 local PerkService = require(script.Parent.PerkService)
+local RunUpgradeService = require(script.Parent.RunUpgradeService)
 local MatchState = require(script.Parent.MatchState)
 
 local PlayerHPChanged = Remotes.PlayerHPChanged
@@ -67,6 +68,64 @@ local function ensureProfileLoaded(player: Player)
 		CoinsUpdated:FireClient(player, profile.Coins)
 	end
 	return profile
+end
+
+--[[
+	Applies the player's run-drafted Survivor (+max HP) and Adrenaline
+	(+move speed) stacks to a live humanoid.
+
+	This module owns these two writes because it already applies the
+	equivalent Robux perks on spawn — RunUpgradeService calls it through
+	the handler registered at the bottom of this file rather than
+	touching humanoids itself, so MaxHealth/WalkSpeed only ever have one
+	writer.
+
+	IDEMPOTENT BY CONSTRUCTION, which it has to be: it runs on every
+	spawn AND again on every draft pick, so "add the bonus to the current
+	value" would compound without limit over a long run. Instead the
+	pre-bonus values are captured once per humanoid as attributes, and
+	the bonus is always recomputed from those rather than from whatever
+	the property currently holds.
+
+	Health tracks a MaxHealth increase by the same delta, so drafting
+	Survivor mid-run reads as an immediate heal rather than just a wider
+	empty bar — the pick is a reward for surviving a wave and should feel
+	like one at the moment it's taken.
+
+	While DOWNED, movement and current health are left alone: Health is
+	deliberately pinned at 1 by the bleed-out system and WalkSpeed at 0,
+	and writing either here would un-freeze a bleeding-out player or
+	cancel their death. MaxHealth still updates (harmless at Health 1),
+	and the revive path re-invokes this function once the player is back
+	up, so a pick taken while downed isn't lost.
+]]
+local function applyRunUpgradeStats(player: Player, humanoid: Humanoid)
+	local baselineMaxHealth = humanoid:GetAttribute("BaselineMaxHealth")
+	if typeof(baselineMaxHealth) ~= "number" then
+		baselineMaxHealth = humanoid.MaxHealth
+		humanoid:SetAttribute("BaselineMaxHealth", baselineMaxHealth)
+	end
+
+	local baselineWalkSpeed = humanoid:GetAttribute("BaselineWalkSpeed")
+	if typeof(baselineWalkSpeed) ~= "number" then
+		baselineWalkSpeed = humanoid.WalkSpeed
+		humanoid:SetAttribute("BaselineWalkSpeed", baselineWalkSpeed)
+	end
+
+	local isDowned = DownedState.IsDowned(player)
+
+	local targetMaxHealth = baselineMaxHealth + RunUpgradeService.GetTotal(player, "MaxHealth")
+	local healthDelta = targetMaxHealth - humanoid.MaxHealth
+	if healthDelta ~= 0 then
+		humanoid.MaxHealth = targetMaxHealth
+		if healthDelta > 0 and not isDowned then
+			humanoid.Health = math.min(humanoid.Health + healthDelta, targetMaxHealth)
+		end
+	end
+
+	if not isDowned then
+		humanoid.WalkSpeed = baselineWalkSpeed * RunUpgradeService.GetScale(player, "MoveSpeed")
+	end
 end
 
 local function syncOwnedWeapons(player: Player)
@@ -232,6 +291,14 @@ local function enterDownedState(player: Player, character: Model, humanoid: Huma
 		standBackUp()
 		DownedState.SetDowned(player, false)
 		humanoid.WalkSpeed = cachedWalkSpeed
+		-- Re-apply run upgrades now that they're back up: cachedWalkSpeed
+		-- was captured at the moment they went down, so any Adrenaline
+		-- drafted while they were bleeding out (drafts open during the
+		-- break, when a teammate may still be reviving them) would
+		-- otherwise be restored away and silently lost. This recomputes
+		-- from the humanoid's own baseline attributes, so it's correct
+		-- whether or not anything was drafted in between.
+		applyRunUpgradeStats(player, humanoid)
 		humanoid.Health = humanoid.MaxHealth * REVIVE_HEALTH_FRACTION
 		PlayerDownedChanged:FireClient(player, false, 0)
 	end)
@@ -328,9 +395,30 @@ local function onCharacterAdded(player: Player, character: Model)
 		humanoid.WalkSpeed = humanoid.WalkSpeed * speedPerk
 	end
 
+	-- Run-drafted Survivor/Adrenaline stacks, re-applied on top of the
+	-- perks above. Needed here as well as in the live handler below
+	-- because a mid-run respawn (see WaveService's
+	-- respawnDeadParticipants) hands out a brand new humanoid at stock
+	-- 100 HP / 16 speed, which would quietly erase everything the player
+	-- drafted so far.
+	applyRunUpgradeStats(player, humanoid)
+
 	-- Fire once immediately so the UI has correct values on spawn.
 	PlayerHPChanged:FireClient(player, humanoid.Health, humanoid.MaxHealth)
 end
+
+--[[
+	Makes a drafted Survivor/Adrenaline pick take effect on the character
+	the player is standing in right now, instead of waiting for a
+	respawn that may never come. See applyRunUpgradeStats.
+]]
+RunUpgradeService.OnUpgradeApplied(function(player: Player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.Health > 0 then
+		applyRunUpgradeStats(player, humanoid)
+	end
+end)
 
 Players.PlayerAdded:Connect(function(player)
 	player.CharacterAdded:Connect(function(character)

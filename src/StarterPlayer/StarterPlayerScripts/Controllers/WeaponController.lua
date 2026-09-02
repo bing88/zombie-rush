@@ -62,6 +62,41 @@ local lastFireTime = 0
 local fireButtonHeld = false
 local initialized = false
 
+--[[
+	Run-drafted Gunslinger/Speed Loader scales, mirrored from the server
+	(see RunUpgradeService's buildClientState and the RunUpgradesChanged
+	handler in Init below). Both default to a neutral 1.
+
+	These HAVE to be mirrored rather than left server-only: every
+	prediction in this module — the local fire-rate gate, the reload
+	animation length, the reload watchdog deadline — is computed
+	client-side so shooting responds instantly instead of waiting a
+	round trip. A server that accepts faster shots while this module
+	keeps throttling at the base rate would make a drafted fire-rate
+	upgrade completely invisible to the player who chose it.
+
+	They're received as finished scales, not raw stack counts, so the
+	client never re-derives the combination and can't disagree with the
+	server about it. The server still independently enforces its own
+	copy, so a tampered client can only ever throttle ITSELF.
+]]
+local runFireRateScale = 1
+local runReloadScale = 1
+
+--[[
+	The weapon's effective shot delay and reload duration for this
+	player, right now. Every read of FireRate/ReloadTime goes through
+	these two rather than touching WeaponConfig directly, so a drafted
+	upgrade can't be applied in one place and forgotten in another.
+]]
+local function effectiveFireRate(stats): number
+	return stats.FireRate * runFireRateScale
+end
+
+local function effectiveReloadTime(stats): number
+	return stats.ReloadTime * runReloadScale
+end
+
 local ammoChangedCallback: ((string, number, number, boolean) -> ())? = nil
 local localFireCallback: (() -> ())? = nil
 local localMuzzleFlashCallback: ((Vector3) -> ())? = nil
@@ -163,7 +198,7 @@ local function setReloading(weaponName: string, value: boolean)
 		if stats then
 			-- Generous buffer over the server's own reload timer so a
 			-- normal reload never gets pre-empted by the watchdog.
-			reloadDeadline[weaponName] = os.clock() + stats.ReloadTime + 1.5
+			reloadDeadline[weaponName] = os.clock() + effectiveReloadTime(stats) + 1.5
 		end
 	else
 		reloadDeadline[weaponName] = nil
@@ -176,7 +211,12 @@ local function setReloading(weaponName: string, value: boolean)
 	if value and weaponName == currentWeapon then
 		local stats = statsFor(weaponName)
 		if stats then
-			WeaponViewController.PlayReloadAnimation(stats.ReloadTime)
+			-- Passing the EFFECTIVE time keeps the authored reload
+			-- animation stretched to match the real reload: the view
+			-- controller scales playback to whatever duration it's
+			-- given, so a Speed Loader run would otherwise finish
+			-- reloading well before the animation did.
+			WeaponViewController.PlayReloadAnimation(effectiveReloadTime(stats))
 		end
 	end
 	if weaponName == currentWeapon then
@@ -220,7 +260,7 @@ local function tryFire()
 	end
 
 	local now = os.clock()
-	if now - lastFireTime < stats.FireRate then
+	if now - lastFireTime < effectiveFireRate(stats) then
 		return
 	end
 
@@ -309,6 +349,16 @@ function WeaponController.Init()
 		end
 	end)
 
+	-- Run-drafted fire-rate/reload scales — see runFireRateScale above
+	-- for why the client needs its own copy of these.
+	Remotes.RunUpgradesChanged.OnClientEvent:Connect(function(state)
+		if type(state) ~= "table" then
+			return
+		end
+		runFireRateScale = tonumber(state.FireRateScale) or 1
+		runReloadScale = tonumber(state.ReloadScale) or 1
+	end)
+
 	RunService.RenderStepped:Connect(function()
 		checkReloadWatchdog()
 		if CameraController.IsLocked() or fireButtonHeld then
@@ -345,7 +395,10 @@ function WeaponController.SyncFromServer(weaponName: string, current: number, ma
 	if isReloading then
 		local stats = statsFor(weaponName)
 		if stats then
-			reloadDeadline[weaponName] = os.clock() + stats.ReloadTime + 1.5
+			-- Effective, not raw: a Speed Loader run reloads faster than
+			-- WeaponConfig says, and a watchdog deadline computed from
+			-- the base time would just be needlessly generous.
+			reloadDeadline[weaponName] = os.clock() + effectiveReloadTime(stats) + 1.5
 		end
 	else
 		reloadDeadline[weaponName] = nil

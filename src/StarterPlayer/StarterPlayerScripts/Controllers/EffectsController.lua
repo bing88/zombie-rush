@@ -77,6 +77,10 @@ local EXPLOSION_LIFETIME = 0.35
 
 local FIRE_SOUND_ID = "rbxasset://sounds/switch.wav" -- placeholder "click"; only used if a weapon has no real "Fired" sound
 local HIT_SOUND_ID = "rbxasset://sounds/electronicpingshort.wav" -- placeholder hit-confirm "ping"
+-- Headshots get their own, deliberately meatier confirm sound layered
+-- UNDER the normal hit ping rather than replacing it, so a headshot
+-- reads as "hit, plus something extra" instead of a different event.
+local HEADSHOT_SOUND_ID = "rbxasset://sounds/metal.ogg"
 local EXPLOSION_SOUND_ID = "rbxasset://sounds/impact_water.mp3" -- placeholder "boom" -- only bundled sound with any real low-end weight
 local HIT_TAKEN_SOUND_ID = "rbxassetid://79348298352567" -- Official OOF Sound Effect (https://create.roblox.com/store/asset/79348298352567), played locally when the local player takes damage
 
@@ -95,7 +99,10 @@ local HIT_MARK_OPAQUE_TIME = 4 -- matches the kit's own BulletHole decal behavio
 local HIT_MARK_FADE_TIME = 1
 local MUZZLE_FLASH_BEAM_TIME = 0.03 -- kit's own default MuzzleFlashTime
 
-local localHitmarkerCallback: ((boolean) -> ())? = nil
+local DAMAGE_NUMBER_COLOR = Color3.fromRGB(255, 70, 70)
+local HEADSHOT_NUMBER_COLOR = Color3.fromRGB(255, 205, 70) -- gold, matching the kill hitmarker's own gold
+
+local localHitmarkerCallback: ((boolean, boolean) -> ())? = nil
 
 --[[
 	Procedural muzzle-particle template (see spawnMuzzleParticles) —
@@ -121,6 +128,37 @@ muzzleParticleTemplate.Speed = NumberRange.new(5, 10)
 muzzleParticleTemplate.SpreadAngle = Vector2.new(20, 20)
 muzzleParticleTemplate.Rate = 0 -- never continuous; only ever :Emit()'d on demand below
 muzzleParticleTemplate.Enabled = false
+
+--[[
+	Blood impact template, cloned per zombie hit by spawnBloodImpact —
+	same clone-per-use reasoning as muzzleParticleTemplate above.
+
+	Previously a hit on a zombie and a hit on a wall produced the SAME
+	generic red neon spark, so shots didn't read as landing on flesh at
+	all. Particles are given real Speed + Acceleration (gravity) so the
+	spray arcs and falls instead of puffing symmetrically outward like
+	smoke, which is what separates "blood" from "spark" visually.
+]]
+local bloodParticleTemplate = Instance.new("ParticleEmitter")
+bloodParticleTemplate.Name = "BloodImpactFX"
+bloodParticleTemplate.Color = ColorSequence.new(Color3.fromRGB(140, 12, 12), Color3.fromRGB(70, 4, 4))
+bloodParticleTemplate.Size = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.28),
+	NumberSequenceKeypoint.new(1, 0.08),
+})
+bloodParticleTemplate.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.1),
+	NumberSequenceKeypoint.new(0.7, 0.3),
+	NumberSequenceKeypoint.new(1, 1),
+})
+bloodParticleTemplate.Lifetime = NumberRange.new(0.25, 0.5)
+bloodParticleTemplate.Speed = NumberRange.new(8, 16)
+bloodParticleTemplate.SpreadAngle = Vector2.new(28, 28)
+bloodParticleTemplate.Acceleration = Vector3.new(0, -60, 0)
+bloodParticleTemplate.Drag = 2
+bloodParticleTemplate.LightEmission = 0
+bloodParticleTemplate.Rate = 0
+bloodParticleTemplate.Enabled = false
 
 --[[
 	Keeps a rolling window of at most `cap` cosmetic instances, force-
@@ -516,11 +554,47 @@ local function spawnHitMark(position: Vector3, normal: Vector3?)
 end
 
 --[[
+	Blood spray at a confirmed zombie hit (see bloodParticleTemplate).
+	Emits back along the shot's own travel direction where known, so the
+	spray kicks out of the entry side rather than always straight up;
+	headshots emit noticeably more of it, which is half of what sells a
+	headshot as landing somewhere that matters.
+
+	Parented to a throwaway anchor part rather than the zombie itself:
+	the zombie may be destroyed within ~2 seconds of dying (see
+	ZombieService's onDeath), which would take an attached emitter's
+	still-airborne particles with it mid-flight.
+]]
+local function spawnBloodImpact(position: Vector3, isHeadshot: boolean)
+	local anchor = Instance.new("Part")
+	anchor.Name = "BloodImpactAnchor"
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CanQuery = false
+	anchor.CastShadow = false
+	anchor.Transparency = 1
+	anchor.Size = Vector3.new(0.1, 0.1, 0.1)
+	anchor.Position = position
+	anchor.Parent = workspace
+
+	local emitter = bloodParticleTemplate:Clone()
+	emitter.Parent = anchor
+	emitter:Emit(isHeadshot and 26 or 12)
+
+	Debris:AddItem(anchor, 1) -- comfortably past the template's own 0.5s max Lifetime
+end
+
+--[[
 	Floating "-N" combat text that rises and fades at the hit location.
 	BillboardGui always faces the camera automatically, so this reads
 	correctly from any angle without extra math.
+
+	Headshots get the gold treatment — bigger text, gold instead of red,
+	and a "HEADSHOT" caption above the number (doc-recommended crit
+	feedback) — since a headshot already does 1.5-2x damage and had no
+	on-screen distinction from a body shot whatsoever before this.
 ]]
-local function spawnDamageNumber(position: Vector3, damage: number)
+local function spawnDamageNumber(position: Vector3, damage: number, isHeadshot: boolean)
 	local anchor = Instance.new("Part")
 	anchor.Name = "DamageNumberAnchor"
 	anchor.Anchored = true
@@ -533,20 +607,37 @@ local function spawnDamageNumber(position: Vector3, damage: number)
 
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "DamageNumber"
-	billboard.Size = UDim2.fromOffset(120, 40)
+	billboard.Size = UDim2.fromOffset(120, isHeadshot and 56 or 40)
 	billboard.AlwaysOnTop = true
 	billboard.Adornee = anchor
 	billboard.Parent = anchor
 
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
-	label.Size = UDim2.fromScale(1, 1)
+	-- Headshots reserve the top strip of the billboard for the caption
+	-- below, so the number sits under it instead of overlapping it.
+	label.Size = isHeadshot and UDim2.new(1, 0, 0.62, 0) or UDim2.fromScale(1, 1)
+	label.Position = isHeadshot and UDim2.new(0, 0, 0.38, 0) or UDim2.fromScale(0, 0)
 	label.Font = Enum.Font.GothamBold
-	label.TextSize = 22
-	label.TextColor3 = Color3.fromRGB(255, 70, 70)
+	label.TextSize = isHeadshot and 30 or 22
+	label.TextColor3 = isHeadshot and HEADSHOT_NUMBER_COLOR or DAMAGE_NUMBER_COLOR
 	label.TextStrokeTransparency = 0.3
 	label.Text = "-" .. tostring(math.floor(damage + 0.5))
 	label.Parent = billboard
+
+	local caption: TextLabel? = nil
+	if isHeadshot then
+		caption = Instance.new("TextLabel")
+		caption.Name = "HeadshotCaption"
+		caption.BackgroundTransparency = 1
+		caption.Size = UDim2.new(1, 0, 0.38, 0)
+		caption.Font = Enum.Font.GothamBlack
+		caption.TextSize = 14
+		caption.TextColor3 = HEADSHOT_NUMBER_COLOR
+		caption.TextStrokeTransparency = 0.3
+		caption.Text = "HEADSHOT"
+		caption.Parent = billboard
+	end
 
 	TweenService:Create(
 		anchor,
@@ -554,10 +645,17 @@ local function spawnDamageNumber(position: Vector3, damage: number)
 		{ Position = anchor.Position + Vector3.new(0, 2.5, 0) }
 	):Play()
 
-	TweenService:Create(label, TweenInfo.new(DAMAGE_NUMBER_LIFETIME), {
+	local fade = TweenInfo.new(DAMAGE_NUMBER_LIFETIME)
+	TweenService:Create(label, fade, {
 		TextTransparency = 1,
 		TextStrokeTransparency = 1,
 	}):Play()
+	if caption then
+		TweenService:Create(caption, fade, {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		}):Play()
+	end
 
 	Debris:AddItem(anchor, DAMAGE_NUMBER_LIFETIME + 0.1)
 end
@@ -624,6 +722,7 @@ type HitResult = {
 	Killed: boolean,
 	SurfaceNormal: Vector3?,
 	SurfaceMaterial: Enum.Material?,
+	Headshot: boolean?, -- only ever set for a zombie hit, see WeaponService's resolvePellet
 }
 
 function EffectsController.Init()
@@ -670,12 +769,19 @@ function EffectsController.Init()
 				spawnTracer(origin, hit.EndPosition)
 			end
 			if hit.Hit then
-				spawnBurst(hit.EndPosition, Color3.fromRGB(255, 60, 60), 0.4) -- hit spark
+				local isHeadshot = hit.Headshot == true
+
+				spawnBloodImpact(hit.EndPosition, isHeadshot)
 				playSoundAt(hit.EndPosition, HIT_SOUND_ID, 0.6)
-				spawnDamageNumber(hit.EndPosition, hit.Damage)
+				if isHeadshot then
+					-- Layered under the normal ping above, not instead
+					-- of it (see HEADSHOT_SOUND_ID).
+					playSoundAt(hit.EndPosition, HEADSHOT_SOUND_ID, 0.75)
+				end
+				spawnDamageNumber(hit.EndPosition, hit.Damage, isHeadshot)
 
 				if shooter == localPlayer and localHitmarkerCallback then
-					localHitmarkerCallback(hit.Killed == true)
+					localHitmarkerCallback(hit.Killed == true, isHeadshot)
 				end
 			elseif hit.SurfaceNormal then
 				-- Missed a zombie but still hit plain geometry — "hit
@@ -751,10 +857,11 @@ end
 
 --[[
 	Called once per confirmed hit that the LOCAL player scored (not other
-	players' shots). killed distinguishes a regular hitmarker from a
-	kill-confirm one for whatever UI wants to react (see UIController).
+	players' shots). killed and headshot distinguish a regular hitmarker
+	from a kill-confirm and a headshot one for whatever UI wants to
+	react (see UIController.ShowHitmarker).
 ]]
-function EffectsController.OnLocalHitmarker(callback: (boolean) -> ())
+function EffectsController.OnLocalHitmarker(callback: (boolean, boolean) -> ())
 	localHitmarkerCallback = callback
 end
 

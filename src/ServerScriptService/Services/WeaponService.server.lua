@@ -21,7 +21,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
+local RunUpgradeConfig = require(ReplicatedStorage.Shared.RunUpgradeConfig)
 local PerkService = require(script.Parent.PerkService)
+local RunUpgradeService = require(script.Parent.RunUpgradeService)
 local DataService = require(script.Parent.DataService)
 local InternalSignals = require(script.Parent.InternalSignals)
 local DownedState = require(script.Parent.DownedState)
@@ -61,16 +63,28 @@ local function getOrCreateState(player: Player): PlayerWeaponState
 end
 
 local function getDamageMultiplier(player: Player, weaponName: string): number
+	-- Coin upgrade level, when the player has one. Note the level-0 case
+	-- falls through instead of returning early: this used to `return 1`
+	-- immediately, which silently discarded the Robux DamageBoost perk
+	-- (and would have discarded run upgrades too) on any weapon the
+	-- player hadn't spent coins on yet — i.e. a paying player's damage
+	-- perk did nothing at all on a stock weapon. All three sources are
+	-- independent, so all three have to be multiplied together
+	-- regardless of which ones happen to be neutral.
+	local upgradeMultiplier = 1
 	local level = DataService.GetWeaponLevel(player, weaponName)
-	if level <= 0 then
-		return 1
+	if level > 0 then
+		local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
+		local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
+		upgradeMultiplier = (levelData and levelData.DamageMultiplier) or 1
 	end
-	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
-	local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
-	local upgradeMultiplier = (levelData and levelData.DamageMultiplier) or 1
-	-- Robux DamageBoost stacks multiplicatively on top of coin upgrades
-	-- (returns a neutral 1 when unowned, so this is unconditional).
-	return upgradeMultiplier * PerkService.GetMultiplier(player, "DamageBoost")
+
+	-- Robux DamageBoost and run-drafted Hollow Point stacks both scale
+	-- multiplicatively on top of coin upgrades (each returns a neutral 1
+	-- when the player has none, so this is unconditional).
+	return upgradeMultiplier
+		* PerkService.GetMultiplier(player, "DamageBoost")
+		* RunUpgradeService.GetScale(player, "Damage")
 end
 
 --[[
@@ -85,18 +99,23 @@ local function getMagazineCapacity(player: Player, weaponName: string): number
 	if not stats then
 		return 0
 	end
-	local magPerk = PerkService.GetMultiplier(player, "BigMag")
+	-- BigMag (Robux) and Extended Mag (run-drafted) both scale the FINAL
+	-- capacity (base + coin-upgrade bonus) rather than only the base, so
+	-- they keep their value as upgrade levels come in.
+	local magScale = PerkService.GetMultiplier(player, "BigMag") * RunUpgradeService.GetScale(player, "Magazine")
+
+	local bonus = 0
 	local level = DataService.GetWeaponLevel(player, weaponName)
-	if level <= 0 then
-		return math.floor(stats.MagazineSize * magPerk)
+	if level > 0 then
+		local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
+		local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
+		bonus = (levelData and levelData.MagazineBonus) or 0
 	end
-	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
-	local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
-	local bonus = (levelData and levelData.MagazineBonus) or 0
-	-- BigMag scales the FINAL capacity (base + upgrade bonus) rather
-	-- than only the base, so it keeps its value as upgrades come in.
-	-- Floored so capacity stays a whole number of rounds.
-	return math.floor((stats.MagazineSize + bonus) * magPerk)
+
+	-- Floored so capacity stays a whole number of rounds, but never
+	-- below 1: a magazine of 0 would be unfireable and would also send
+	-- startReload into a state where a reload can never complete.
+	return math.max(1, math.floor((stats.MagazineSize + bonus) * magScale))
 end
 
 local function syncAmmo(player: Player, state: PlayerWeaponState)
@@ -229,11 +248,21 @@ end
 	including StatsService/HP-broadcast bookkeeping) so a dead-center
 	explosion doesn't double-dip that same zombie a second time via the
 	splash pass too.
-]]
-local function applyExplosionSplash(player: Player, stats, center: Vector3, excludeModel: Model?)
-	local radius = stats.BlastRadius or 8
-	local blastDamage = stats.BlastDamage or 100
 
+	radius/blastDamage are passed in rather than read off `stats` here
+	because there are now two unrelated sources of a blast: the weapon's
+	own ExplodeOnImpact fields, and the run-drafted Demolitionist card,
+	whose numbers scale with its stack count (see
+	RunUpgradeConfig.GetKillExplosion). Callers resolve their own
+	numbers; this only applies them.
+]]
+local function applyExplosionSplash(
+	player: Player,
+	center: Vector3,
+	radius: number,
+	blastDamage: number,
+	excludeModel: Model?
+)
 	for _, zombieModel in CollectionService:GetTagged("Zombie") do
 		if zombieModel == excludeModel then
 			continue
@@ -275,8 +304,9 @@ end
 	right player for the kill (and coin reward) on death. Also records
 	damage/headshot-kill stats via StatsService for the scoreboard and
 	session objective.
-	Returns a hit-result table for the WeaponFired broadcast — Killed
-	drives the client's hitmarker/kill-sound distinction. SurfaceNormal/
+	Returns a hit-result table for the WeaponFired broadcast — Killed and
+	Headshot drive the client's hitmarker/damage-number/sound
+	distinctions (regular hit vs kill vs headshot). SurfaceNormal/
 	SurfaceMaterial are only ever set for a MISS that still hit plain
 	environment geometry (never a zombie, never anything with a
 	Humanoid) — that's the "hit marks" specialized option
@@ -294,7 +324,7 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 	if not result then
 		local endPosition = origin + direction * stats.Range
 		if stats.ExplodeOnImpact then
-			applyExplosionSplash(player, stats, endPosition)
+			applyExplosionSplash(player, endPosition, stats.BlastRadius or 8, stats.BlastDamage or 100)
 		end
 		return { EndPosition = endPosition, Hit = false, Damage = 0, Killed = false }
 	end
@@ -305,7 +335,7 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 
 	if not isZombie then
 		if stats.ExplodeOnImpact then
-			applyExplosionSplash(player, stats, result.Position)
+			applyExplosionSplash(player, result.Position, stats.BlastRadius or 8, stats.BlastDamage or 100)
 		end
 
 		-- Skip hit-mark data for anything with a Humanoid ancestor
@@ -336,7 +366,12 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 	local finalDamage = damage
 	local isHeadshot = hitInstance.Name == "Head"
 	if isHeadshot then
-		finalDamage *= stats.HeadshotMultiplier
+		-- The Marksman run upgrade scales the weapon's own headshot
+		-- multiplier rather than adding flat damage, so it's worth more
+		-- on the guns that already reward precision (2.0x pistol/rifle)
+		-- than on the shotgun (1.5x) — which is what makes drafting it
+		-- an actual weapon-dependent decision.
+		finalDamage *= stats.HeadshotMultiplier * RunUpgradeService.GetScale(player, "HeadshotDamage")
 	end
 
 	zombieModel:SetAttribute("LastHitPlayerId", player.UserId)
@@ -362,10 +397,36 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 	end
 
 	if stats.ExplodeOnImpact then
-		applyExplosionSplash(player, stats, result.Position, zombieModel)
+		applyExplosionSplash(player, result.Position, stats.BlastRadius or 8, stats.BlastDamage or 100, zombieModel)
 	end
 
-	return { EndPosition = result.Position, Hit = true, Damage = finalDamage, Killed = killed }
+	-- Demolitionist (run-drafted): a KILL detonates, splashing everything
+	-- around the corpse. Gated on `killed` rather than on every hit —
+	-- that's what keeps it a horde-clearing reward for finishing targets
+	-- instead of a flat damage aura, and it's why it combos with
+	-- fire-rate/headshot picks rather than duplicating them. The dead
+	-- zombie is excluded (it already took the lethal hit above).
+	if killed then
+		local demoStacks = RunUpgradeService.GetStacks(player, "Demolitionist")
+		if demoStacks > 0 then
+			local blastRadius, blastDamage = RunUpgradeConfig.GetKillExplosion(demoStacks)
+			applyExplosionSplash(player, result.Position, blastRadius, blastDamage, zombieModel)
+		end
+	end
+
+	-- Headshot is reported to clients, not just used for the damage math
+	-- above: it drives the distinct headshot hitmarker/damage number/
+	-- sound in EffectsController+UIController. Without it a headshot
+	-- looked EXACTLY like a body shot on screen (same white marker, same
+	-- red number) even though it did double damage, so the single most
+	-- skill-expressive thing a player can do had no feedback at all.
+	return {
+		EndPosition = result.Position,
+		Hit = true,
+		Damage = finalDamage,
+		Killed = killed,
+		Headshot = isHeadshot,
+	}
 end
 
 local function startReload(player: Player, state: PlayerWeaponState, weaponName: string, stats)
@@ -378,8 +439,12 @@ local function startReload(player: Player, state: PlayerWeaponState, weaponName:
 	syncAmmo(player, state)
 
 	-- FastReload multiplies reload TIME (its multiplier is < 1), and is
-	-- a neutral 1 when unowned.
-	local reloadSeconds = stats.ReloadTime * PerkService.GetMultiplier(player, "FastReload")
+	-- a neutral 1 when unowned. Speed Loader stacks do the same via
+	-- GetTimeScale, which divides rather than subtracts so no amount of
+	-- stacking can reach a zero-second (or negative) reload.
+	local reloadSeconds = stats.ReloadTime
+		* PerkService.GetMultiplier(player, "FastReload")
+		* RunUpgradeService.GetTimeScale(player, "ReloadSpeed")
 	task.delay(reloadSeconds, function()
 		-- Guard against the player leaving or their state resetting
 		-- (e.g. respawn) mid-reload before firing the completion sync.
@@ -435,8 +500,13 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3,
 	end
 
 	-- Validate fire rate: reject requests faster than the weapon allows.
+	-- Gunslinger stacks shorten the allowed gap (GetTimeScale is a
+	-- neutral 1 with none drafted). The client mirrors this exact scale
+	-- for its own local prediction — see RunUpgradeService's
+	-- buildClientState for why it has to.
 	local now = os.clock()
-	if now - state.LastFireTime < stats.FireRate then
+	local minFireGap = stats.FireRate * RunUpgradeService.GetTimeScale(player, "FireRate")
+	if now - state.LastFireTime < minFireGap then
 		return
 	end
 
@@ -472,6 +542,23 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3,
 
 	if state.Ammo[weaponName] <= 0 then
 		startReload(player, state, weaponName, stats)
+	end
+end)
+
+--[[
+	Push fresh ammo state after a run-upgrade pick, so Extended Mag's
+	larger capacity appears in the HUD the moment it's drafted instead of
+	waiting for the next shot/reload/weapon switch to trigger a sync.
+
+	Only the CAPACITY changes here — the magazine isn't topped up. A
+	bigger mag is a bigger container, not free ammo, and handing out a
+	full reload with the pick would make Extended Mag quietly the
+	strongest card in the pool for a player who drafts it while empty.
+]]
+RunUpgradeService.OnUpgradeApplied(function(player: Player)
+	local state = playerStates[player]
+	if state then
+		syncAmmo(player, state)
 	end
 end)
 

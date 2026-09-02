@@ -24,7 +24,14 @@ local WaveConfig = {}
 
 WaveConfig.LobbyCountdownSeconds = 20 -- multiplayer party wait: time for others to join the portal before the match starts anyway
 WaveConfig.SoloCountdownSeconds = 5 -- solo party: nobody to wait for, so start almost immediately
-WaveConfig.BetweenWaveBreakSeconds = 8
+-- Raised from 8s when the between-wave upgrade draft went in (see
+-- RunUpgradeService): the break is now a decision window, not just a
+-- pause, and 8 seconds is not long enough to read three cards and
+-- choose while also repositioning for the next wave. This doubles as
+-- the draft's own deadline — WaveService closes the draft when the
+-- countdown ends — so lengthening it further makes runs feel slack,
+-- and shortening it makes picks feel rushed.
+WaveConfig.BetweenWaveBreakSeconds = 15
 WaveConfig.BossIntroSeconds = 6
 WaveConfig.EndOfRunSeconds = 15 -- scoreboard/return-to-lobby time after a run ends
 WaveConfig.MaxConcurrentZombies = 20 -- safety cap so a slow team can't stack up unlimited active zombies
