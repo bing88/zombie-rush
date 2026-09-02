@@ -28,6 +28,7 @@ local ZombieService = require(script.Parent.ZombieService)
 local DataService = require(script.Parent.DataService)
 local MatchState = require(script.Parent.MatchState)
 local StatsService = require(script.Parent.StatsService)
+local PerkService = require(script.Parent.PerkService)
 local LeaderboardService = require(script.Parent.LeaderboardService)
 
 local WaveStateChanged = Remotes.WaveStateChanged
@@ -189,7 +190,11 @@ ZombieService.ZombieDied:Connect(function(_statsName: string, killerPlayer: Play
 	if not killerPlayer or not killerPlayer.Parent then
 		return
 	end
-	local finalReward = math.floor(coinReward * currentModifier.CoinMultiplier + 0.5)
+	-- CoinDoubler stacks on top of the wave's own coin modifier (e.g.
+	-- Payday), and is a neutral 1 when unowned.
+	local finalReward = math.floor(
+		coinReward * currentModifier.CoinMultiplier * PerkService.GetMultiplier(killerPlayer, "CoinDoubler") + 0.5
+	)
 	local newBalance = DataService.AddCoins(killerPlayer, finalReward)
 	if newBalance then
 		CoinsUpdated:FireClient(killerPlayer, newBalance)
@@ -342,11 +347,14 @@ local function runBossWave(waveNumber: number)
 		-- Milestone payout, replacing the old one-off victory bonus now
 		-- that runs are endless and there's no final "you won" moment.
 		for _, player in getActiveParticipants() do
-			local newBalance = DataService.AddCoins(player, WaveConfig.BossClearBonusCoins)
+			local bonus = math.floor(
+				WaveConfig.BossClearBonusCoins * PerkService.GetMultiplier(player, "CoinDoubler") + 0.5
+			)
+			local newBalance = DataService.AddCoins(player, bonus)
 			if newBalance then
 				CoinsUpdated:FireClient(player, newBalance)
 			end
-			StatsService.RecordCoinsEarned(player, WaveConfig.BossClearBonusCoins)
+			StatsService.RecordCoinsEarned(player, bonus)
 		end
 	end
 end

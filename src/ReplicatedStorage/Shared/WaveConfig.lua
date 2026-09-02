@@ -29,17 +29,20 @@ WaveConfig.BossIntroSeconds = 6
 WaveConfig.EndOfRunSeconds = 15 -- scoreboard/return-to-lobby time after a run ends
 WaveConfig.MaxConcurrentZombies = 20 -- safety cap so a slow team can't stack up unlimited active zombies
 
+-- Each new type is introduced alone-ish on its debut wave so players
+-- can learn what it does, before it starts appearing alongside
+-- everything else.
 local Waves: { WaveData } = {
 	{ Composition = { Normal = 5 }, SpawnInterval = 2.2 },
 	{ Composition = { Normal = 7 }, SpawnInterval = 2.0 },
 	{ Composition = { Normal = 6, Fast = 3 }, SpawnInterval = 1.9 },
-	{ Composition = { Normal = 8, Fast = 4 }, SpawnInterval = 1.8 },
-	{ Composition = { Normal = 6, Fast = 4, Tank = 1 }, SpawnInterval = 1.7 },
-	{ Composition = { Normal = 8, Fast = 6, Tank = 1 }, SpawnInterval = 1.6 },
-	{ Composition = { Normal = 8, Fast = 6, Tank = 2 }, SpawnInterval = 1.5 },
-	{ Composition = { Normal = 10, Fast = 8, Tank = 2 }, SpawnInterval = 1.4 },
-	{ Composition = { Normal = 10, Fast = 8, Tank = 3 }, SpawnInterval = 1.3 },
-	{ Composition = { Normal = 12, Fast = 10, Tank = 4 }, SpawnInterval = 1.2 },
+	{ Composition = { Normal = 7, Fast = 4, Runner = 2 }, SpawnInterval = 1.8 }, -- Runner debut
+	{ Composition = { Normal = 6, Fast = 4, Runner = 3, Tank = 1 }, SpawnInterval = 1.7 },
+	{ Composition = { Normal = 8, Fast = 5, Runner = 3, Ranged = 2 }, SpawnInterval = 1.6 }, -- Ranged debut
+	{ Composition = { Normal = 8, Fast = 6, Tank = 2, Exploder = 2 }, SpawnInterval = 1.5 }, -- Exploder debut
+	{ Composition = { Normal = 9, Fast = 7, Runner = 4, Ranged = 3, Spitter = 1 }, SpawnInterval = 1.4 }, -- Spitter debut
+	{ Composition = { Normal = 10, Fast = 8, Tank = 3, Exploder = 3, Brute = 1 }, SpawnInterval = 1.3 }, -- Brute debut
+	{ Composition = { Normal = 12, Fast = 10, Runner = 6, Tank = 4, Spitter = 2 }, SpawnInterval = 1.2 },
 }
 
 WaveConfig.Waves = Waves
@@ -84,6 +87,21 @@ function WaveConfig.GetWave(waveNumber: number): WaveData
 	end
 	if beyond >= 4 then
 		composition.Exploder = 1 + math.floor(beyond / 3)
+	end
+	-- The heavier variants phase in later still, each one raising the
+	-- ceiling on what a wave can throw at you without simply multiplying
+	-- the count of things you already know how to handle.
+	if beyond >= 3 then
+		composition.Runner = 3 + beyond
+	end
+	if beyond >= 6 then
+		composition.Spitter = 1 + math.floor(beyond / 4)
+	end
+	if beyond >= 8 then
+		composition.Brute = 1 + math.floor(beyond / 6)
+	end
+	if beyond >= 12 then
+		composition.Bomber = 1 + math.floor(beyond / 8)
 	end
 
 	return {

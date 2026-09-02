@@ -58,6 +58,14 @@ local ZOMBIE_ASSET_IDS: { [string]: number } = {
 	Fast = 3065429261, -- "Skeleton Dog"
 	Tank = 3058978681, -- "NERF Zombie"
 	Boss = 3193866641, -- "Axe Monster"
+	-- Reusing existing assets for the newer types rather than sourcing
+	-- more: Runner reads as a faster Fast, Brute as a bigger Tank, and
+	-- Scale/Color in ZombieConfig already differentiate them visually.
+	-- Types with no entry here (Ranged, Exploder, Spitter, Bomber) fall
+	-- back to the placeholder rig automatically, which is a supported
+	-- path — see getZombieTemplate/createZombieModel.
+	Runner = 3065429261, -- same "Skeleton Dog" rig as Fast
+	Brute = 3058978681, -- same "NERF Zombie" rig as Tank
 }
 
 -- Whichever of these scripts exist are purely cosmetic (walk/idle

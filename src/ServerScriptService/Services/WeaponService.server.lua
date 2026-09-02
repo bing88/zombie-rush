@@ -20,6 +20,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
+local PerkService = require(script.Parent.PerkService)
 local DataService = require(script.Parent.DataService)
 local InternalSignals = require(script.Parent.InternalSignals)
 local DownedState = require(script.Parent.DownedState)
@@ -64,7 +65,10 @@ local function getDamageMultiplier(player: Player, weaponName: string): number
 	end
 	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
 	local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
-	return (levelData and levelData.DamageMultiplier) or 1
+	local upgradeMultiplier = (levelData and levelData.DamageMultiplier) or 1
+	-- Robux DamageBoost stacks multiplicatively on top of coin upgrades
+	-- (returns a neutral 1 when unowned, so this is unconditional).
+	return upgradeMultiplier * PerkService.GetMultiplier(player, "DamageBoost")
 end
 
 --[[
@@ -79,14 +83,18 @@ local function getMagazineCapacity(player: Player, weaponName: string): number
 	if not stats then
 		return 0
 	end
+	local magPerk = PerkService.GetMultiplier(player, "BigMag")
 	local level = DataService.GetWeaponLevel(player, weaponName)
 	if level <= 0 then
-		return stats.MagazineSize
+		return math.floor(stats.MagazineSize * magPerk)
 	end
 	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
 	local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
 	local bonus = (levelData and levelData.MagazineBonus) or 0
-	return stats.MagazineSize + bonus
+	-- BigMag scales the FINAL capacity (base + upgrade bonus) rather
+	-- than only the base, so it keeps its value as upgrades come in.
+	-- Floored so capacity stays a whole number of rounds.
+	return math.floor((stats.MagazineSize + bonus) * magPerk)
 end
 
 local function syncAmmo(player: Player, state: PlayerWeaponState)
@@ -271,7 +279,10 @@ local function startReload(player: Player, state: PlayerWeaponState, weaponName:
 	state.Reloading[weaponName] = true
 	syncAmmo(player, state)
 
-	task.delay(stats.ReloadTime, function()
+	-- FastReload multiplies reload TIME (its multiplier is < 1), and is
+	-- a neutral 1 when unowned.
+	local reloadSeconds = stats.ReloadTime * PerkService.GetMultiplier(player, "FastReload")
+	task.delay(reloadSeconds, function()
 		-- Guard against the player leaving or their state resetting
 		-- (e.g. respawn) mid-reload before firing the completion sync.
 		if playerStates[player] ~= state or not state.Reloading[weaponName] then

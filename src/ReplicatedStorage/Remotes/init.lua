@@ -29,6 +29,8 @@ local remoteNames = {
 	"ConfirmStartGame", -- client -> server: (portalId, partySize) from the picker; partySize nil = cancelled
 	"LeaveParty", -- client -> server: player pressed the exit button while waiting inside a portal
 	"PartyStatusChanged", -- server -> owning client: (inParty, joined, target) — drives the in-portal waiting UI
+	"PerksUpdated", -- server -> owning client: array of owned perk keys, so the perks panel can show OWNED
+	"RequestPerkPurchase", -- client -> server: perk key the player tapped buy on; server prompts the real game pass purchase
 	"PlayerDownedChanged", -- server -> owning client: entered/left the downed (bleeding out) state, + seconds left
 	"ZombieRangedAttack", -- server -> all clients: a Ranged zombie fired, for a visual projectile
 	"ZombieExploded", -- server -> all clients: an Exploder zombie went off, for a visual blast
