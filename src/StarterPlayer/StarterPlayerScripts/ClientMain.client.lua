@@ -18,6 +18,7 @@ local EffectsController = require(Controllers.EffectsController)
 local CameraController = require(Controllers.CameraController)
 local ShopController = require(Controllers.ShopController)
 local WeaponViewController = require(Controllers.WeaponViewController)
+local PerkShopController = require(Controllers.PerkShopController)
 
 UIController.Init()
 CameraController.Init() -- must init before WeaponController: its RenderStepped
@@ -27,6 +28,7 @@ CameraController.Init() -- must init before WeaponController: its RenderStepped
 WeaponController.Init()
 EffectsController.Init()
 ShopController.Init()
+PerkShopController.Init()
 WeaponViewController.Init() -- IKControl-based weapon holding: right-hand aim-follow + left-hand support grip — see the file's own doc comment for the full architecture
 
 WeaponController.OnAmmoChanged(function(weaponName, current, max, isReloading)

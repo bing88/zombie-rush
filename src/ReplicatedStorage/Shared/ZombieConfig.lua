@@ -98,6 +98,74 @@ local ZombieConfig: { [string]: ZombieStats } = {
 		ExplosionRadius = 10,
 		ExplosionDamage = 35,
 	},
+	--[[
+		Four types added for variety. Every one of these reuses an
+		EXISTING AttackType branch in ZombieService's AI (Melee / Ranged /
+		Explode) — they're differentiated purely by stats, scale and
+		color, so none of them needed new AI code. Deliberate: new AI
+		branches are where behavioral bugs live, and the existing three
+		branches already cover "closes and hits you", "stops and shoots",
+		and "runs at you and pops".
+	]]
+	Runner = {
+		-- Glass cannon: faster than the player, but dies almost instantly.
+		-- Meant to punish ignoring your flanks rather than to tank damage.
+		MaxHP = 35,
+		WalkSpeed = 15,
+		AttackDamage = 7,
+		AttackRange = 5,
+		AttackCooldown = 0.6,
+		CoinReward = 9,
+		UsesPathfinding = true,
+		Scale = 0.8,
+		Color = Color3.fromRGB(200, 90, 90),
+		AttackType = "Melee",
+	},
+	Brute = {
+		-- Between Tank and Boss: slow, heavy, hits hard. Shows up as a
+		-- mid-wave pressure spike without the ceremony of a boss wave.
+		MaxHP = 900,
+		WalkSpeed = 4.5,
+		AttackDamage = 30,
+		AttackRange = 7,
+		AttackCooldown = 1.6,
+		CoinReward = 45,
+		UsesPathfinding = true,
+		Scale = 1.7,
+		Color = Color3.fromRGB(90, 60, 60),
+		AttackType = "Melee",
+	},
+	Spitter = {
+		-- Longer-ranged, harder-hitting Ranged variant that forces players
+		-- out of a comfortable static position. Very fragile up close.
+		MaxHP = 60,
+		WalkSpeed = 4,
+		AttackDamage = 14,
+		AttackRange = 45,
+		AttackCooldown = 2.8,
+		CoinReward = 18,
+		UsesPathfinding = true,
+		Scale = 1,
+		Color = Color3.fromRGB(150, 220, 80),
+		AttackType = "Ranged",
+	},
+	Bomber = {
+		-- Bigger, slower, far deadlier Exploder. Tanky enough that it
+		-- can't just be deleted on sight, so it has to be handled
+		-- deliberately (kited, or shot early at range).
+		MaxHP = 220,
+		WalkSpeed = 6,
+		AttackDamage = 0, -- unused; see ExplosionDamage
+		AttackRange = 5,
+		AttackCooldown = 0,
+		CoinReward = 30,
+		UsesPathfinding = true,
+		Scale = 1.5,
+		Color = Color3.fromRGB(230, 140, 40),
+		AttackType = "Explode",
+		ExplosionRadius = 18,
+		ExplosionDamage = 60,
+	},
 	Boss = {
 		MaxHP = 3000,
 		WalkSpeed = 5,

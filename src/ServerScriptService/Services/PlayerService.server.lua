@@ -40,6 +40,7 @@ local WeaponModelFactory = require(ReplicatedStorage.Shared.WeaponModelFactory)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local DataService = require(script.Parent.DataService)
 local DownedState = require(script.Parent.DownedState)
+local PerkService = require(script.Parent.PerkService)
 local MatchState = require(script.Parent.MatchState)
 
 local PlayerHPChanged = Remotes.PlayerHPChanged
@@ -156,6 +157,10 @@ local function enterDownedState(player: Player, character: Model, humanoid: Huma
 	prompt.Name = "Revive"
 	prompt.ActionText = "Revive"
 	prompt.ObjectText = player.Name
+	-- QuickRevive belongs to the RESCUER (they're the one holding the
+	-- prompt), so the multiplier is looked up per-rescuer at trigger
+	-- time rather than baked into the prompt here — the prompt is
+	-- shared by everyone who can see it.
 	prompt.HoldDuration = REVIVE_HOLD_SECONDS
 	prompt.MaxActivationDistance = 8
 	prompt.RequiresLineOfSight = false
@@ -231,9 +236,12 @@ local function enterDownedState(player: Player, character: Model, humanoid: Huma
 		PlayerDownedChanged:FireClient(player, false, 0)
 	end)
 
-	PlayerDownedChanged:FireClient(player, true, BLEED_OUT_SECONDS)
+	-- The downed player's own QuickRevive extends how long they can hold
+	-- on (its multiplier is < 1, so divide).
+	local bleedOutSeconds = BLEED_OUT_SECONDS / PerkService.GetMultiplier(player, "QuickRevive")
+	PlayerDownedChanged:FireClient(player, true, bleedOutSeconds)
 
-	bleedOutThread = task.delay(BLEED_OUT_SECONDS, function()
+	bleedOutThread = task.delay(bleedOutSeconds, function()
 		if resolved then
 			return
 		end
@@ -303,6 +311,22 @@ local function onCharacterAdded(player: Player, character: Model)
 		-- whole CharacterAdded chain) the moment the current wave ends
 		-- and the next Break phase begins.
 	end)
+
+	-- Robux perks, applied per spawn so a purchase mid-session takes
+	-- effect on the next respawn without needing a rejoin. Both are a
+	-- neutral 1 when unowned, so this is unconditional.
+	local healthPerk = PerkService.GetMultiplier(player, "ExtraHealth")
+	if healthPerk ~= 1 then
+		-- Order matters: raise MaxHealth first, then top Health up to it,
+		-- or the new max would sit above a stale current-health value and
+		-- the player would spawn visibly damaged.
+		humanoid.MaxHealth = humanoid.MaxHealth * healthPerk
+		humanoid.Health = humanoid.MaxHealth
+	end
+	local speedPerk = PerkService.GetMultiplier(player, "SpeedBoost")
+	if speedPerk ~= 1 then
+		humanoid.WalkSpeed = humanoid.WalkSpeed * speedPerk
+	end
 
 	-- Fire once immediately so the UI has correct values on spawn.
 	PlayerHPChanged:FireClient(player, humanoid.Health, humanoid.MaxHealth)
