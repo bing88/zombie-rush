@@ -84,13 +84,33 @@ local runFireRateScale = 1
 local runReloadScale = 1
 
 --[[
+	The same mirroring, for the two systems that also shorten the gap
+	between shots: the current kill-streak tier (ComboService) and
+	Berserk while it's running (UltimateService). Everything in the
+	comment above applies identically — a streak that made the server
+	accept faster shots while this module kept throttling would be a
+	reward the player earned and never felt.
+
+	Kept as separate variables rather than one combined scale so each
+	arrives from, and is overwritten by, exactly the remote that owns it.
+	A single shared number would need both handlers to know the other's
+	current value to avoid clobbering it.
+]]
+local comboFireRateScale = 1
+local ultimateFireRateScale = 1
+
+--[[
 	The weapon's effective shot delay and reload duration for this
 	player, right now. Every read of FireRate/ReloadTime goes through
 	these two rather than touching WeaponConfig directly, so a drafted
 	upgrade can't be applied in one place and forgotten in another.
+
+	The three fire-rate scales multiply, mirroring exactly how the server
+	composes them in WeaponService's fire-gap check. If a fourth source
+	is ever added there, it has to be added here too.
 ]]
 local function effectiveFireRate(stats): number
-	return stats.FireRate * runFireRateScale
+	return stats.FireRate * runFireRateScale * comboFireRateScale * ultimateFireRateScale
 end
 
 local function effectiveReloadTime(stats): number
@@ -357,6 +377,32 @@ function WeaponController.Init()
 		end
 		runFireRateScale = tonumber(state.FireRateScale) or 1
 		runReloadScale = tonumber(state.ReloadScale) or 1
+	end)
+
+	-- Kill-streak and ultimate fire-rate scales, from the same two
+	-- remotes that drive their HUD readouts. Both fall back to a neutral
+	-- 1 on a malformed payload, so a bad message can only ever cost the
+	-- bonus for a moment rather than leaving the weapon stuck at a stale
+	-- faster-than-allowed rate the server would then reject.
+	Remotes.ComboChanged.OnClientEvent:Connect(function(state)
+		if type(state) ~= "table" then
+			return
+		end
+		comboFireRateScale = tonumber(state.FireRateScale) or 1
+	end)
+
+	Remotes.UltimateStateChanged.OnClientEvent:Connect(function(state)
+		if type(state) ~= "table" then
+			return
+		end
+		-- The server sends the bonus and whether it's live, not a scale,
+		-- because the HUD needs the bonus for its label either way.
+		-- Same 1/(1+bonus) form the server uses.
+		if state.Active then
+			ultimateFireRateScale = 1 / (1 + (tonumber(state.FireRateBonus) or 0))
+		else
+			ultimateFireRateScale = 1
+		end
 	end)
 
 	RunService.RenderStepped:Connect(function()

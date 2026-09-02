@@ -20,6 +20,7 @@ local ShopController = require(Controllers.ShopController)
 local WeaponViewController = require(Controllers.WeaponViewController)
 local PerkShopController = require(Controllers.PerkShopController)
 local RunDraftController = require(Controllers.RunDraftController)
+local ComboController = require(Controllers.ComboController)
 
 UIController.Init()
 CameraController.Init() -- must init before WeaponController: its RenderStepped
@@ -31,6 +32,7 @@ EffectsController.Init()
 ShopController.Init()
 PerkShopController.Init()
 RunDraftController.Init() -- between-wave 3-choice upgrade draft + the run's owned-upgrade list
+ComboController.Init() -- kill-streak readout + ultimate charge meter, and the Q keybind that spends it
 WeaponViewController.Init() -- IKControl-based weapon holding: right-hand aim-follow + left-hand support grip — see the file's own doc comment for the full architecture
 
 WeaponController.OnAmmoChanged(function(weaponName, current, max, isReloading)
@@ -65,6 +67,18 @@ end)
 
 UIController.OnViewTogglePressed(function()
 	CameraController.ToggleFirstPerson()
+end)
+
+-- Ultimate: `Q` is handled inside ComboController, but touch players
+-- have no keyboard, so UIController's ULT button routes to the same
+-- activation path and mirrors the meter's ready/active colour back onto
+-- the button.
+UIController.OnUltimatePressed(function()
+	ComboController.TryActivate()
+end)
+
+ComboController.OnUltimateStateChanged(function(ready: boolean, active: boolean, color: Color3)
+	UIController.SetUltimateButtonState(ready, active, color)
 end)
 
 UIController.OnFireButtonStateChanged(function(held: boolean)

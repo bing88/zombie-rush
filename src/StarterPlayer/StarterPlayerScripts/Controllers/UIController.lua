@@ -26,6 +26,8 @@ local ammoContainer: Frame
 local ammoNameLabel: TextLabel
 local ammoLabel: TextLabel
 local reloadButton: TextButton
+local ultimateButton: TextButton
+local ultimateButtonStroke: UIStroke
 local fireButton: TextButton
 local deathLabel: TextLabel
 local coinLabel: TextLabel
@@ -440,6 +442,24 @@ local function buildUI()
 	-- View now takes the Aim slot (342) since Aim is hidden — keeps the
 	-- two remaining buttons contiguous instead of leaving a gap.
 	viewToggleButton = circleButton("ViewToggleButton", "VIEW", 342)
+
+	--[[
+		Ultimate, continuing the same 70px pitch (56 tall + 14 gap).
+
+		Exists because the ultimate was keyboard-only at first: the
+		charge meter is drawn bottom-left by ComboController and `Q`
+		spent it, which left touch players with a meter they could watch
+		fill and never use. It's here rather than as a tap target on the
+		meter itself for two reasons — this right-hand column is already
+		where every touch action lives (fire/reload/view), and the
+		bottom-LEFT is where Roblox's own movement thumbstick sits on
+		mobile, so a button there would compete with walking.
+
+		Colour is driven from outside via SetUltimateButtonState, since
+		charge is ComboController's state, not this module's.
+	]]
+	ultimateButton = circleButton("UltimateButton", "ULT", 412)
+	ultimateButtonStroke = ultimateButton:FindFirstChildOfClass("UIStroke") :: UIStroke
 
 	-- Fire button: the ONLY manual firing trigger (see WeaponController —
 	-- generic screen-tap/click firing was removed). Works via mouse click
@@ -1098,6 +1118,50 @@ end
 function UIController.OnViewTogglePressed(callback: () -> ())
 	if viewToggleButton then
 		viewToggleButton.Activated:Connect(callback)
+	end
+end
+
+function UIController.OnUltimatePressed(callback: () -> ())
+	if ultimateButton then
+		ultimateButton.Activated:Connect(callback)
+	end
+end
+
+--[[
+	Recolours the ULT button to match the charge meter's three states:
+	dim while charging, green when ready to spend, and the ability's own
+	colour while it's running.
+
+	Deliberately stays VISIBLE and tappable when not ready rather than
+	hiding or disabling itself — a button that disappears takes its own
+	explanation with it, and on touch (where there's no `Q` and no
+	tooltip) the dim ULT circle is the only thing telling a player the
+	ability exists at all. Tapping it early is harmless: ComboController
+	drops the press and the server re-checks regardless.
+]]
+function UIController.SetUltimateButtonState(ready: boolean, active: boolean, color: Color3?)
+	if not ultimateButton then
+		return
+	end
+
+	local accent = color or Color3.fromRGB(120, 255, 160)
+	if active then
+		ultimateButton.BackgroundColor3 = accent
+		ultimateButton.BackgroundTransparency = 0.15
+		ultimateButton.TextColor3 = Color3.fromRGB(20, 20, 20)
+	elseif ready then
+		ultimateButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		ultimateButton.BackgroundTransparency = 0.15
+		ultimateButton.TextColor3 = accent
+	else
+		ultimateButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		ultimateButton.BackgroundTransparency = 0.5
+		ultimateButton.TextColor3 = Color3.fromRGB(150, 150, 150)
+	end
+
+	if ultimateButtonStroke then
+		ultimateButtonStroke.Color = (ready or active) and accent or Color3.fromRGB(90, 90, 90)
+		ultimateButtonStroke.Thickness = (ready or active) and 2.5 or 1.5
 	end
 end
 

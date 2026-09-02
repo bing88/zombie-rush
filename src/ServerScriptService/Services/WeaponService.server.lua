@@ -24,6 +24,8 @@ local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local RunUpgradeConfig = require(ReplicatedStorage.Shared.RunUpgradeConfig)
 local PerkService = require(script.Parent.PerkService)
 local RunUpgradeService = require(script.Parent.RunUpgradeService)
+local ComboService = require(script.Parent.ComboService)
+local UltimateService = require(script.Parent.UltimateService)
 local DataService = require(script.Parent.DataService)
 local InternalSignals = require(script.Parent.InternalSignals)
 local DownedState = require(script.Parent.DownedState)
@@ -78,12 +80,18 @@ local function getDamageMultiplier(player: Player, weaponName: string): number
 		upgradeMultiplier = (levelData and levelData.DamageMultiplier) or 1
 	end
 
-	-- Robux DamageBoost and run-drafted Hollow Point stacks both scale
-	-- multiplicatively on top of coin upgrades (each returns a neutral 1
-	-- when the player has none, so this is unconditional).
+	-- Every remaining source scales multiplicatively on top of coin
+	-- upgrades, and each returns a neutral 1 when the player has none of
+	-- it, so this is unconditional: Robux DamageBoost, run-drafted
+	-- Hollow Point stacks, the current kill streak's tier, and Berserk
+	-- while it's running. Four independent systems, one product — see
+	-- the level-0 note above for what happens when one of these gets
+	-- short-circuited out.
 	return upgradeMultiplier
 		* PerkService.GetMultiplier(player, "DamageBoost")
 		* RunUpgradeService.GetScale(player, "Damage")
+		* ComboService.GetDamageScale(player)
+		* UltimateService.GetDamageScale(player)
 end
 
 --[[
@@ -283,6 +291,7 @@ local function applyExplosionSplash(
 		-- detonation damage against players (see ZombieService).
 		local falloff = 1 - (distance / radius)
 		local splashDamage = blastDamage * math.max(falloff, 0.15)
+			* ZombieService.GetIncomingDamageScale(zombieModel) -- Armored elites resist splash too, not just bullets
 
 		zombieModel:SetAttribute("LastHitPlayerId", player.UserId)
 		humanoid:TakeDamage(splashDamage)
@@ -371,6 +380,14 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 		-- an actual weapon-dependent decision.
 		finalDamage *= stats.HeadshotMultiplier * RunUpgradeService.GetScale(player, "HeadshotDamage")
 	end
+
+	-- Armored elites soak a fraction of it. Applied AFTER the headshot
+	-- multiplier on purpose: resistance scales whatever the shot was
+	-- worth, so a headshot on an Armored elite keeps its full relative
+	-- advantage over a body shot instead of both being flattened toward
+	-- the same number. Neutral 1 for every non-elite (see
+	-- ZombieService.GetIncomingDamageScale).
+	finalDamage *= ZombieService.GetIncomingDamageScale(zombieModel)
 
 	zombieModel:SetAttribute("LastHitPlayerId", player.UserId)
 	humanoid:TakeDamage(finalDamage)
@@ -511,12 +528,19 @@ FireWeapon.OnServerEvent:Connect(function(player: Player, aimDirection: Vector3,
 	end
 
 	-- Validate fire rate: reject requests faster than the weapon allows.
-	-- Gunslinger stacks shorten the allowed gap (GetTimeScale is a
-	-- neutral 1 with none drafted). The client mirrors this exact scale
-	-- for its own local prediction — see RunUpgradeService's
-	-- buildClientState for why it has to.
+	-- Three things shorten the allowed gap — drafted Gunslinger stacks,
+	-- the current kill-streak tier, and Berserk — and each is a neutral
+	-- 1 when the player doesn't have it, so they just multiply. The
+	-- client mirrors this exact product for its own local prediction;
+	-- see RunUpgradeService's buildClientState and ComboService's header
+	-- for why it has to, and note that means any NEW fire-rate source
+	-- added here has to be mirrored client-side too or it will be
+	-- invisible in play.
 	local now = os.clock()
-	local minFireGap = stats.FireRate * RunUpgradeService.GetTimeScale(player, "FireRate")
+	local minFireGap = stats.FireRate
+		* RunUpgradeService.GetTimeScale(player, "FireRate")
+		* ComboService.GetFireRateTimeScale(player)
+		* UltimateService.GetFireRateTimeScale(player)
 	if now - state.LastFireTime < minFireGap then
 		return
 	end

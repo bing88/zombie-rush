@@ -52,6 +52,10 @@ local remoteNames = {
 	"RunUpgradeOffer", -- server -> owning client: the 3 draft cards offered this break (see RunUpgradeConfig/RunUpgradeService)
 	"RunUpgradeChosen", -- client -> server: the card id the player picked from their current offer
 	"RunUpgradesChanged", -- server -> owning client: owned run-upgrade stacks + the client-side scales derived from them
+	"ComboChanged", -- server -> owning client: kill-streak count, current tier and the fire-rate scale the client must mirror (see ComboService)
+	"UltimateStateChanged", -- server -> owning client: ultimate charge 0-1, whether it's active, and for how much longer
+	"ActivateUltimate", -- client -> server: player pressed the ultimate key; server re-checks charge/liveness before spending it
+	"UltimateActivated", -- server -> all clients: someone spent their ultimate, for the aura FX everyone should see
 }
 
 local Remotes = {}

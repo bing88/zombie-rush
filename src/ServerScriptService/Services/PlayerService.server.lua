@@ -42,6 +42,7 @@ local DataService = require(script.Parent.DataService)
 local DownedState = require(script.Parent.DownedState)
 local PerkService = require(script.Parent.PerkService)
 local RunUpgradeService = require(script.Parent.RunUpgradeService)
+local ComboService = require(script.Parent.ComboService)
 local MatchState = require(script.Parent.MatchState)
 
 local PlayerHPChanged = Remotes.PlayerHPChanged
@@ -191,6 +192,16 @@ local function enterDownedState(player: Player, character: Model, humanoid: Huma
 		return
 	end
 	DownedState.SetDowned(player, true)
+
+	-- Going down ends the kill streak. This is the only reset that
+	-- matters mid-fight: a downed player has their HP pinned at 1 so
+	-- humanoid.Died won't fire for them here, and the 4s decay would
+	-- have dropped the streak anyway while they waited for a revive —
+	-- doing it explicitly just means the HUD clears the moment they
+	-- fall rather than four seconds into bleeding out. Ultimate CHARGE
+	-- is deliberately left alone (see UltimateService's header): it's
+	-- what a rescued player has to fight back with.
+	ComboService.ResetPlayer(player)
 
 	local cachedWalkSpeed = humanoid.WalkSpeed
 	humanoid.WalkSpeed = 0

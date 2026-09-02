@@ -65,6 +65,7 @@ local TweenService = game:GetService("TweenService")
 local SoundService = game:GetService("SoundService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
+local UltimateConfig = require(ReplicatedStorage.Shared.UltimateConfig)
 
 local EffectsController = {}
 
@@ -715,6 +716,60 @@ local function spawnExplosion(position: Vector3, radius: number)
 	Debris:AddItem(ring, EXPLOSION_LIFETIME + 0.1)
 end
 
+--[[
+	Berserk aura: a coloured outline plus a light on whoever just spent
+	their ultimate, for its duration (plan section 20).
+
+	Shown for EVERY player, including other people's activations, which
+	is why it's driven by a broadcast remote rather than done locally by
+	the activating client — in a co-op fight, a teammate going berserk
+	is worth seeing.
+
+	A Highlight rather than particles or a material swap: it reads
+	through walls and through other players, it needs no attachment
+	points on a rig whose structure varies (toolbox zombie models and
+	R15 players both pass through here), and it costs one instance that
+	Debris removes on a timer. Nothing here touches physics or joints,
+	which is what makes it safe to hang off a live character — see
+	WeaponViewController's header for what happens when client-side
+	cosmetics do touch a character's joints.
+]]
+local function spawnBerserkAura(activatingPlayer: Player, durationSeconds: number)
+	local character = activatingPlayer and activatingPlayer.Character
+	if not character then
+		return
+	end
+
+	-- Replace rather than stack, so a re-activation can't leave two
+	-- highlights fighting over the same character.
+	local existing = character:FindFirstChild("BerserkAura")
+	if existing then
+		existing:Destroy()
+	end
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "BerserkAura"
+	highlight.FillColor = UltimateConfig.Color
+	highlight.FillTransparency = 0.65
+	highlight.OutlineColor = UltimateConfig.Color
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Adornee = character
+	highlight.Parent = character
+	Debris:AddItem(highlight, durationSeconds)
+
+	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+	if torso and torso:IsA("BasePart") then
+		local light = Instance.new("PointLight")
+		light.Name = "BerserkLight"
+		light.Color = UltimateConfig.Color
+		light.Brightness = 4
+		light.Range = 14
+		light.Parent = torso
+		Debris:AddItem(light, durationSeconds)
+	end
+end
+
 type HitResult = {
 	EndPosition: Vector3,
 	Hit: boolean,
@@ -807,6 +862,10 @@ function EffectsController.Init()
 	-- as an Exploder zombie's own detonation (see spawnExplosion above).
 	Remotes.WeaponExploded.OnClientEvent:Connect(function(position: Vector3, radius: number)
 		spawnExplosion(position, radius)
+	end)
+
+	Remotes.UltimateActivated.OnClientEvent:Connect(function(activatingPlayer: Player, durationSeconds: number)
+		spawnBerserkAura(activatingPlayer, durationSeconds)
 	end)
 end
 

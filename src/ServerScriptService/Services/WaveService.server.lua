@@ -24,6 +24,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
 local WaveConfig = require(ReplicatedStorage.Shared.WaveConfig)
 local WaveModifiers = require(ReplicatedStorage.Shared.WaveModifiers)
+local EliteConfig = require(ReplicatedStorage.Shared.EliteConfig)
 local ZombieService = require(script.Parent.ZombieService)
 local DataService = require(script.Parent.DataService)
 local MatchState = require(script.Parent.MatchState)
@@ -31,6 +32,8 @@ local DownedState = require(script.Parent.DownedState)
 local StatsService = require(script.Parent.StatsService)
 local PerkService = require(script.Parent.PerkService)
 local RunUpgradeService = require(script.Parent.RunUpgradeService)
+local ComboService = require(script.Parent.ComboService)
+local UltimateService = require(script.Parent.UltimateService)
 local LeaderboardService = require(script.Parent.LeaderboardService)
 
 local WaveStateChanged = Remotes.WaveStateChanged
@@ -50,6 +53,12 @@ local PartyStatusChanged = Remotes.PartyStatusChanged
 -- PerkService.Init lives in PerkBootstrap next to its own remote
 -- handling rather than inside the service module.
 RunUpgradeService.Init()
+-- Same reasoning for these two: this module is the only thing that
+-- feeds them (kills in, per-match reset) so it's what arms them.
+-- ComboService.Init starts its decay heartbeat; UltimateService.Init
+-- arms the ActivateUltimate listener and its expiry heartbeat.
+ComboService.Init()
+UltimateService.Init()
 
 local DEFAULT_ARENA_SPAWN = Vector3.new(0, 5, 105)
 local DEFAULT_LOBBY_SPAWN = Vector3.new(0, 3, -18)
@@ -217,6 +226,21 @@ ZombieService.ZombieDied:Connect(function(_statsName: string, killerPlayer: Play
 	StatsService.RecordCoinsEarned(killerPlayer, finalReward)
 
 	--[[
+		Kill streak and ultimate charge, in that order: the streak has to
+		be extended first because AddChargeForKill scales the charge by
+		the tier the streak is on, so charging first would always pay out
+		at the previous tier and the kill that reaches GODLIKE would be
+		charged as merely UNSTOPPABLE.
+
+		Here rather than in WeaponService for the same reason Bloodthirst
+		is (see below): this is the one place a kill is attributed no
+		matter how it happened, so splash and Exploder-chain kills feed
+		the streak exactly like direct shots.
+	]]
+	ComboService.RegisterKill(killerPlayer)
+	UltimateService.AddChargeForKill(killerPlayer)
+
+	--[[
 		Bloodthirst (run-drafted): heal per kill. Handled here rather
 		than in WeaponService because this is the one place a kill is
 		already attributed to a player regardless of HOW it happened —
@@ -286,7 +310,7 @@ Players.PlayerAdded:Connect(function(player)
 	end)
 end)
 
-local function spawnWaveTrickle(composition, spawnInterval: number)
+local function spawnWaveTrickle(composition, spawnInterval: number, waveNumber: number)
 	local positions = getZombieSpawnPositions()
 	local spawnOrder = {}
 	for zombieType, count in composition do
@@ -312,12 +336,20 @@ local function spawnWaveTrickle(composition, spawnInterval: number)
 			task.wait(0.5)
 		end
 		local position = positions[math.random(1, #positions)]
+		-- Rolled per SPAWN rather than per wave, so two zombies of the
+		-- same type in the same wave can be different — that
+		-- unpredictability is the point of the affix system (see
+		-- EliteConfig). Rolled here rather than inside ZombieService
+		-- because the chance depends on the wave number, which is wave
+		-- pacing and therefore this module's business.
+		local affix = EliteConfig.RollAffix(waveNumber, zombieType)
 		ZombieService.SpawnZombie(
 			zombieType,
 			position,
 			currentModifier.HPMultiplier,
 			currentModifier.SpeedMultiplier,
-			currentModifier.DamageMultiplier
+			currentModifier.DamageMultiplier,
+			affix and affix.Id or nil
 		)
 		task.wait(spawnInterval)
 	end
@@ -459,7 +491,7 @@ local function runWaves()
 			WaveStateChanged:FireAllClients(waveNumber, waveNumber, "InProgress")
 
 			local waveData = WaveConfig.GetWave(waveNumber)
-			spawnWaveTrickle(waveData.Composition, waveData.SpawnInterval)
+			spawnWaveTrickle(waveData.Composition, waveData.SpawnInterval, waveNumber)
 			waitUntilArenaClear()
 		end
 
@@ -849,6 +881,12 @@ task.spawn(function()
 			-- empty build, which is what makes each run take a
 			-- different shape instead of accumulating forever.
 			RunUpgradeService.ResetAll()
+			-- Streaks and ultimate charge are per-run too, so nobody
+			-- walks into wave 1 with a full meter banked from the
+			-- previous match (see UltimateService's header for why
+			-- charge is kept across DEATH but not across matches).
+			ComboService.ResetAll()
+			UltimateService.ResetAll()
 			-- Endless: runWaves only returns once the team is wiped (or
 			-- everyone left), so defeat is the single exit path — there's
 			-- no victory branch anymore.

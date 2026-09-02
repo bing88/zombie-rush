@@ -37,6 +37,7 @@ local Debris = game:GetService("Debris")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ZombieConfig = require(ReplicatedStorage.Shared.ZombieConfig)
+local EliteConfig = require(ReplicatedStorage.Shared.EliteConfig)
 local Remotes = require(ReplicatedStorage.Remotes)
 
 local ZombieRangedAttack = Remotes.ZombieRangedAttack
@@ -73,7 +74,7 @@ local ZOMBIE_ASSET_IDS: { [string]: number } = {
 	-- Types with no entry here (Ranged, Exploder, Spitter, Bomber) fall
 	-- back to the placeholder rig automatically, which is a supported
 	-- path — see getZombieTemplate/createZombieModel.
-1	Runner = 3065429261, -- same "Skeleton Dog" rig as Fast
+	Runner = 3065429261, -- same "Skeleton Dog" rig as Fast
 	Brute = 3058978681, -- same "NERF Zombie" rig as Tank
 }
 
@@ -445,6 +446,157 @@ local function createZombieModel(statsName: string): Model
 end
 
 --[[
+	ELITE AFFIXES (see ReplicatedStorage.Shared.EliteConfig).
+
+	Everything below decorates an ALREADY-BUILT zombie rather than
+	building a different one, which is what lets an affix apply to all
+	nine base types and both rig paths (real asset clone and placeholder)
+	without either of them knowing affixes exist.
+]]
+
+local ELITE_ATTRIBUTE = "EliteAffix"
+local ELITE_RESISTANCE_ATTRIBUTE = "DamageResistance"
+
+--[[
+	Fraction of incoming damage an Armored elite ignores, as a
+	multiplier for callers to apply to their own damage number.
+
+	Lives here, next to the attribute it reads, rather than in
+	WeaponService: this module is what stamps the attribute on, so it's
+	what should own the one place it's interpreted. Returns a neutral 1
+	for every ordinary zombie, so call sites multiply unconditionally —
+	the same shape as PerkService/RunUpgradeService's read helpers.
+]]
+function ZombieService.GetIncomingDamageScale(zombieModel: Model): number
+	local resistance = zombieModel:GetAttribute(ELITE_RESISTANCE_ATTRIBUTE)
+	if typeof(resistance) ~= "number" or resistance <= 0 then
+		return 1
+	end
+	return 1 - math.clamp(resistance, 0, 0.9) -- never fully immune, however it was configured
+end
+
+--[[
+	Tints every part and hangs a name tag, so an elite is identifiable
+	before it's in melee range — the entire point of the affix is the
+	target-priority decision it creates (plan section 9), which requires
+	seeing it across the arena.
+
+	Lerps the existing colour toward the affix colour instead of
+	replacing it, so the base type stays recognisable: a Frenzied Tank
+	should still read as a Tank at a glance, not as a generic orange
+	humanoid. The Boss's own enrage recolour (see runChaseAI) still
+	overwrites this outright, which is correct — a boss is never elite.
+]]
+local function applyEliteAppearance(model: Model, affix: EliteConfig.EliteAffix)
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Color = descendant.Color:Lerp(affix.Color, 0.65)
+		end
+	end
+
+	local head = model:FindFirstChild("Head") :: BasePart?
+	local anchor = head or model.PrimaryPart
+	if not anchor then
+		return
+	end
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "EliteNameplate"
+	billboard.Size = UDim2.fromOffset(150, 26)
+	billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.6, 0)
+	billboard.AlwaysOnTop = true
+	billboard.MaxDistance = 180 -- stops a late wave turning into a wall of unreadable overlapping tags
+	billboard.Parent = anchor
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 15
+	label.TextColor3 = affix.Color
+	label.Text = affix.Name
+	label.Parent = billboard
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(0, 0, 0)
+	stroke.Thickness = 2
+	stroke.Parent = label
+end
+
+--[[
+	Heals a Regenerating elite, but only after RegenDelaySeconds without
+	taking damage.
+
+	Damage is detected by watching HealthChanged for a DECREASE rather
+	than by reading an attribute WeaponService would have to remember to
+	stamp — that way melee reflect, splash, and any future damage source
+	all reset the timer for free, and nothing outside this function needs
+	to know the affix exists. The increase this function itself causes is
+	ignored for the same reason (it only resets on a decrease), which is
+	what stops it from perpetually resetting its own timer.
+]]
+local function startEliteRegen(model: Model, humanoid: Humanoid, affix: EliteConfig.EliteAffix)
+	local perSecond = affix.RegenFractionPerSecond
+	local delay = affix.RegenDelaySeconds or 3
+	if not perSecond or perSecond <= 0 then
+		return
+	end
+
+	local lastDamagedClock = os.clock()
+	local lastHealth = humanoid.Health
+	humanoid.HealthChanged:Connect(function(health)
+		if health < lastHealth then
+			lastDamagedClock = os.clock()
+		end
+		lastHealth = health
+	end)
+
+	task.spawn(function()
+		local interval = 0.25
+		while model.Parent and humanoid.Health > 0 do
+			task.wait(interval)
+			if os.clock() - lastDamagedClock >= delay and humanoid.Health < humanoid.MaxHealth then
+				-- Assigning Health rather than calling a heal helper so
+				-- this can't overshoot MaxHealth.
+				humanoid.Health = math.min(humanoid.Health + humanoid.MaxHealth * perSecond * interval, humanoid.MaxHealth)
+			end
+		end
+	end)
+end
+
+--[[
+	A Volatile elite's death blast.
+
+	Deliberately identical in shape to runExploderAI's own detonate (same
+	falloff curve, same floor, same ZombieExploded broadcast the client
+	already renders) so a player can't end up learning two different
+	explosion rules. It does NOT kill the zombie — unlike the Exploder,
+	this fires FROM the death, so there's nothing left to kill.
+]]
+local function detonateVolatileElite(position: Vector3, affix: EliteConfig.EliteAffix)
+	local radius = affix.ExplodeRadius
+	local blastDamage = affix.ExplodeDamage
+	if not radius or not blastDamage then
+		return
+	end
+
+	ZombieExploded:FireAllClients(position, radius)
+
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local targetRoot = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local targetHumanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
+			local distance = (targetRoot.Position - position).Magnitude
+			if distance <= radius then
+				local falloff = 1 - (distance / radius)
+				targetHumanoid:TakeDamage(blastDamage * math.max(falloff, 0.15))
+			end
+		end
+	end
+end
+
+--[[
 	Raycasts torso-height between two points, ignoring the zombie's own
 	model, to decide whether it actually has a clear shot at its target —
 	AttackRange alone is just Euclidean distance, so without this a
@@ -678,7 +830,16 @@ end
 	case a future very-cheap/very-numerous enemy type wants to opt back
 	out of the pathfinding cost.
 ]]
-local function runChaseAI(model: Model, statsName: string, stats, humanoid: Humanoid, rootPart: BasePart, damageMultiplier: number, onDeath: () -> ())
+local function runChaseAI(
+	model: Model,
+	statsName: string,
+	stats,
+	humanoid: Humanoid,
+	rootPart: BasePart,
+	damageMultiplier: number,
+	onDeath: () -> (),
+	affix: EliteConfig.EliteAffix?
+)
 	local alive = true
 	local enraged = false
 
@@ -742,7 +903,20 @@ local function runChaseAI(model: Model, statsName: string, stats, humanoid: Huma
 
 					if targetHumanoid and targetHumanoid.Health > 0 then
 						local damage = enraged and stats.EnrageAttackDamage or stats.AttackDamage
-						targetHumanoid:TakeDamage(damage * damageMultiplier)
+						local dealt = damage * damageMultiplier
+						targetHumanoid:TakeDamage(dealt)
+
+						-- Vampiric elite: heals off what it actually
+						-- deals, so it gets nothing for swinging at a
+						-- dead or already-downed player (whose HP is
+						-- pinned at 1 by the bleed-out system) and
+						-- everything for staying latched onto a healthy
+						-- one. Capped at MaxHealth so it can't outgrow
+						-- the health bar it spawned with.
+						local lifesteal = affix and affix.Lifesteal
+						if lifesteal and humanoid.Health > 0 then
+							humanoid.Health = math.min(humanoid.Health + dealt * lifesteal, humanoid.MaxHealth)
+						end
 					end
 				end
 				-- Don't let time spent attacking count against the
@@ -994,13 +1168,22 @@ end
 	WaveService apply a random per-wave modifier (see WaveModifiers.lua)
 	without this module needing to know anything about wave balance —
 	it just scales whatever base stats it was given.
+
+	eliteAffixId (optional) layers one elite affix on top of all of the
+	above — see EliteConfig. WaveService rolls it, because the roll
+	depends on the wave number and this module deliberately knows nothing
+	about wave pacing; this module owns everything that happens to the
+	zombie AS A RESULT. An unknown id is ignored rather than fatal, so a
+	typo produces an ordinary zombie instead of a wave that fails to
+	spawn.
 ]]
 function ZombieService.SpawnZombie(
 	statsName: string,
 	position: Vector3,
 	hpMultiplier: number?,
 	speedMultiplier: number?,
-	damageMultiplier: number?
+	damageMultiplier: number?,
+	eliteAffixId: string?
 ): Model?
 	local stats = ZombieConfig[statsName]
 	if not stats then
@@ -1016,15 +1199,43 @@ function ZombieService.SpawnZombie(
 	local humanoid = model:FindFirstChildOfClass("Humanoid") :: Humanoid
 	local rootPart = model.PrimaryPart :: BasePart
 
+	local affix = eliteAffixId and EliteConfig.GetAffix(eliteAffixId) or nil
+	local coinReward = stats.CoinReward
+
 	-- Applied here (after createZombieModel, which sets base values)
 	-- so multiplier scaling is consistent regardless of which path
-	-- created the model (real asset clone vs. placeholder).
-	humanoid.MaxHealth = stats.MaxHP * (hpMultiplier or 1)
+	-- created the model (real asset clone vs. placeholder). The elite
+	-- affix multiplies on top of the wave modifier rather than replacing
+	-- it, so a Frenzied zombie in a Fast Zombies wave is faster still.
+	local eliteHP = affix and affix.HPMultiplier or 1
+	local eliteSpeed = affix and affix.SpeedMultiplier or 1
+	humanoid.MaxHealth = stats.MaxHP * (hpMultiplier or 1) * eliteHP
 	humanoid.Health = humanoid.MaxHealth
-	humanoid.WalkSpeed = stats.WalkSpeed * (speedMultiplier or 1)
+	humanoid.WalkSpeed = stats.WalkSpeed * (speedMultiplier or 1) * eliteSpeed
+
+	if affix then
+		-- Attributes rather than a lookup table keyed by Model: they
+		-- replicate to clients for free, they're visible in the Studio
+		-- explorer while debugging a live wave, and they can't leak a
+		-- reference that keeps a destroyed Model alive (the mistake
+		-- knockbackStunExpiry has to clean up by hand in onDeath below).
+		model:SetAttribute(ELITE_ATTRIBUTE, affix.Id)
+		if affix.DamageResistance then
+			model:SetAttribute(ELITE_RESISTANCE_ATTRIBUTE, affix.DamageResistance)
+		end
+		coinReward = math.floor(coinReward * affix.CoinMultiplier + 0.5)
+		applyEliteAppearance(model, affix)
+		startEliteRegen(model, humanoid, affix)
+	end
 
 	local function onDeath()
 		CollectionService:RemoveTag(model, ZOMBIE_TAG)
+		if affix and affix.ExplodeRadius then
+			-- Volatile, before the death knockback below gets to fling
+			-- the corpse: the blast has to land where the zombie died,
+			-- not wherever its body is thrown to.
+			detonateVolatileElite(rootPart.Position, affix)
+		end
 		applyDeathKnockback(rootPart)
 		playDeathSound(rootPart.Position)
 		local killerPlayer: Player? = nil
@@ -1032,18 +1243,22 @@ function ZombieService.SpawnZombie(
 		if killerUserId then
 			killerPlayer = Players:GetPlayerByUserId(killerUserId)
 		end
-		zombieDiedBindable:Fire(statsName, killerPlayer, stats.CoinReward)
+		zombieDiedBindable:Fire(statsName, killerPlayer, coinReward)
 		knockbackStunExpiry[model] = nil -- drop the reference so the destroyed Model can actually be garbage collected
 		task.delay(2, function()
 			model:Destroy()
 		end)
 	end
 
-	local effectiveDamageMultiplier = damageMultiplier or 1
+	local effectiveDamageMultiplier = (damageMultiplier or 1) * (affix and affix.DamageMultiplier or 1)
 	if stats.AttackType == "Explode" then
+		-- Exploder/Bomber take no affix parameter because the two
+		-- behavioural affixes that would need one (Vampiric, Volatile)
+		-- both exclude these types — see EliteConfig's ExcludedTypes.
+		-- Their stat and appearance changes are already applied above.
 		runExploderAI(model, stats, humanoid, rootPart, onDeath)
 	else
-		runChaseAI(model, statsName, stats, humanoid, rootPart, effectiveDamageMultiplier, onDeath)
+		runChaseAI(model, statsName, stats, humanoid, rootPart, effectiveDamageMultiplier, onDeath, affix)
 	end
 
 	return model
