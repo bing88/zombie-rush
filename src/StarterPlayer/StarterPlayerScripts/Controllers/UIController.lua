@@ -418,18 +418,21 @@ local function buildUI()
 	-- 52 tall, so its top edge sits at distance 252 from the bottom).
 	reloadButton = circleButton("ReloadButton", "RELOAD", 272)
 
-	-- Aim/ADS placeholder: visually present (matches the reference's
-	-- 3-icon column) but not wired to real aim-down-sights behavior —
-	-- this game has no ADS mechanic yet. Clicking it just says so via
-	-- the existing toast, rather than doing nothing with no feedback.
+	-- Aim/ADS placeholder: built but hidden for now (no ADS mechanic yet
+	-- to back it) — kept in the code, not deleted, so it's a one-line
+	-- Visible flip to bring back once aim-down-sights is actually
+	-- implemented, rather than having to rebuild this from scratch.
 	local aimButton = circleButton("AimButton", "AIM", 342)
 	aimButton.BackgroundTransparency = 0.5
 	aimButton.TextTransparency = 0.35
+	aimButton.Visible = false
 	aimButton.Activated:Connect(function()
 		UIController.ShowToast("Aim mode coming soon", true)
 	end)
 
-	viewToggleButton = circleButton("ViewToggleButton", "VIEW", 412)
+	-- View now takes the Aim slot (342) since Aim is hidden — keeps the
+	-- two remaining buttons contiguous instead of leaving a gap.
+	viewToggleButton = circleButton("ViewToggleButton", "VIEW", 342)
 
 	-- Fire button: the ONLY manual firing trigger (see WeaponController —
 	-- generic screen-tap/click firing was removed). Works via mouse click
@@ -533,7 +536,7 @@ local function buildUI()
 	deathLabel.TextColor3 = Color3.fromRGB(220, 40, 40)
 	deathLabel.Font = Enum.Font.GothamBold
 	deathLabel.TextSize = 40
-	deathLabel.Text = "YOU DIED — respawning..."
+	deathLabel.Text = "YOU DIED — back next wave"
 	deathLabel.Visible = false
 	deathLabel.Parent = screenGui
 

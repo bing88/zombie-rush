@@ -8,16 +8,22 @@
 	Downed/revive design: rather than letting a mid-match death actually
 	go through Humanoid.Died (broken joints, respawn timer, etc.) and
 	then trying to "undo" that, HealthChanged is intercepted BEFORE
-	health reaches 0 — it's clamped to 1 and the player enters a
-	"Downed" state (immobile, can't fire — see WeaponService's
-	DownedState check) with a ProximityPrompt a teammate can hold to
-	revive them, and a bleed-out timer. If nobody revives them in time,
-	*then* Health is actually set to 0, triggering a real death that
-	waits for the match to end (see the Died handler below) rather than
-	auto-respawning — WaveService's defeat check reads Humanoid.Health
-	directly, so a truly-dead (Health == 0) player counts toward "has
-	everyone been wiped out", while a downed-but-pinned-at-1 player
-	doesn't.
+	health reaches 0 — it's clamped to 1, the character is visually
+	tipped onto its back (see FALLEN_TIP_ANGLES below — an approximate,
+	non-physics "lying on the floor" pose, not a real ragdoll), and the
+	player enters a "Downed" state (immobile, can't fire — see
+	WeaponService's DownedState check) with a ProximityPrompt a teammate
+	can hold to revive them, and a bleed-out timer. If nobody revives
+	them in time, *then* Health is actually set to 0, triggering a real
+	death (see the Died handler below) — WaveService's defeat check
+	reads Humanoid.Health directly, so a truly-dead (Health == 0) player
+	counts toward "has everyone been wiped out", while a downed-but-
+	pinned-at-1 player doesn't. A truly-dead player does NOT auto-
+	respawn immediately — they sit out the rest of the current wave and
+	come back with a fresh character at the start of the next one (see
+	WaveService's respawnDeadParticipants, called at the start of every
+	Break phase), unless the whole party is wiped first, which ends the
+	match instead (see WaveService's runDefeat).
 
 	WaveService handles moving a freshly-spawned character into the
 	arena if a match is already underway (see MatchState); this script
@@ -103,8 +109,20 @@ local function giveOwnedWeapons(player: Player, character: Model)
 	end
 end
 
+-- Approximate "lying on the floor" pose for a downed character: tips the
+-- whole (still rigidly-jointed — this is NOT a real physics ragdoll,
+-- just the standing rig rotated as one piece) body onto its back and
+-- drops it roughly to floor height. Not physically simulated/raycast
+-- against the actual ground, so it can clip slightly into slopes/stairs
+-- — good enough for this game's scope; a real ragdoll would need each
+-- Motor6D swapped for breakable constraints, which is a much bigger
+-- Studio-side undertaking.
+local FALLEN_TIP_ANGLES = CFrame.Angles(math.rad(-90), 0, 0)
+local FALLEN_HEIGHT_DROP = 2.2
+
 --[[
 	Puts a player into the downed state: pins HP at 1, freezes movement,
+	visually tips the character onto its back (see FALLEN_TIP_ANGLES),
 	adds a "hold to revive" ProximityPrompt, and starts a bleed-out
 	timer. Returns nothing — state changes are read back via
 	DownedState.IsDowned / the PlayerDownedChanged remote.
@@ -120,6 +138,20 @@ local function enterDownedState(player: Player, character: Model, humanoid: Huma
 	humanoid.Health = 1
 
 	local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not rootPart then
+		warn(("PlayerService: %s went down with no HumanoidRootPart — skipping the fallen pose/revive prompt"):format(player.Name))
+	end
+
+	-- PlatformStand hands full control of the rig to physics/gravity
+	-- (Roblox's own walk/run controller stops fighting it), which is
+	-- what makes the tipped-over CFrame below actually stick instead of
+	-- being stood back upright the next frame.
+	humanoid.PlatformStand = true
+	local standingCFrame: CFrame? = nil
+	if rootPart then
+		standingCFrame = rootPart.CFrame
+		rootPart.CFrame = (rootPart.CFrame * FALLEN_TIP_ANGLES) - Vector3.new(0, FALLEN_HEIGHT_DROP, 0)
+	end
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "Revive"
@@ -169,12 +201,35 @@ local function enterDownedState(player: Player, character: Model, humanoid: Huma
 		end
 	end
 
+	-- Undoes the fallen pose and hands control back to the Humanoid's own
+	-- controller. Restores the exact pre-down CFrame rather than trying
+	-- to invert FALLEN_TIP_ANGLES/FALLEN_HEIGHT_DROP — simpler and immune
+	-- to any drift from physics nudging the fallen body while downed.
+	local function standBackUp()
+		humanoid.PlatformStand = false
+		if rootPart and standingCFrame then
+			rootPart.CFrame = standingCFrame
+		end
+	end
+
 	local promptConnection = prompt.Triggered:Connect(function(reviver: Player)
 		if resolved or reviver == player then
 			return
 		end
+		-- A reviver must actually be able to help: alive, and not
+		-- themselves downed (an incapacitated player has no business
+		-- reviving anyone — this ProximityPrompt lives on a BasePart
+		-- Roblox will still let any nearby player Trigger regardless of
+		-- their own state, so this has to be checked explicitly).
+		local reviverCharacter = reviver.Character
+		local reviverHumanoid = reviverCharacter and reviverCharacter:FindFirstChildOfClass("Humanoid")
+		if not reviverHumanoid or reviverHumanoid.Health <= 0 or DownedState.IsDowned(reviver) then
+			return
+		end
+
 		resolved = true
 		cleanup()
+		standBackUp()
 		DownedState.SetDowned(player, false)
 		humanoid.WalkSpeed = cachedWalkSpeed
 		humanoid.Health = humanoid.MaxHealth * REVIVE_HEALTH_FRACTION
@@ -193,14 +248,24 @@ local function enterDownedState(player: Player, character: Model, humanoid: Huma
 		resolved = true
 		promptConnection:Disconnect()
 		cleanup()
-		DownedState.SetDowned(player, false)
 		humanoid.WalkSpeed = cachedWalkSpeed
 		-- Previously missing entirely: without this, the client never
 		-- learned bleed-out had expired (only the revive path fired
 		-- this event), leaving the downed banner's countdown stuck
 		-- forever on the client with no signal to clear it.
 		PlayerDownedChanged:FireClient(player, false, 0)
-		humanoid.Health = 0 -- now actually dies; see the Died handler below
+
+		-- IMPORTANT: DownedState must stay TRUE until Health actually
+		-- hits 0 here — HealthChanged's own intercept below only skips
+		-- re-entering downed (and therefore lets a real death happen)
+		-- while DownedState.IsDowned(player) is still true. Clearing it
+		-- first (the previous, buggy order) made HealthChanged treat
+		-- this exactly like a fresh hit and immediately call
+		-- enterDownedState again — bleeding out could never actually
+		-- kill anyone, it just silently reset the 30s timer forever.
+		-- The Died handler below is what finally clears DownedState for
+		-- real, once Health reaching 0 actually sticks.
+		humanoid.Health = 0
 	end)
 end
 
@@ -236,10 +301,15 @@ local function onCharacterAdded(player: Player, character: Model)
 				end
 			end)
 		end
-		-- Else: stay dead. A truly-dead (Health == 0, not just downed)
-		-- player mid-match contributes to WaveService's defeat check;
-		-- everyone gets respawned together when the match ends either
-		-- way (see WaveService's runDefeat).
+		-- Else: stay dead for the rest of THIS wave. A truly-dead
+		-- (Health == 0, not just downed) player mid-match contributes to
+		-- WaveService's defeat check every second (allPlayersDefeated) —
+		-- if every participant is dead/downed at the same moment, that's
+		-- an immediate match-ending Defeat regardless of wave timing.
+		-- Otherwise, WaveService's respawnDeadParticipants gives this
+		-- player a fresh character (LoadCharacter, which re-fires this
+		-- whole CharacterAdded chain) the moment the current wave ends
+		-- and the next Break phase begins.
 	end)
 
 	-- Robux perks, applied per spawn so a purchase mid-session takes

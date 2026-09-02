@@ -129,7 +129,7 @@ local WeaponViewController = {}
 -- Flip to false once the weapon-holding pose is confirmed correct and
 -- these prints are no longer needed. Client-side only (each player only
 -- sees their own Output for this).
-local DEBUG_LOGGING = true
+local DEBUG_LOGGING = false
 local DEBUG_TICK_INTERVAL = 1.5
 local lastDebugTickClock = 0
 
