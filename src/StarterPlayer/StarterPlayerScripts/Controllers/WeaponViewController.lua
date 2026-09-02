@@ -113,6 +113,40 @@
 	physics/IK/Animation involved in that clone at all, so it can't
 	jitter or lag behind camera movement the way the real bone-attached
 	Tool does.
+
+	FIRST-PERSON HANDS + FIRE/RELOAD REACTIVITY: buildFirstPersonViewmodelArms
+	extends the clone above with the character's own R15
+	Right/LeftUpperArm+LowerArm+Hand parts (skipped gracefully on R6 —
+	shaped nothing like a first-person hand), each one's offset from the
+	real Handle captured once and folded into the SAME
+	firstPersonViewmodelOffsets table the rest of the gun's mesh already
+	uses — so the hands ride along as one rigid unit with the gun, with
+	no extra per-frame tracking needed. The real arm parts are hidden
+	the same way the real Tool is, so they don't visually double up with
+	these clones.
+
+	CURRENTLY DISABLED (see ENABLE_FIRST_PERSON_ARMS below): the very
+	first live test of this launched the whole character into the sky
+	the instant first person was entered. The obvious suspect — a
+	cloned rig part dragging along a Motor6D/Weld still referencing the
+	REAL, external, unanchored body — is destroyed well before the
+	clone is ever parented anywhere (see buildFirstPersonViewmodelArms),
+	and the already-shipped gun-only viewmodel clones a whole Tool
+	(bringing its own equip-time grip Weld along) the exact same way
+	with no such issue, so that theory doesn't cleanly explain the
+	symptom either. Flipping ENABLE_FIRST_PERSON_ARMS off was the
+	immediate fix while the real cause gets diagnosed from actual
+	Studio Output logs rather than a second blind guess.
+
+	To make PlayFireAnimation/PlayReloadAnimation still read as actions
+	in first person even with hands disabled (the gun alone would
+	otherwise just sit frozen while the hidden real arm does all the
+	animating), getFirstPersonKickOffset layers a small time-based
+	recoil kick / reload dip on top of firstPersonViewmodelCameraOffset
+	every frame; both decay back to identity on their own, so at rest
+	the placement is pixel-identical to the already-tuned
+	FIRST_PERSON_VIEWMODEL_OFFSET. This part is unaffected by the flag
+	above and stays active regardless.
 ]]
 
 local Players = game:GetService("Players")
@@ -132,6 +166,21 @@ local WeaponViewController = {}
 local DEBUG_LOGGING = false
 local DEBUG_TICK_INTERVAL = 1.5
 local lastDebugTickClock = 0
+
+-- DISABLED: switching to first person with this on launched the whole
+-- character into the sky (reported live in-game). buildFirstPersonViewmodelArms
+-- clones the character's own RightUpperArm/RightLowerArm/RightHand/
+-- Left* parts and immediately destroys any Motor6D/Weld found on the
+-- clone before ever parenting it anywhere — that should make any
+-- rig-joint reference inert, and the already-shipped gun-only viewmodel
+-- clones a whole Tool (bringing its own equip-time grip Weld along) the
+-- exact same way without issue, so the joint-safety reasoning behind
+-- this doesn't obviously explain the symptom. Rather than ship a
+-- second guess without being able to test in Studio, this is switched
+-- off so the game isn't broken while it gets diagnosed from real
+-- Output logs — flip back to true once the actual cause is confirmed
+-- fixed. See the file header's "FIRST-PERSON HANDS" section.
+local ENABLE_FIRST_PERSON_ARMS = false
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
@@ -183,6 +232,30 @@ local GUN_OFFSET_THIRD_PERSON = CFrame.new(0.55, 0.15, -1.1)
 ]]
 local FIRST_PERSON_VIEWMODEL_OFFSET = CFrame.new(0.28, -0.85, -0.4)
 
+-- R15 arm part names cloned by buildFirstPersonViewmodelArms, both
+-- sides so the off-hand (support grip) shows too, not just the
+-- trigger hand.
+local FIRST_PERSON_ARM_PART_NAMES = {
+	"RightUpperArm",
+	"RightLowerArm",
+	"RightHand",
+	"LeftUpperArm",
+	"LeftLowerArm",
+	"LeftHand",
+}
+
+--[[
+	Purely cosmetic first-person recoil kick / reload dip — see the
+	file header's "FIRST-PERSON HANDS + FIRE/RELOAD REACTIVITY"
+	section. Time-based (os.clock() deltas read every RenderStepped in
+	getFirstPersonKickOffset) rather than TweenService-driven since
+	there's no Instance property to tween here, just a couple of plain
+	locals layered onto firstPersonViewmodelCameraOffset.
+]]
+local FIRST_PERSON_FIRE_KICK_OFFSET = CFrame.new(0, 0.035, 0.06) * CFrame.Angles(math.rad(-3.5), 0, 0)
+local FIRST_PERSON_FIRE_KICK_DURATION = 0.12
+local FIRST_PERSON_RELOAD_DIP_OFFSET = CFrame.new(0, -0.12, 0.05) * CFrame.Angles(math.rad(10), 0, 0)
+
 -- Pitch-follow backs off until this os.clock() timestamp passes, so it
 -- doesn't fight the reload dip/return tween below for control of the
 -- aim target attachment.
@@ -222,6 +295,21 @@ local firstPersonViewmodelCameraOffset: CFrame = FIRST_PERSON_VIEWMODEL_OFFSET -
 local isShowingFirstPersonViewmodel = false
 local hiddenRealWeaponTool: Tool? = nil -- the real Tool currently hidden (LocalTransparencyModifier) while its viewmodel clone is shown instead
 local lastKnownCameraMode: Enum.CameraMode? = nil
+
+-- First-person viewmodel ARM clones (R15 only) — see
+-- buildFirstPersonViewmodelArms. Each entry also gets a matching key
+-- in firstPersonViewmodelOffsets above (that's what actually moves
+-- them every frame); these two lists just exist so
+-- destroyFirstPersonViewmodel has something to Destroy()/restore.
+local firstPersonViewmodelArmClones: { BasePart } = {}
+local hiddenRealArmParts: { BasePart } = {} -- real arm parts hidden (LocalTransparencyModifier) while their clones above stand in, restored on teardown
+
+-- Fire-kick/reload-dip timers read by getFirstPersonKickOffset — see
+-- PlayFireAnimation/PlayReloadAnimation below, which are what actually
+-- set these.
+local fireKickStartClock = -math.huge
+local reloadKickStartClock = -math.huge
+local reloadKickDuration = 0
 
 local function getGunOffset(): CFrame
 	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
@@ -400,6 +488,16 @@ local function destroyFirstPersonViewmodel()
 	firstPersonViewmodelCameraOffset = FIRST_PERSON_VIEWMODEL_OFFSET
 	isShowingFirstPersonViewmodel = false
 
+	for _, armClone in firstPersonViewmodelArmClones do
+		armClone:Destroy()
+	end
+	table.clear(firstPersonViewmodelArmClones)
+
+	for _, realPart in hiddenRealArmParts do
+		realPart.LocalTransparencyModifier = 0
+	end
+	table.clear(hiddenRealArmParts)
+
 	if hiddenRealWeaponTool then
 		setRealWeaponVisible(hiddenRealWeaponTool, true)
 		hiddenRealWeaponTool = nil
@@ -433,6 +531,79 @@ local function detectNativeForwardCorrection(handle: BasePart): CFrame
 end
 
 --[[
+	Clones the character's own R15 arm parts (both sides — upper arm,
+	lower arm, hand) into the first-person viewmodel, capturing each
+	one's offset from the real Handle and folding it straight into the
+	SAME firstPersonViewmodelOffsets table the rest of the gun's own
+	mesh already uses (see buildFirstPersonViewmodel) — so they ride
+	along as one rigid unit with the gun via updateFirstPersonViewmodel's
+	existing per-part loop, no separate per-frame tracking needed at
+	all. This is what makes the viewmodel read as hands actually
+	holding the gun instead of a bare floating prop (the original
+	version of this system, before this feature existed).
+
+	R6 (a single rigid "Right Arm"/"Left Arm" part, no elbow, shaped
+	nothing like a first-person hand) is intentionally skipped — falls
+	back to the bare gun-only clone exactly like before this existed.
+
+	Destroys each clone's own Motor6D/Weld immediately: Clone() brings
+	those along since they're parented under the part being cloned,
+	and left alone they'd still reference the REAL body parts as
+	Part0/Part1, fighting this system's own per-frame CFrame writes
+	(via the shared offsets table) for control of the clone.
+
+	Hides the real arm parts (LocalTransparencyModifier) for the same
+	reason setRealWeaponVisible hides the real gun — so the real, still-
+	simulated-underneath arms don't visually double up with these
+	clones.
+]]
+local function buildFirstPersonViewmodelArms(character: Model, sourceHandle: BasePart)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.RigType ~= Enum.HumanoidRigType.R15 then
+		return
+	end
+
+	for _, partName in FIRST_PERSON_ARM_PART_NAMES do
+		local realPart = character:FindFirstChild(partName)
+		if realPart and realPart:IsA("BasePart") then
+			local armClone = realPart:Clone()
+
+			-- Belt-and-suspenders: BreakJoints() handles the legacy
+			-- JointInstance family (Motor6D/Weld/Glue/Snap/Rotate*), and
+			-- the explicit GetDescendants() sweep (not just GetChildren
+			-- — catches anything nested, e.g. a worn accessory's own
+			-- weld) also covers the newer Constraint-based WeldConstraint/
+			-- NoCollisionConstraint, which BreakJoints() does NOT touch.
+			armClone:BreakJoints()
+			for _, joint in armClone:GetDescendants() do
+				if
+					joint:IsA("Motor6D")
+					or joint:IsA("Weld")
+					or joint:IsA("WeldConstraint")
+					or joint:IsA("NoCollisionConstraint")
+				then
+					joint:Destroy()
+				end
+			end
+
+			armClone.Name = "FirstPersonViewmodelArm_" .. partName
+			armClone.Anchored = true
+			armClone.CanCollide = false
+			armClone.CanTouch = false
+			armClone.CanQuery = false
+			armClone.CastShadow = false
+			armClone.Parent = camera
+
+			firstPersonViewmodelOffsets[armClone] = sourceHandle.CFrame:ToObjectSpace(realPart.CFrame)
+			table.insert(firstPersonViewmodelArmClones, armClone)
+
+			realPart.LocalTransparencyModifier = 1
+			table.insert(hiddenRealArmParts, realPart)
+		end
+	end
+end
+
+--[[
 	Builds the camera-glued first-person viewmodel: a full clone of the
 	equipped Tool (every BasePart it has, not just Handle — some real
 	assets weld extra visual parts alongside Handle rather than nested
@@ -445,12 +616,13 @@ end
 	sway with the walk cycle, or drift out of formation with camera
 	pitch the way the real, character-attached Tool does (see the file
 	header — that's the exact problem this whole system exists to route
-	around for first person specifically).
+	around for first person specifically). Also triggers
+	buildFirstPersonViewmodelArms above so hands ride along too.
 ]]
 local function buildFirstPersonViewmodel(tool: Tool)
 	destroyFirstPersonViewmodel()
 
-	local sourceHandle = tool:FindFirstChild("Handle")
+	local sourceHandle = tool:FindFirstChild("Handle") :: BasePart?
 	if not sourceHandle or not sourceHandle:IsA("BasePart") then
 		return
 	end
@@ -493,6 +665,11 @@ local function buildFirstPersonViewmodel(tool: Tool)
 	firstPersonViewmodelHandle = handleClone
 	firstPersonViewmodelOffsets = offsets
 	isShowingFirstPersonViewmodel = true
+
+	local character = currentCharacter
+	if ENABLE_FIRST_PERSON_ARMS and character then
+		buildFirstPersonViewmodelArms(character, sourceHandle)
+	end
 end
 
 --[[
@@ -504,13 +681,48 @@ end
 	the viewmodel/real-Tool visibility split in sync with whichever
 	mode is actually active right now.
 ]]
+--[[
+	TEMPORARY DIAGNOSTIC — see CameraController's matching "[FPDiag]"
+	block for the "switching to first person launches the character
+	into the sky" bug report. Wraps this function's actual body calls
+	in pcall so an error here (which wouldn't itself explain a physics
+	launch, but is cheap to rule out) is visible in Output instead of
+	silently aborting mid-way — e.g. leaving setRealWeaponVisible(tool,
+	false) never called if buildFirstPersonViewmodel throws partway
+	through. Remove alongside CameraController's block once resolved.
+]]
+local DIAGNOSE_FIRST_PERSON_LAUNCH = true
+
 local function applyFirstPersonViewmodelState(tool: Tool)
+	local character = currentCharacter
+	if DIAGNOSE_FIRST_PERSON_LAUNCH and character then
+		local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		print(("[FPDiag][WVC] applyFirstPersonViewmodelState BEFORE camMode=%s rootPos=%s"):format(
+			tostring(player.CameraMode),
+			rootPart and tostring(rootPart.Position) or "?"
+		))
+	end
+
 	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
-		buildFirstPersonViewmodel(tool)
+		local ok, err = pcall(buildFirstPersonViewmodel, tool)
+		if not ok then
+			print("[FPDiag][WVC] buildFirstPersonViewmodel ERRORED: " .. tostring(err))
+		end
 		setRealWeaponVisible(tool, false)
 		hiddenRealWeaponTool = tool
 	else
-		destroyFirstPersonViewmodel()
+		local ok, err = pcall(destroyFirstPersonViewmodel)
+		if not ok then
+			print("[FPDiag][WVC] destroyFirstPersonViewmodel ERRORED: " .. tostring(err))
+		end
+	end
+
+	if DIAGNOSE_FIRST_PERSON_LAUNCH and character then
+		local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		print(("[FPDiag][WVC] applyFirstPersonViewmodelState AFTER rootPos=%s vel=%s"):format(
+			rootPart and tostring(rootPart.Position) or "?",
+			rootPart and tostring(rootPart.AssemblyLinearVelocity) or "?"
+		))
 	end
 end
 
@@ -524,14 +736,47 @@ local function syncFirstPersonViewmodel()
 end
 
 --[[
+	Time-based recoil kick (PlayFireAnimation) / reload dip
+	(PlayReloadAnimation) layered on top of firstPersonViewmodelCameraOffset
+	every frame — see the file header's "FIRST-PERSON HANDS + FIRE/
+	RELOAD REACTIVITY" section. Both independently decay back to
+	CFrame.new() (identity) once their own duration elapses, so at rest
+	(no recent fire, not currently reloading) this always returns
+	identity and the viewmodel sits exactly at the already-tuned resting
+	placement — this only ever ADDS a transient nudge, never changes
+	where "rest" is.
+]]
+local function getFirstPersonKickOffset(): CFrame
+	local offset = CFrame.new()
+
+	local fireElapsed = os.clock() - fireKickStartClock
+	if fireElapsed >= 0 and fireElapsed < FIRST_PERSON_FIRE_KICK_DURATION then
+		offset = offset * FIRST_PERSON_FIRE_KICK_OFFSET:Lerp(CFrame.new(), fireElapsed / FIRST_PERSON_FIRE_KICK_DURATION)
+	end
+
+	if reloadKickDuration > 0 then
+		local reloadElapsed = os.clock() - reloadKickStartClock
+		if reloadElapsed >= 0 and reloadElapsed < reloadKickDuration then
+			local alpha = math.sin(math.pi * (reloadElapsed / reloadKickDuration))
+			offset = offset * CFrame.new():Lerp(FIRST_PERSON_RELOAD_DIP_OFFSET, alpha)
+		end
+	end
+
+	return offset
+end
+
+--[[
 	Every frame while showing the viewmodel: plants Handle at a fixed
 	camera-relative spot (see firstPersonViewmodelCameraOffset — a
 	per-weapon combination of FIRST_PERSON_VIEWMODEL_OFFSET's lateral
 	placement, a length-aware depth, and the detected native-forward
-	correction, computed once in buildFirstPersonViewmodel) and replays
-	every other part's captured local offset on top of that, so the
-	whole gun moves as one rigid unit glued to the camera, immune to
-	camera pitch and to whatever the real arm/RightHand is actually
+	correction, computed once in buildFirstPersonViewmodel) PLUS the
+	transient recoil/dip nudge from getFirstPersonKickOffset above, and
+	replays every other part's captured local offset on top of that
+	(this is what carries the arm clones from buildFirstPersonViewmodelArms
+	along too — they're just more entries in the same table) — so the
+	whole gun+hands move as one rigid unit glued to the camera, immune
+	to camera pitch and to whatever the real arm/RightHand is actually
 	doing underneath.
 ]]
 local function updateFirstPersonViewmodel()
@@ -539,7 +784,7 @@ local function updateFirstPersonViewmodel()
 		return
 	end
 
-	local handleCFrame = camera.CFrame * firstPersonViewmodelCameraOffset
+	local handleCFrame = camera.CFrame * firstPersonViewmodelCameraOffset * getFirstPersonKickOffset()
 	firstPersonViewmodelHandle.CFrame = handleCFrame
 
 	for part, offset in firstPersonViewmodelOffsets do
@@ -859,7 +1104,39 @@ end
 	(e.g. the assault rifle) get a crisp kick each shot instead of the
 	clip only fully playing out for the first shot of a burst.
 ]]
+--[[
+	First-person viewmodel's own Muzzle world position, when currently
+	showing — nil in third person, or if this weapon's Handle has no
+	Muzzle attachment (shouldn't happen — see WeaponModelFactory's
+	ensureMuzzleAttachment — but this is cosmetic-only, so fail quiet
+	rather than throwing). WeaponController's getLocalMuzzlePosition
+	prefers this whenever available: without it, the muzzle flash/
+	tracer spawns from the REAL (hidden) Tool's actual Muzzle position —
+	wherever the real, character-attached RightHand's Hold Animation
+	pose happens to put it — which has no relationship at all to where
+	the VISIBLE viewmodel clone is glued on screen (see
+	FIRST_PERSON_VIEWMODEL_OFFSET), so the flash/tracer visibly
+	originates from a completely different spot than the gun the player
+	can actually see.
+]]
+function WeaponViewController.GetActiveMuzzleWorldPosition(): Vector3?
+	if not isShowingFirstPersonViewmodel or not firstPersonViewmodelHandle then
+		return nil
+	end
+	local muzzle = firstPersonViewmodelHandle:FindFirstChild("Muzzle")
+	if muzzle and muzzle:IsA("Attachment") then
+		return muzzle.WorldPosition
+	end
+	return nil
+end
+
 function WeaponViewController.PlayFireAnimation()
+	-- Independent of whether this weapon even has a FireAnimationId —
+	-- the first-person kick (see getFirstPersonKickOffset) is a
+	-- viewmodel-only cosmetic, not gated on the real character's own
+	-- animation track existing.
+	fireKickStartClock = os.clock()
+
 	local track = fireAnimationTrack
 	if not track then
 		return
@@ -896,6 +1173,12 @@ function WeaponViewController.PlayReloadAnimation(durationSeconds: number)
 
 	playReloadSound(tool)
 	WeaponIK.Disable(leftHandIK)
+
+	-- First-person viewmodel dip (see getFirstPersonKickOffset) —
+	-- independent of the IK-based dip/return tween further below,
+	-- which only ever applies to the third-person aim target.
+	reloadKickStartClock = os.clock()
+	reloadKickDuration = durationSeconds
 
 	local reloadTrack = reloadAnimationTrack
 	if reloadTrack then

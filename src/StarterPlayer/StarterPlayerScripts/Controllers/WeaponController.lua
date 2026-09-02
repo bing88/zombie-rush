@@ -80,9 +80,19 @@ end
 	ping — see WeaponService's origin-tolerance check, which validates
 	this rather than trusting it outright. Mirrors the exact lookup
 	WeaponService itself does server-side (Tool -> Handle -> Muzzle),
-	just run locally where it's zero-latency for the shooter.
+	just run locally where it's zero-latency for the shooter — EXCEPT in
+	first person while WeaponViewController's camera-glued viewmodel is
+	showing, where the real (character-attached) Tool's Muzzle has no
+	visual relationship to the on-screen gun at all (see
+	WeaponViewController.GetActiveMuzzleWorldPosition's header) — that
+	takes priority whenever it's available.
 ]]
 local function getLocalMuzzlePosition(): Vector3?
+	local viewmodelMuzzle = WeaponViewController.GetActiveMuzzleWorldPosition()
+	if viewmodelMuzzle then
+		return viewmodelMuzzle
+	end
+
 	local character = player.Character
 	if not character then
 		return nil

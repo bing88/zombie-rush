@@ -112,6 +112,49 @@ local isFirstPerson = false
 local isLocked = false
 local lastManualAimClock = 0
 
+--[[
+	TEMPORARY DIAGNOSTIC — see the "switching to first person launches
+	the character into the sky" bug report. Prints a snapshot of
+	HumanoidRootPart's position/velocity/Humanoid state right before and
+	after the toggle, then every ~0.1s for a few seconds afterward, so
+	whichever exact frame/value first goes wrong is visible in Output.
+	Search Output for "[FPDiag]". Remove this whole block (and its call
+	sites below) once the real cause is found and fixed.
+]]
+local DIAGNOSE_FIRST_PERSON_LAUNCH = true
+local diagnoseUntilClock = 0
+local lastDiagnoseTickClock = 0
+local lastKnownRootPosition: Vector3? = nil -- always-on jump detector, see the RenderStepped connection below
+
+local function diagnoseSnapshot(character: Model, label: string)
+	if not DIAGNOSE_FIRST_PERSON_LAUNCH then
+		return
+	end
+	local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not rootPart then
+		print(("[FPDiag] %s | NO HumanoidRootPart"):format(label))
+		return
+	end
+	local ok, err = pcall(function()
+		print(("[FPDiag] %s | rootPos=%s vel=%s rotVel=%s state=%s platformStand=%s sit=%s camMode=%s camPos=%s camSubject=%s"):format(
+			label,
+			tostring(rootPart.Position),
+			tostring(rootPart.AssemblyLinearVelocity),
+			tostring(rootPart.AssemblyAngularVelocity),
+			humanoid and humanoid:GetState().Name or "?",
+			humanoid and tostring(humanoid.PlatformStand) or "?",
+			humanoid and tostring(humanoid.Sit) or "?",
+			tostring(player.CameraMode),
+			tostring(camera.CFrame.Position),
+			tostring(player.CameraSubject)
+		))
+	end)
+	if not ok then
+		print("[FPDiag] snapshot itself errored: " .. tostring(err))
+	end
+end
+
 function CameraController.IsLocked(): boolean
 	return isLocked
 end
@@ -209,10 +252,20 @@ local function applyCameraMode(character: Model)
 end
 
 local function toggleFirstPerson()
-	isFirstPerson = not isFirstPerson
 	local character = player.Character
 	if character then
-		applyCameraMode(character)
+		diagnoseSnapshot(character, ("BEFORE toggle (isFirstPerson %s -> %s)"):format(tostring(isFirstPerson), tostring(not isFirstPerson)))
+	end
+
+	isFirstPerson = not isFirstPerson
+	if character then
+		local ok, err = pcall(applyCameraMode, character)
+		if not ok then
+			print("[FPDiag] applyCameraMode ERRORED: " .. tostring(err))
+		end
+		diagnoseSnapshot(character, "AFTER applyCameraMode")
+		diagnoseUntilClock = os.clock() + 4
+		lastDiagnoseTickClock = 0
 	end
 end
 
@@ -235,7 +288,12 @@ function CameraController.Init()
 	if player.Character then
 		onCharacterAdded(player.Character)
 	end
-	player.CharacterAdded:Connect(onCharacterAdded)
+	player.CharacterAdded:Connect(function(character)
+		if DIAGNOSE_FIRST_PERSON_LAUNCH then
+			print("[FPDiag] CharacterAdded fired (respawn) — if this fires right when the launch happens, it's a respawn, not a physics impulse")
+		end
+		onCharacterAdded(character)
+	end)
 
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then
@@ -277,6 +335,34 @@ function CameraController.Init()
 		local character = player.Character
 		if character then
 			faceCamera(character)
+		end
+
+		if DIAGNOSE_FIRST_PERSON_LAUNCH and character and os.clock() < diagnoseUntilClock then
+			if os.clock() - lastDiagnoseTickClock >= 0.1 then
+				lastDiagnoseTickClock = os.clock()
+				diagnoseSnapshot(character, "tick")
+			end
+		end
+
+		-- Always-on (not gated by the toggle window above) — catches the
+		-- exact frame of any large teleport-like jump regardless of its
+		-- exact timing relative to the V-key/VIEW-button press, in case
+		-- it turns out to be slightly delayed (e.g. a respawn) rather
+		-- than instantaneous with the toggle itself.
+		if DIAGNOSE_FIRST_PERSON_LAUNCH and character then
+			local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if rootPart then
+				if lastKnownRootPosition and (rootPart.Position - lastKnownRootPosition).Magnitude > 15 then
+					print(("[FPDiag] *** JUMP DETECTED *** %s -> %s (delta=%.1f studs) camMode=%s vel=%s"):format(
+						tostring(lastKnownRootPosition),
+						tostring(rootPart.Position),
+						(rootPart.Position - lastKnownRootPosition).Magnitude,
+						tostring(player.CameraMode),
+						tostring(rootPart.AssemblyLinearVelocity)
+					))
+				end
+				lastKnownRootPosition = rootPart.Position
+			end
 		end
 	end)
 end
