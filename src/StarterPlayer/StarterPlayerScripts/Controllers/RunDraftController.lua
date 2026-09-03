@@ -37,6 +37,7 @@ local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Remotes = require(ReplicatedStorage.Remotes)
+local UIIconConfig = require(ReplicatedStorage.Shared.UIIconConfig)
 
 local RunUpgradeOffer = Remotes.RunUpgradeOffer
 local RunUpgradeChosen = Remotes.RunUpgradeChosen
@@ -56,12 +57,13 @@ local buildListTitle: TextLabel
 -- The offer currently on screen, so a number key can resolve to a card
 -- id. Empty whenever no draft is open, which is also what makes the
 -- 1-3 keybinds inert outside a draft.
-local currentOffer: { { Id: string, Name: string, Description: string, Stacks: number?, MaxStacks: number? } } = {}
+local currentOffer: { { Id: string, Name: string, Description: string, Stacks: number?, MaxStacks: number?, IconId: string? } } = {}
 local cardButtons: { TextButton } = {}
 
 local CARD_WIDTH = 190
 local CARD_HEIGHT = 210
 local CARD_GAP = 14
+local CARD_ICON_SIZE = 64
 
 local ACCENT = Color3.fromRGB(255, 190, 60)
 local PANEL_BG = Color3.fromRGB(18, 18, 22)
@@ -116,23 +118,44 @@ local function buildCard(index: number, card): TextButton
 	local keyBadge = Instance.new("TextLabel")
 	keyBadge.Name = "KeyBadge"
 	keyBadge.AnchorPoint = Vector2.new(0.5, 0)
-	keyBadge.Position = UDim2.new(0.5, 0, 0, 12)
+	keyBadge.Position = UDim2.new(0.5, 0, 0, 8)
 	keyBadge.Size = UDim2.fromOffset(26, 26)
 	keyBadge.BackgroundColor3 = Color3.fromRGB(48, 48, 56)
 	keyBadge.Font = Enum.Font.GothamBold
 	keyBadge.TextSize = 14
 	keyBadge.TextColor3 = Color3.fromRGB(200, 200, 210)
 	keyBadge.Text = tostring(index)
+	keyBadge.ZIndex = 2
 	keyBadge.Parent = button
 	styleCorner(keyBadge, 6)
+
+	-- Icon slot reserved even when IconId is empty so layout stays stable
+	-- once art is pasted into RunUpgradeConfig.
+	local icon = Instance.new("ImageLabel")
+	icon.Name = "Icon"
+	icon.BackgroundTransparency = 1
+	icon.AnchorPoint = Vector2.new(0.5, 0)
+	icon.Position = UDim2.new(0.5, 0, 0, 38)
+	icon.Size = UDim2.fromOffset(CARD_ICON_SIZE, CARD_ICON_SIZE)
+	icon.ScaleType = Enum.ScaleType.Fit
+	icon.Parent = button
+	if UIIconConfig.IsSet(card.IconId) then
+		icon.Image = card.IconId
+	else
+		icon.Image = ""
+		-- Soft placeholder so the reserved slot still reads as an icon area.
+		icon.BackgroundColor3 = Color3.fromRGB(48, 48, 56)
+		icon.BackgroundTransparency = 0.35
+		styleCorner(icon, 8)
+	end
 
 	local name = Instance.new("TextLabel")
 	name.Name = "CardName"
 	name.BackgroundTransparency = 1
-	name.Position = UDim2.new(0, 10, 0, 52)
-	name.Size = UDim2.new(1, -20, 0, 44)
+	name.Position = UDim2.new(0, 10, 0, 108)
+	name.Size = UDim2.new(1, -20, 0, 36)
 	name.Font = Enum.Font.GothamBlack
-	name.TextSize = 17
+	name.TextSize = 16
 	name.TextColor3 = ACCENT
 	name.TextWrapped = true
 	name.TextYAlignment = Enum.TextYAlignment.Top
@@ -142,10 +165,10 @@ local function buildCard(index: number, card): TextButton
 	local description = Instance.new("TextLabel")
 	description.Name = "CardDescription"
 	description.BackgroundTransparency = 1
-	description.Position = UDim2.new(0, 12, 0, 100)
-	description.Size = UDim2.new(1, -24, 0, 62)
+	description.Position = UDim2.new(0, 12, 0, 144)
+	description.Size = UDim2.new(1, -24, 0, 42)
 	description.Font = Enum.Font.Gotham
-	description.TextSize = 14
+	description.TextSize = 13
 	description.TextColor3 = Color3.fromRGB(225, 225, 235)
 	description.TextWrapped = true
 	description.TextYAlignment = Enum.TextYAlignment.Top
@@ -162,10 +185,10 @@ local function buildCard(index: number, card): TextButton
 		owned.Name = "OwnedStacks"
 		owned.BackgroundTransparency = 1
 		owned.AnchorPoint = Vector2.new(0.5, 1)
-		owned.Position = UDim2.new(0.5, 0, 1, -12)
-		owned.Size = UDim2.new(1, -20, 0, 18)
+		owned.Position = UDim2.new(0.5, 0, 1, -8)
+		owned.Size = UDim2.new(1, -20, 0, 16)
 		owned.Font = Enum.Font.GothamBold
-		owned.TextSize = 12
+		owned.TextSize = 11
 		owned.TextColor3 = Color3.fromRGB(150, 200, 150)
 		owned.Text = ("OWNED %d/%d"):format(stacks, card.MaxStacks or stacks)
 		owned.Parent = button
@@ -198,9 +221,9 @@ end
 	run has no picks yet (i.e. in the lobby and during wave 1) rather
 	than showing an empty box.
 ]]
-local function renderBuildList(owned: { { Name: string, Stacks: number } })
+local function renderBuildList(owned: { { Name: string, Stacks: number, IconId: string? } })
 	for _, child in buildList:GetChildren() do
-		if child:IsA("TextLabel") and child ~= buildListTitle then
+		if (child:IsA("TextLabel") or child:IsA("Frame")) and child ~= buildListTitle then
 			child:Destroy()
 		end
 	end
@@ -211,21 +234,42 @@ local function renderBuildList(owned: { { Name: string, Stacks: number } })
 	end
 
 	buildList.Visible = true
+	local rowHeight = 20
 	for index, entry in owned do
+		local row = Instance.new("Frame")
+		row.Name = "BuildEntry" .. tostring(index)
+		row.BackgroundTransparency = 1
+		row.Size = UDim2.new(1, 0, 0, rowHeight)
+		row.Position = UDim2.new(0, 0, 0, 18 + (index - 1) * rowHeight)
+		row.Parent = buildList
+
+		local iconX = 0
+		if UIIconConfig.IsSet(entry.IconId) then
+			local icon = Instance.new("ImageLabel")
+			icon.Name = "Icon"
+			icon.BackgroundTransparency = 1
+			icon.Size = UDim2.fromOffset(16, 16)
+			icon.Position = UDim2.fromOffset(0, 2)
+			icon.Image = entry.IconId :: string
+			icon.ScaleType = Enum.ScaleType.Fit
+			icon.Parent = row
+			iconX = 20
+		end
+
 		local label = Instance.new("TextLabel")
-		label.Name = "BuildEntry" .. tostring(index)
+		label.Name = "Label"
 		label.BackgroundTransparency = 1
-		label.Size = UDim2.new(1, 0, 0, 16)
-		label.Position = UDim2.new(0, 0, 0, 18 + (index - 1) * 16)
+		label.Size = UDim2.new(1, -iconX, 1, 0)
+		label.Position = UDim2.fromOffset(iconX, 0)
 		label.Font = Enum.Font.GothamMedium
 		label.TextSize = 12
 		label.TextColor3 = Color3.fromRGB(215, 215, 225)
 		label.TextXAlignment = Enum.TextXAlignment.Left
 		label.Text = entry.Stacks > 1 and ("%s  x%d"):format(entry.Name, entry.Stacks) or entry.Name
-		label.Parent = buildList
+		label.Parent = row
 	end
 
-	buildList.Size = UDim2.fromOffset(190, 24 + #owned * 16)
+	buildList.Size = UDim2.fromOffset(190, 24 + #owned * rowHeight)
 end
 
 function RunDraftController.Show(offer)

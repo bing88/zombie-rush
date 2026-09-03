@@ -1,6 +1,7 @@
 # UI Icon Design Brief
 
-Nothing in-game uses images yet — HUD, draft cards, hotbar, shop, and perks are all text stand-ins.
+HUD, draft cards, and hotbar are wired for icons via `IconId` / `UIIconConfig`.
+Empty strings keep the text stand-ins until you paste uploaded `rbxassetid://…` values.
 
 **Ask: 29 square icons** (13 core + 4 HUD + 7 perks + 1 coin + 4 wave modifiers).
 
@@ -241,4 +242,4 @@ Chip under the top-center wave counter. Skip **Normal** (no modifier — text-on
 - [ ] `Payday`
 - [ ] `Bloodbath`
 
-Source of truth in code: `WeaponConfig.lua` (guns), `RunUpgradeConfig.lua` (cards), `PerkConfig.lua` (perks), `WaveModifiers.lua` (modifiers), `UltimateConfig.lua` (Berserk), `UIController.lua` (HUD buttons + coin).
+Source of truth in code: `WeaponConfig.lua` (`IconId` per gun), `RunUpgradeConfig.lua` (`IconId` per card), `UIIconConfig.lua` (HUD `Reload`/`View`/`Ult`/`Fire`), `PerkConfig.lua` (perks), `WaveModifiers.lua` (modifiers), `UltimateConfig.lua` (Berserk), `UIController.lua` / `RunDraftController.lua` (ImageLabels).

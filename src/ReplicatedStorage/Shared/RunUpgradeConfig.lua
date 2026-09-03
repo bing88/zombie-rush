@@ -66,6 +66,9 @@ export type RunUpgradeCard = {
 	Stat: string,
 	Amount: number,
 	MaxStacks: number,
+	-- Draft-card glyph. Empty = text-only until art is uploaded
+	-- (see docs/ui-icon-design.md — filename = Id).
+	IconId: string,
 }
 
 local RunUpgradeConfig = {}
@@ -85,6 +88,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "FireRate",
 		Amount = 0.15,
 		MaxStacks = 5,
+		IconId = "rbxassetid://103326515677530", -- paste rbxassetid://… from Gunslinger.png
 	},
 	{
 		Id = "HollowPoint",
@@ -93,6 +97,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "Damage",
 		Amount = 0.2,
 		MaxStacks = 5,
+		IconId = "rbxassetid://77891635865774",
 	},
 	{
 		Id = "Marksman",
@@ -101,6 +106,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "HeadshotDamage",
 		Amount = 0.35,
 		MaxStacks = 4,
+		IconId = "rbxassetid://136796673656167",
 	},
 	{
 		Id = "ExtendedMag",
@@ -109,6 +115,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "Magazine",
 		Amount = 0.3,
 		MaxStacks = 4,
+		IconId = "rbxassetid://96764702411905",
 	},
 	{
 		Id = "SpeedLoader",
@@ -117,6 +124,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "ReloadSpeed",
 		Amount = 0.25,
 		MaxStacks = 4,
+		IconId = "rbxassetid://134189055439395",
 	},
 	{
 		Id = "Survivor",
@@ -125,6 +133,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "MaxHealth",
 		Amount = 25,
 		MaxStacks = 4,
+		IconId = "rbxassetid://99314337772025",
 	},
 	{
 		Id = "Adrenaline",
@@ -133,6 +142,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "MoveSpeed",
 		Amount = 0.12,
 		MaxStacks = 3,
+		IconId = "rbxassetid://133080520040170",
 	},
 	{
 		Id = "Bloodthirst",
@@ -141,6 +151,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "HealPerKill",
 		Amount = 3,
 		MaxStacks = 3,
+		IconId = "rbxassetid://105495324331553",
 	},
 	{
 		-- Reuses the exploding-projectile splash WeaponService already
@@ -153,6 +164,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "ExplodeOnKill",
 		Amount = 1,
 		MaxStacks = 3,
+		IconId = "rbxassetid://111395182552873",
 	},
 	{
 		Id = "Scavenger",
@@ -161,6 +173,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "CoinGain",
 		Amount = 0.25,
 		MaxStacks = 4,
+		IconId = "rbxassetid://110620391484674",
 	},
 }
 

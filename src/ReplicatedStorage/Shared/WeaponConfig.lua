@@ -19,6 +19,10 @@ export type WeaponStats = {
 	Pellets: number, -- >1 for shotgun-style multi-pellet spread
 	Price: number, -- coins to unlock in the shop; 0 = free starter weapon
 
+	-- Hotbar / shop row glyph. Empty = text-only slot until art is uploaded
+	-- (see docs/ui-icon-design.md — Id matches the weapon key).
+	IconId: string,
+
 	-- Optional per-weapon authored Animations, e.g. "rbxassetid://1234567890"
 	-- — see WeaponViewController's createIKForTool/playHoldAnimation/
 	-- PlayFireAnimation/PlayReloadAnimation. Empty string (the default,
@@ -80,6 +84,7 @@ local WeaponConfig: { [string]: WeaponStats } = {
 		HeadshotMultiplier = 2,
 		Pellets = 1,
 		Price = 0,
+		IconId = "rbxassetid://135023133887459", -- paste rbxassetid://… from Pistol.png
 		-- From src/ServerStorage/MapAssets/Dummy_Pistol_Rifle_Animations.rbxm's
 		-- "pistol_animation" dummy's AnimSaves — publish each in Studio's
 		-- Animation Editor (see README) and paste the real rbxassetid here.
@@ -98,6 +103,7 @@ local WeaponConfig: { [string]: WeaponStats } = {
 		HeadshotMultiplier = 2,
 		Pellets = 1,
 		Price = 150,
+		IconId = "rbxassetid://139869397002241", -- paste rbxassetid://… from AssaultRifle.png
 		-- From the same .rbxm's "rifle_animation" dummy's AnimSaves (its
 		-- Idle/Fire/Equip/Reload are lowercase-named there).
 		HoldAnimationId = "rbxassetid://101513244659838", -- TODO: replace with the dummy's published "idle"
@@ -115,6 +121,7 @@ local WeaponConfig: { [string]: WeaponStats } = {
 		HeadshotMultiplier = 1.5,
 		Pellets = 8,
 		Price = 300,
+		IconId = "rbxassetid://133524797480228", -- paste rbxassetid://… from Shotgun.png
 		-- No authored dummy rig for the shotgun (yet) — kept on the same
 		-- placeholder hold pose as before; falls back to live IK if this
 		-- ever goes empty.

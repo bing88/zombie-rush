@@ -159,6 +159,7 @@ local function buildClientState(player: Player)
 					Description = card.Description,
 					Stacks = count,
 					MaxStacks = card.MaxStacks,
+					IconId = card.IconId,
 				})
 			end
 		end
@@ -276,6 +277,7 @@ local function buildOfferPayload(player: Player, offer: { string })
 				Description = card.Description,
 				Stacks = RunUpgradeService.GetStacks(player, card.Id),
 				MaxStacks = card.MaxStacks,
+				IconId = card.IconId,
 			})
 		end
 	end

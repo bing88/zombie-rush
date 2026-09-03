@@ -14,6 +14,7 @@ local StarterGui = game:GetService("StarterGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
+local UIIconConfig = require(ReplicatedStorage.Shared.UIIconConfig)
 
 local UIController = {}
 
@@ -390,11 +391,10 @@ local function buildUI()
 	-- button/ammo box below via the same -150 offset, so the whole
 	-- right-hand column reads as one deliberate group instead of buttons
 	-- scattered at different indents. Helper keeps all three visually
-	-- consistent (dark circle, thin accent stroke, TextScaled label so
-	-- longer words like "RELOAD" still fit at this small size — no icon
-	-- image assets are available, so a short bold word stands in for
-	-- the reference's glyph).
-	local function circleButton(name: string, text: string, bottomOffset: number): TextButton
+	-- consistent (dark circle, thin accent stroke). IconId from
+	-- UIIconConfig replaces the text glyph when set; otherwise the short
+	-- bold word stands in.
+	local function circleButton(name: string, text: string, bottomOffset: number, iconId: string?): TextButton
 		local button = Instance.new("TextButton")
 		button.Name = name
 		button.AnchorPoint = Vector2.new(1, 1)
@@ -419,19 +419,32 @@ local function buildUI()
 		stroke.Color = Color3.fromRGB(90, 90, 90)
 		stroke.Parent = button
 
+		if UIIconConfig.IsSet(iconId) then
+			button.Text = ""
+			local icon = Instance.new("ImageLabel")
+			icon.Name = "Icon"
+			icon.BackgroundTransparency = 1
+			icon.AnchorPoint = Vector2.new(0.5, 0.5)
+			icon.Position = UDim2.fromScale(0.5, 0.5)
+			icon.Size = UDim2.fromOffset(32, 32)
+			icon.Image = iconId :: string
+			icon.ScaleType = Enum.ScaleType.Fit
+			icon.Parent = button
+		end
+
 		return button
 	end
 
 	-- Offsets start above the (now taller, bordered) ammo box — see
 	-- AMMO_POSITION/ammoContainer above (bottom edge at distance 200,
 	-- 52 tall, so its top edge sits at distance 252 from the bottom).
-	reloadButton = circleButton("ReloadButton", "RELOAD", 272)
+	reloadButton = circleButton("ReloadButton", "RELOAD", 272, UIIconConfig.Reload)
 
 	-- Aim/ADS placeholder: built but hidden for now (no ADS mechanic yet
 	-- to back it) — kept in the code, not deleted, so it's a one-line
 	-- Visible flip to bring back once aim-down-sights is actually
 	-- implemented, rather than having to rebuild this from scratch.
-	local aimButton = circleButton("AimButton", "AIM", 342)
+	local aimButton = circleButton("AimButton", "AIM", 342, nil)
 	aimButton.BackgroundTransparency = 0.5
 	aimButton.TextTransparency = 0.35
 	aimButton.Visible = false
@@ -441,7 +454,7 @@ local function buildUI()
 
 	-- View now takes the Aim slot (342) since Aim is hidden — keeps the
 	-- two remaining buttons contiguous instead of leaving a gap.
-	viewToggleButton = circleButton("ViewToggleButton", "VIEW", 342)
+	viewToggleButton = circleButton("ViewToggleButton", "VIEW", 342, UIIconConfig.View)
 
 	--[[
 		Ultimate, continuing the same 70px pitch (56 tall + 14 gap).
@@ -458,7 +471,7 @@ local function buildUI()
 		Colour is driven from outside via SetUltimateButtonState, since
 		charge is ComboController's state, not this module's.
 	]]
-	ultimateButton = circleButton("UltimateButton", "ULT", 412)
+	ultimateButton = circleButton("UltimateButton", "ULT", 412, UIIconConfig.Ult)
 	ultimateButtonStroke = ultimateButton:FindFirstChildOfClass("UIStroke") :: UIStroke
 
 	-- Fire button: the ONLY manual firing trigger (see WeaponController —
@@ -482,6 +495,19 @@ local function buildUI()
 	local fireButtonCorner = Instance.new("UICorner")
 	fireButtonCorner.CornerRadius = UDim.new(1, 0) -- circular
 	fireButtonCorner.Parent = fireButton
+
+	if UIIconConfig.IsSet(UIIconConfig.Fire) then
+		fireButton.Text = ""
+		local fireIcon = Instance.new("ImageLabel")
+		fireIcon.Name = "Icon"
+		fireIcon.BackgroundTransparency = 1
+		fireIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+		fireIcon.Position = UDim2.fromScale(0.5, 0.5)
+		fireIcon.Size = UDim2.fromOffset(64, 64)
+		fireIcon.Image = UIIconConfig.Fire
+		fireIcon.ScaleType = Enum.ScaleType.Fit
+		fireIcon.Parent = fireButton
+	end
 
 	-- Custom weapon hotbar (bottom-center, above where the HP bar sits) —
 	-- replaces Roblox's default Backpack CoreGui (disabled in Init())
@@ -529,11 +555,26 @@ local function buildUI()
 		keyBadge.Font = Enum.Font.GothamBold
 		keyBadge.TextSize = 11
 		keyBadge.Text = tostring(index)
+		keyBadge.ZIndex = 2
 		keyBadge.Parent = slot
 
 		local keyBadgeCorner = Instance.new("UICorner")
 		keyBadgeCorner.CornerRadius = UDim.new(0, 4)
 		keyBadgeCorner.Parent = keyBadge
+
+		local weaponStats = WeaponConfig[weaponName]
+		local iconId = if typeof(weaponStats) == "table" then (weaponStats :: any).IconId else nil
+		if UIIconConfig.IsSet(iconId) then
+			local icon = Instance.new("ImageLabel")
+			icon.Name = "Icon"
+			icon.BackgroundTransparency = 1
+			icon.AnchorPoint = Vector2.new(0.5, 0.5)
+			icon.Position = UDim2.new(0.5, 0, 0.5, -6)
+			icon.Size = UDim2.fromOffset(40, 40)
+			icon.Image = iconId :: string
+			icon.ScaleType = Enum.ScaleType.Fit
+			icon.Parent = slot
+		end
 
 		local nameLabel = Instance.new("TextLabel")
 		nameLabel.Name = "NameLabel"
@@ -545,6 +586,7 @@ local function buildUI()
 		nameLabel.TextSize = 10
 		nameLabel.TextWrapped = true
 		nameLabel.Text = weaponName
+		nameLabel.ZIndex = 2
 		nameLabel.Parent = slot
 
 		slot.Activated:Connect(function()
