@@ -389,15 +389,19 @@ local function buildUI()
 	ammoLabel.Text = "12 / 12"
 	ammoLabel.Parent = ammoContainer
 
-	-- Right-side vertical stack of small circular icon buttons (View /
-	-- Aim / Reload), reference-style — right edge aligned with the FIRE
-	-- button/ammo box below via the same -150 offset, so the whole
-	-- right-hand column reads as one deliberate group instead of buttons
-	-- scattered at different indents. Helper keeps all three visually
-	-- consistent (dark circle, thin accent stroke). IconId from
-	-- UIIconConfig replaces the text glyph when set; otherwise the short
-	-- bold word stands in.
-	local function circleButton(name: string, text: string, bottomOffset: number, iconId: string?): TextButton
+	-- Right-side vertical stack of small icon buttons (View / Aim / Reload),
+	-- reference-style — right edge aligned with the ammo box below via the
+	-- same RIGHT_COLUMN_INSET, so the whole right-hand column reads as one
+	-- deliberate group. Helper keeps them visually consistent (dark fill,
+	-- thin accent stroke). IconId from UIIconConfig replaces the text glyph
+	-- when set; otherwise the short bold word stands in.
+	local function actionButton(
+		name: string,
+		text: string,
+		bottomOffset: number,
+		iconId: string?,
+		square: boolean?
+	): TextButton
 		local button = Instance.new("TextButton")
 		button.Name = name
 		button.AnchorPoint = Vector2.new(1, 1)
@@ -414,7 +418,7 @@ local function buildUI()
 		button.Parent = screenGui
 
 		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(1, 0) -- circular
+		corner.CornerRadius = if square then UDim.new(0, 8) else UDim.new(1, 0)
 		corner.Parent = button
 
 		local stroke = Instance.new("UIStroke")
@@ -429,7 +433,7 @@ local function buildUI()
 			icon.BackgroundTransparency = 1
 			icon.AnchorPoint = Vector2.new(0.5, 0.5)
 			icon.Position = UDim2.fromScale(0.5, 0.5)
-			icon.Size = UDim2.fromOffset(32, 32)
+			icon.Size = UDim2.fromOffset(56, 56)
 			icon.Image = iconId :: string
 			icon.ScaleType = Enum.ScaleType.Fit
 			icon.Parent = button
@@ -441,13 +445,13 @@ local function buildUI()
 	-- Offsets start above the (now taller, bordered) ammo box — see
 	-- AMMO_POSITION/ammoContainer above (bottom edge at distance 200,
 	-- 52 tall, so its top edge sits at distance 252 from the bottom).
-	reloadButton = circleButton("ReloadButton", "RELOAD", 272, UIIconConfig.Reload)
+	reloadButton = actionButton("ReloadButton", "RELOAD", 272, UIIconConfig.Reload, true)
 
 	-- Aim/ADS placeholder: built but hidden for now (no ADS mechanic yet
 	-- to back it) — kept in the code, not deleted, so it's a one-line
 	-- Visible flip to bring back once aim-down-sights is actually
 	-- implemented, rather than having to rebuild this from scratch.
-	local aimButton = circleButton("AimButton", "AIM", 342, nil)
+	local aimButton = actionButton("AimButton", "AIM", 342, nil, true)
 	aimButton.BackgroundTransparency = 0.5
 	aimButton.TextTransparency = 0.35
 	aimButton.Visible = false
@@ -457,7 +461,7 @@ local function buildUI()
 
 	-- View now takes the Aim slot (342) since Aim is hidden — keeps the
 	-- two remaining buttons contiguous instead of leaving a gap.
-	viewToggleButton = circleButton("ViewToggleButton", "VIEW", 342, UIIconConfig.View)
+	viewToggleButton = actionButton("ViewToggleButton", "VIEW", 342, UIIconConfig.View, true)
 
 	--[[
 		Ultimate, continuing the same 70px pitch (56 tall + 14 gap).
@@ -474,7 +478,7 @@ local function buildUI()
 		Colour is driven from outside via SetUltimateButtonState, since
 		charge is ComboController's state, not this module's.
 	]]
-	ultimateButton = circleButton("UltimateButton", "ULT", 412, UIIconConfig.Ult)
+	ultimateButton = actionButton("UltimateButton", "ULT", 412, UIIconConfig.Ult, true)
 	ultimateButtonStroke = ultimateButton:FindFirstChildOfClass("UIStroke") :: UIStroke
 
 	-- Fire button: the ONLY manual firing trigger (see WeaponController —
@@ -578,7 +582,7 @@ local function buildUI()
 			icon.BackgroundTransparency = 1
 			icon.AnchorPoint = Vector2.new(0.5, 0.5)
 			icon.Position = UDim2.new(0.5, 0, 0.5, -6)
-			icon.Size = UDim2.fromOffset(40, 40)
+			icon.Size = UDim2.fromOffset(HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE)
 			icon.Image = iconId :: string
 			icon.ScaleType = Enum.ScaleType.Fit
 			icon.Parent = slot
@@ -901,8 +905,7 @@ local function buildUI()
 	leaderboardTabCorner.CornerRadius = UDim.new(0, 6)
 	leaderboardTabCorner.Parent = leaderboardTabButton
 
-	-- (View toggle button itself now lives in the right-side circular
-	-- icon stack built above, alongside Reload/Aim — see circleButton.)
+	-- (View toggle button lives in the right-side square icon stack above.)
 
 	leaderboardPanel = Instance.new("Frame")
 	leaderboardPanel.Name = "LeaderboardPanel"
