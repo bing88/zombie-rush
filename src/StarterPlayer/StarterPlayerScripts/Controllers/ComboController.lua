@@ -77,26 +77,17 @@ local PANEL_BG = Color3.fromRGB(18, 18, 22)
 --[[
 	Left edge, stacked upward, with the ultimate meter below the streak.
 
-	These offsets are measured from the bottom of the screen and they
-	clear UIController's existing bottom-left occupants deliberately: the
-	coin counter sits 20-52px up and the leaderboard tab 68-100px up
-	(both at UIController's HOTBAR_BOTTOM_MARGIN), so the ultimate meter
-	starts at 112 rather than at the corner. The bottom-CENTRE strip is
-	the HP bar and weapon hotbar and the bottom-right is the three round
-	action buttons, which leaves the left edge above the leaderboard tab
-	as the only free column of this size. Anything added to either HUD
-	near the bottom-left needs to be checked against the other.
-
-	Ultimate below streak, not above: the meter is permanent and the
-	streak panel appears and disappears (see renderCombo), so this way
-	the thing that comes and goes does it at the top of the stack instead
-	of shoving the permanent element up and down the screen.
+	Scaled to 0.5 (see PANEL_SCALE) so the pair stays compact above the
+	coin / shop / run-build row. Bottom offsets clear that row: coins sit
+	~20-52px up and the shop tab ~68-100px up, so the ultimate meter
+	starts at 108 rather than at the corner.
 ]]
+local PANEL_SCALE = 0.5
 local PANEL_WIDTH = 196
 local ULTIMATE_PANEL_HEIGHT = 78
-local ULTIMATE_PANEL_BOTTOM = 112
+local ULTIMATE_PANEL_BOTTOM = 108
 local COMBO_PANEL_HEIGHT = 92
-local COMBO_PANEL_BOTTOM = ULTIMATE_PANEL_BOTTOM + ULTIMATE_PANEL_HEIGHT + 8
+local COMBO_PANEL_BOTTOM = ULTIMATE_PANEL_BOTTOM + math.ceil(ULTIMATE_PANEL_HEIGHT * PANEL_SCALE) + 6
 
 local screenGui: ScreenGui
 local comboPanel: Frame
@@ -207,6 +198,9 @@ local function buildComboPanel()
 	comboPanel.BorderSizePixel = 0
 	comboPanel.Visible = false
 	comboPanel.Parent = screenGui
+	local comboScale = Instance.new("UIScale")
+	comboScale.Scale = PANEL_SCALE
+	comboScale.Parent = comboPanel
 	styleCorner(comboPanel, 10)
 	styleStroke(comboPanel, Color3.fromRGB(70, 70, 80), 1.5)
 
@@ -297,6 +291,9 @@ local function buildUltimatePanel()
 	ultimatePanel.BackgroundTransparency = 0.25
 	ultimatePanel.BorderSizePixel = 0
 	ultimatePanel.Parent = screenGui
+	local ultimateScale = Instance.new("UIScale")
+	ultimateScale.Scale = PANEL_SCALE
+	ultimateScale.Parent = ultimatePanel
 	styleCorner(ultimatePanel, 10)
 	styleStroke(ultimatePanel, Color3.fromRGB(70, 70, 80), 1.5)
 
@@ -355,9 +352,11 @@ local function flashTierUp()
 		scale = Instance.new("UIScale")
 		scale.Parent = comboPanel
 	end
-	scale.Scale = 1.18
+	-- Pulse above the permanent PANEL_SCALE, then settle back to it —
+	-- returning to 1 would undo the half-size layout.
+	scale.Scale = PANEL_SCALE * 1.18
 	TweenService:Create(scale, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-		Scale = 1,
+		Scale = PANEL_SCALE,
 	}):Play()
 end
 

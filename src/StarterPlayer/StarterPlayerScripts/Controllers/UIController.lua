@@ -66,7 +66,11 @@ local hitmarkerHideThread: thread? = nil
 -- right in the bottom-right corner — the fire button used to occupy
 -- almost the exact same spot, so the jump button's arrow rendered
 -- visibly through/behind it.
-local AMMO_POSITION = UDim2.new(1, -150, 1, -200)
+-- Right-edge inset for the ammo box and the View/Reload/Ult column.
+-- Was -150 (cleared Roblox's jump button AND the fire button); fire is
+-- hidden now, so the whole column sits closer to the right edge.
+local RIGHT_COLUMN_INSET = -24
+local AMMO_POSITION = UDim2.new(1, RIGHT_COLUMN_INSET, 1, -200)
 
 --[[
 	Custom bottom-center weapon hotbar — replaces Roblox's default
@@ -272,7 +276,8 @@ local function buildUI()
 	waveLabel.Name = "WaveLabel"
 	waveLabel.AnchorPoint = Vector2.new(0.5, 0)
 	waveLabel.Size = UDim2.fromOffset(200, 34)
-	waveLabel.Position = UDim2.new(0.5, 0, 0, 20)
+	-- Nudged down so the leaderboard tab (top-centre at y=4) has room.
+	waveLabel.Position = UDim2.new(0.5, 0, 0, 36)
 	waveLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 	waveLabel.BackgroundTransparency = 0.2
 	waveLabel.TextColor3 = Color3.new(1, 1, 1)
@@ -292,7 +297,7 @@ local function buildUI()
 	modifierLabel.Name = "ModifierLabel"
 	modifierLabel.AnchorPoint = Vector2.new(0.5, 0)
 	modifierLabel.Size = UDim2.fromOffset(320, 22)
-	modifierLabel.Position = UDim2.new(0.5, 0, 0, 54)
+	modifierLabel.Position = UDim2.new(0.5, 0, 0, 70)
 	modifierLabel.BackgroundTransparency = 1
 	modifierLabel.TextColor3 = Color3.fromRGB(180, 210, 255)
 	modifierLabel.Font = Enum.Font.Gotham
@@ -305,7 +310,7 @@ local function buildUI()
 	bossHPBackground.Name = "BossHPBackground"
 	bossHPBackground.AnchorPoint = Vector2.new(0.5, 0)
 	bossHPBackground.Size = UDim2.fromOffset(420, 28)
-	bossHPBackground.Position = UDim2.new(0.5, 0, 0, 82)
+	bossHPBackground.Position = UDim2.new(0.5, 0, 0, 98)
 	bossHPBackground.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	bossHPBackground.BorderSizePixel = 0
 	bossHPBackground.Visible = false
@@ -397,7 +402,7 @@ local function buildUI()
 		button.Name = name
 		button.AnchorPoint = Vector2.new(1, 1)
 		button.Size = UDim2.fromOffset(56, 56)
-		button.Position = UDim2.new(1, -150, 1, -bottomOffset)
+		button.Position = UDim2.new(1, RIGHT_COLUMN_INSET, 1, -bottomOffset)
 		button.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 		button.BackgroundTransparency = 0.15
 		button.TextColor3 = Color3.new(1, 1, 1)
@@ -477,17 +482,22 @@ local function buildUI()
 	-- or touch hold on any platform. Positioned bottom-right for thumb
 	-- reach on mobile, offset left of the corner to clear Roblox's
 	-- default touch jump button (see AMMO_POSITION's comment).
+	-- Hidden: firing is auto-aim / lock driven (see WeaponController).
+	-- Kept in the tree so OnFireButtonStateChanged still binds cleanly if
+	-- the button is re-enabled later.
 	fireButton = Instance.new("TextButton")
 	fireButton.Name = "FireButton"
 	fireButton.AnchorPoint = Vector2.new(1, 1)
 	fireButton.Size = UDim2.fromOffset(110, 110)
-	fireButton.Position = UDim2.new(1, -150, 1, -20)
+	fireButton.Position = UDim2.new(1, RIGHT_COLUMN_INSET, 1, -20)
 	fireButton.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
 	fireButton.BackgroundTransparency = 0.25
 	fireButton.TextColor3 = Color3.new(1, 1, 1)
 	fireButton.Font = Enum.Font.GothamBold
 	fireButton.TextSize = 18
 	fireButton.Text = "FIRE"
+	fireButton.Visible = false
+	fireButton.Active = false
 	fireButton.Parent = screenGui
 
 	local fireButtonCorner = Instance.new("UICorner")
@@ -612,7 +622,7 @@ local function buildUI()
 	stateBanner.Name = "StateBanner"
 	stateBanner.AnchorPoint = Vector2.new(0.5, 0)
 	stateBanner.Size = UDim2.fromScale(1, 0.1)
-	stateBanner.Position = UDim2.new(0.5, 0, 0, 100)
+	stateBanner.Position = UDim2.new(0.5, 0, 0, 116)
 	stateBanner.BackgroundTransparency = 1
 	stateBanner.TextColor3 = Color3.fromRGB(255, 230, 150)
 	stateBanner.Font = Enum.Font.GothamBold
@@ -773,7 +783,8 @@ local function buildUI()
 	downedBanner.Visible = false
 	downedBanner.Parent = screenGui
 
-	-- Session objective widget (top-right, small, always visible)
+	-- Session objective widget — kept in the tree so SetObjective still
+	-- works if we re-enable it, but hidden and non-interactive for now.
 	objectiveContainer = Instance.new("Frame")
 	objectiveContainer.Name = "ObjectiveContainer"
 	objectiveContainer.AnchorPoint = Vector2.new(1, 0)
@@ -781,6 +792,8 @@ local function buildUI()
 	objectiveContainer.Position = UDim2.new(1, -20, 0, 20)
 	objectiveContainer.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	objectiveContainer.BackgroundTransparency = 0.3
+	objectiveContainer.Visible = false
+	objectiveContainer.Active = false
 	objectiveContainer.Parent = screenGui
 
 	objectiveLabel = Instance.new("TextLabel")
@@ -869,18 +882,24 @@ local function buildUI()
 	scoreboardLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	scoreboardLayout.Parent = scoreboardRowsHolder
 
-	-- Leaderboard panel (toggleable, best-wave-reached top 10)
+	-- Leaderboard tab — top-centre, sitting just above the wave pill so
+	-- the bottom-left stays free for coins / shop / run-build.
 	leaderboardTabButton = Instance.new("TextButton")
 	leaderboardTabButton.Name = "LeaderboardTabButton"
-	leaderboardTabButton.Size = UDim2.fromOffset(140, 32)
-	leaderboardTabButton.Position = UDim2.new(0, 150, 1, -100)
+	leaderboardTabButton.AnchorPoint = Vector2.new(0.5, 0)
+	leaderboardTabButton.Size = UDim2.fromOffset(140, 28)
+	leaderboardTabButton.Position = UDim2.new(0.5, 0, 0, 4)
 	leaderboardTabButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	leaderboardTabButton.BackgroundTransparency = 0.2
 	leaderboardTabButton.TextColor3 = Color3.new(1, 1, 1)
 	leaderboardTabButton.Font = Enum.Font.GothamBold
-	leaderboardTabButton.TextSize = 14
+	leaderboardTabButton.TextSize = 13
 	leaderboardTabButton.Text = "LEADERBOARD (L)"
 	leaderboardTabButton.Parent = screenGui
+
+	local leaderboardTabCorner = Instance.new("UICorner")
+	leaderboardTabCorner.CornerRadius = UDim.new(0, 6)
+	leaderboardTabCorner.Parent = leaderboardTabButton
 
 	-- (View toggle button itself now lives in the right-side circular
 	-- icon stack built above, alongside Reload/Aim — see circleButton.)
@@ -1418,6 +1437,8 @@ function UIController.SetDowned(isDowned: boolean, bleedOutSeconds: number)
 end
 
 function UIController.SetObjective(progress: number, target: number, completed: boolean)
+	-- Objective HUD is currently hidden (see objectiveContainer.Visible).
+	-- Keep the labels updated so re-enabling it is a one-line flip.
 	if not objectiveLabel then
 		return
 	end
@@ -1428,7 +1449,9 @@ function UIController.SetObjective(progress: number, target: number, completed: 
 		objectiveLabel.Text = ("Objective: Headshot kills %d/%d"):format(progress, target)
 		objectiveLabel.TextColor3 = Color3.new(1, 1, 1)
 	end
-	objectiveBarFill.Size = UDim2.fromScale(target > 0 and math.clamp(progress / target, 0, 1) or 0, 1)
+	if objectiveBarFill then
+		objectiveBarFill.Size = UDim2.fromScale(target > 0 and math.clamp(progress / target, 0, 1) or 0, 1)
+	end
 end
 
 function UIController.SetWaveModifier(name: string, description: string)

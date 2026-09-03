@@ -51,14 +51,24 @@ local screenGui: ScreenGui
 local draftPanel: Frame
 local draftTitle: TextLabel
 local cardRow: Frame
+local buildTabButton: TextButton
+local buildPanel: Frame
 local buildList: Frame
 local buildListTitle: TextLabel
+local buildEmptyLabel: TextLabel
 
 -- The offer currently on screen, so a number key can resolve to a card
 -- id. Empty whenever no draft is open, which is also what makes the
 -- 1-3 keybinds inert outside a draft.
 local currentOffer: { { Id: string, Name: string, Description: string, Stacks: number?, MaxStacks: number?, IconId: string? } } = {}
 local cardButtons: { TextButton } = {}
+local buildPanelVisible = false
+local ownedCount = 0
+
+-- Coin label sits at (20, bottom-20) size 140x32 in UIController — this
+-- tab sits immediately to its right so the bottom-left row reads
+-- coins → RUN → (shop above).
+local BUILD_TAB_POSITION = UDim2.new(0, 168, 1, -20)
 
 local CARD_WIDTH = 190
 local CARD_HEIGHT = 210
@@ -217,30 +227,53 @@ local function clearCards()
 end
 
 --[[
-	Refreshes the compact owned-upgrades list. Hidden entirely when the
-	run has no picks yet (i.e. in the lobby and during wave 1) rather
-	than showing an empty box.
+	Refreshes the owned-upgrades list inside the RUN panel. The panel
+	itself only opens when the player taps the tab next to coins — the
+	list used to sit permanently bottom-left and overlapped the coin /
+	shop row as soon as a few cards were drafted.
 ]]
+local function setBuildPanelVisible(value: boolean)
+	buildPanelVisible = value
+	if buildPanel then
+		buildPanel.Visible = value
+	end
+end
+
+local function refreshBuildTabLabel()
+	if not buildTabButton then
+		return
+	end
+	if ownedCount > 0 then
+		buildTabButton.Text = ("RUN (%d)"):format(ownedCount)
+	else
+		buildTabButton.Text = "RUN"
+	end
+end
+
 local function renderBuildList(owned: { { Name: string, Stacks: number, IconId: string? } })
 	for _, child in buildList:GetChildren() do
-		if (child:IsA("TextLabel") or child:IsA("Frame")) and child ~= buildListTitle then
+		if (child:IsA("TextLabel") or child:IsA("Frame")) and child ~= buildListTitle and child ~= buildEmptyLabel then
 			child:Destroy()
 		end
 	end
 
-	if #owned == 0 then
-		buildList.Visible = false
+	ownedCount = #owned
+	refreshBuildTabLabel()
+
+	if ownedCount == 0 then
+		buildEmptyLabel.Visible = true
+		buildList.Size = UDim2.new(1, -16, 0, 40)
 		return
 	end
 
-	buildList.Visible = true
-	local rowHeight = 20
+	buildEmptyLabel.Visible = false
+	local rowHeight = 22
 	for index, entry in owned do
 		local row = Instance.new("Frame")
 		row.Name = "BuildEntry" .. tostring(index)
 		row.BackgroundTransparency = 1
 		row.Size = UDim2.new(1, 0, 0, rowHeight)
-		row.Position = UDim2.new(0, 0, 0, 18 + (index - 1) * rowHeight)
+		row.Position = UDim2.new(0, 0, 0, 22 + (index - 1) * rowHeight)
 		row.Parent = buildList
 
 		local iconX = 0
@@ -249,7 +282,7 @@ local function renderBuildList(owned: { { Name: string, Stacks: number, IconId: 
 			icon.Name = "Icon"
 			icon.BackgroundTransparency = 1
 			icon.Size = UDim2.fromOffset(16, 16)
-			icon.Position = UDim2.fromOffset(0, 2)
+			icon.Position = UDim2.fromOffset(0, 3)
 			icon.Image = entry.IconId :: string
 			icon.ScaleType = Enum.ScaleType.Fit
 			icon.Parent = row
@@ -262,14 +295,15 @@ local function renderBuildList(owned: { { Name: string, Stacks: number, IconId: 
 		label.Size = UDim2.new(1, -iconX, 1, 0)
 		label.Position = UDim2.fromOffset(iconX, 0)
 		label.Font = Enum.Font.GothamMedium
-		label.TextSize = 12
+		label.TextSize = 13
 		label.TextColor3 = Color3.fromRGB(215, 215, 225)
 		label.TextXAlignment = Enum.TextXAlignment.Left
 		label.Text = entry.Stacks > 1 and ("%s  x%d"):format(entry.Name, entry.Stacks) or entry.Name
 		label.Parent = row
 	end
 
-	buildList.Size = UDim2.fromOffset(190, 24 + #owned * rowHeight)
+	buildList.Size = UDim2.new(1, -16, 0, 24 + ownedCount * rowHeight)
+	buildPanel.Size = UDim2.fromOffset(220, 44 + ownedCount * rowHeight)
 end
 
 function RunDraftController.Show(offer)
@@ -372,27 +406,86 @@ function RunDraftController.Init()
 	cardRow.BackgroundTransparency = 1
 	cardRow.Parent = draftPanel
 
-	-- Owned-upgrades list, bottom-left, clear of the hotbar (bottom
-	-- center) and the ammo readout (bottom right).
+	-- RUN tab next to the coin counter (bottom-left). Opens a panel with
+	-- the owned draft-upgrade list — used to sit permanently on the
+	-- bottom-left and overlapped coins/shop as the list grew.
+	buildTabButton = Instance.new("TextButton")
+	buildTabButton.Name = "BuildTabButton"
+	buildTabButton.AnchorPoint = Vector2.new(0, 1)
+	buildTabButton.Position = BUILD_TAB_POSITION
+	buildTabButton.Size = UDim2.fromOffset(72, 32)
+	buildTabButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	buildTabButton.BackgroundTransparency = 0.2
+	buildTabButton.TextColor3 = Color3.new(1, 1, 1)
+	buildTabButton.Font = Enum.Font.GothamBold
+	buildTabButton.TextSize = 13
+	buildTabButton.Text = "RUN"
+	buildTabButton.Parent = screenGui
+	styleCorner(buildTabButton, 6)
+	styleStroke(buildTabButton, Color3.fromRGB(90, 90, 90), 1.5)
+
+	buildPanel = Instance.new("Frame")
+	buildPanel.Name = "BuildPanel"
+	buildPanel.AnchorPoint = Vector2.new(0, 1)
+	buildPanel.Position = UDim2.new(0, 168, 1, -56)
+	buildPanel.Size = UDim2.fromOffset(220, 80)
+	buildPanel.BackgroundColor3 = PANEL_BG
+	buildPanel.BackgroundTransparency = 0.1
+	buildPanel.BorderSizePixel = 0
+	buildPanel.Visible = false
+	buildPanel.Parent = screenGui
+	styleCorner(buildPanel, 8)
+	styleStroke(buildPanel, ACCENT, 1.5)
+
+	local buildClose = Instance.new("TextButton")
+	buildClose.Name = "CloseButton"
+	buildClose.AnchorPoint = Vector2.new(1, 0)
+	buildClose.Position = UDim2.new(1, -6, 0, 6)
+	buildClose.Size = UDim2.fromOffset(22, 22)
+	buildClose.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	buildClose.TextColor3 = Color3.new(1, 1, 1)
+	buildClose.Font = Enum.Font.GothamBold
+	buildClose.TextSize = 14
+	buildClose.Text = "X"
+	buildClose.Parent = buildPanel
+	styleCorner(buildClose, 4)
+
 	buildList = Instance.new("Frame")
 	buildList.Name = "BuildList"
-	buildList.AnchorPoint = Vector2.new(0, 1)
-	buildList.Position = UDim2.new(0, 16, 1, -20)
-	buildList.Size = UDim2.fromOffset(190, 24)
+	buildList.Position = UDim2.fromOffset(8, 8)
+	buildList.Size = UDim2.new(1, -16, 1, -16)
 	buildList.BackgroundTransparency = 1
-	buildList.Visible = false
-	buildList.Parent = screenGui
+	buildList.Parent = buildPanel
 
 	buildListTitle = Instance.new("TextLabel")
 	buildListTitle.Name = "BuildListTitle"
 	buildListTitle.BackgroundTransparency = 1
-	buildListTitle.Size = UDim2.new(1, 0, 0, 16)
+	buildListTitle.Size = UDim2.new(1, -28, 0, 18)
 	buildListTitle.Font = Enum.Font.GothamBold
-	buildListTitle.TextSize = 12
+	buildListTitle.TextSize = 13
 	buildListTitle.TextColor3 = ACCENT
 	buildListTitle.TextXAlignment = Enum.TextXAlignment.Left
 	buildListTitle.Text = "THIS RUN"
 	buildListTitle.Parent = buildList
+
+	buildEmptyLabel = Instance.new("TextLabel")
+	buildEmptyLabel.Name = "EmptyLabel"
+	buildEmptyLabel.BackgroundTransparency = 1
+	buildEmptyLabel.Position = UDim2.fromOffset(0, 24)
+	buildEmptyLabel.Size = UDim2.new(1, 0, 0, 24)
+	buildEmptyLabel.Font = Enum.Font.Gotham
+	buildEmptyLabel.TextSize = 12
+	buildEmptyLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+	buildEmptyLabel.TextXAlignment = Enum.TextXAlignment.Left
+	buildEmptyLabel.Text = "No upgrades yet"
+	buildEmptyLabel.Parent = buildList
+
+	buildTabButton.Activated:Connect(function()
+		setBuildPanelVisible(not buildPanelVisible)
+	end)
+	buildClose.Activated:Connect(function()
+		setBuildPanelVisible(false)
+	end)
 
 	--[[
 		A nil payload means "the draft window closed" — sent to everyone
