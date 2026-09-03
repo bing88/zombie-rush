@@ -1,27 +1,37 @@
 --[[
 	ShopController.lua (ModuleScript)
 
-	Upgrades are purchasable anytime from this panel — no need to walk to
-	a physical stall (unlike unlocking a new weapon for the first time,
-	which stays at the physical Stall_Buy* parts per the original
-	design; this panel only handles upgrading a weapon you already own).
-	Server-side validation is identical either way — see ShopService's
-	PurchaseUpgradeRequest handler, which reuses the exact same
-	tryBuyUpgrade function the physical stalls call.
+	The in-match ARMORY: buy a weapon you don't have, or upgrade one you
+	do, from the same `U` panel. Both spend THIS RUN's cash.
 
-	Toggle with the U key or the on-screen "UPGRADES" tab button (for
-	touch/mobile, where there's no keyboard).
+	WAS UPGRADE-ONLY, WITH BUYS AT LOBBY STALLS. That split hid the
+	actual decision — rifle vs two more pistol levels — because the two
+	costs lived in different places. They're next to each other now so
+	the player can see they compete for the same coins.
+
+	The server owns every purchase (see ShopService). This panel only
+	renders the state it's sent and fires a weapon name. A buy for a
+	weapon the meta track hasn't unlocked, or a spend outside a match,
+	is rejected server-side and toasted.
+
+	Toggle with `U` or the on-screen SHOP tab (touch has no keyboard).
+	The tab pulses during the between-wave break: that's when shopping
+	is free (no zombies), and a still tab next to a 15-second draft is
+	easy to forget exists.
 ]]
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
+local MetaConfig = require(ReplicatedStorage.Shared.MetaConfig)
 
 local PurchaseUpgradeRequest = Remotes.PurchaseUpgradeRequest
+local PurchaseWeaponRequest = Remotes.PurchaseWeaponRequest
 local TOGGLE_KEY = Enum.KeyCode.U
 
 local ShopController = {}
@@ -31,11 +41,26 @@ local player = Players.LocalPlayer
 local screenGui: ScreenGui
 local panel: Frame
 local tabButton: TextButton
-local rows: { [string]: { LevelLabel: TextLabel, BuyButton: TextButton } } = {}
+local tabStroke: UIStroke
+local titleLabel: TextLabel
+local cashLabel: TextLabel
+local metaLabel: TextLabel
+local hintLabel: TextLabel
+local rows: { [string]: { StatusLabel: TextLabel, ActionButton: TextButton } } = {}
 
 local latestOwned: { [string]: boolean } = {}
 local latestLevels: { [string]: number } = {}
+local latestAvailable: { [string]: boolean } = {}
+local latestCash = 0
+local matchOpen = false
+local inBreak = false
 local visible = false
+local tabPulse: Tween? = nil
+
+local BUY_GREEN = Color3.fromRGB(60, 130, 70)
+local UPGRADE_BLUE = Color3.fromRGB(50, 110, 160)
+local LOCKED_GREY = Color3.fromRGB(60, 60, 60)
+local READY_GOLD = Color3.fromRGB(255, 190, 60)
 
 local function setPanelVisible(value: boolean)
 	visible = value
@@ -44,44 +69,118 @@ local function setPanelVisible(value: boolean)
 	end
 end
 
+local function stopTabPulse()
+	if tabPulse then
+		tabPulse:Cancel()
+		tabPulse = nil
+	end
+	if tabStroke then
+		tabStroke.Color = Color3.fromRGB(90, 90, 90)
+		tabStroke.Thickness = 1.5
+	end
+	if tabButton then
+		tabButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	end
+end
+
+local function startTabPulse()
+	stopTabPulse()
+	if not tabStroke or not tabButton then
+		return
+	end
+	tabButton.BackgroundColor3 = Color3.fromRGB(70, 55, 20)
+	tabStroke.Color = READY_GOLD
+	tabStroke.Thickness = 2.5
+	tabPulse = TweenService:Create(tabStroke, TweenInfo.new(0.7, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+		Thickness = 1.2,
+	})
+	tabPulse:Play()
+end
+
 local function refreshRow(weaponName: string)
 	local row = rows[weaponName]
 	if not row then
 		return
 	end
 
+	local stats = WeaponConfig[weaponName]
 	local owned = latestOwned[weaponName] == true
+	local available = latestAvailable[weaponName] ~= false
 	local level = latestLevels[weaponName] or 0
 
+	if not matchOpen then
+		row.StatusLabel.Text = owned and ("Lv %d — lobby"):format(level) or "Buy in a match"
+		row.ActionButton.Text = "IN MATCH"
+		row.ActionButton.AutoButtonColor = false
+		row.ActionButton.BackgroundColor3 = LOCKED_GREY
+		return
+	end
+
+	if not available then
+		local required = MetaConfig.GetWeaponRequiredLevel(weaponName)
+		row.StatusLabel.Text = ("Account Lv %d"):format(required)
+		row.ActionButton.Text = "LOCKED"
+		row.ActionButton.AutoButtonColor = false
+		row.ActionButton.BackgroundColor3 = LOCKED_GREY
+		return
+	end
+
 	if not owned then
-		row.LevelLabel.Text = "Not unlocked"
-		row.BuyButton.Text = "LOCKED"
-		row.BuyButton.AutoButtonColor = false
-		row.BuyButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+		local price = stats and stats.Price or 0
+		row.StatusLabel.Text = "Not owned this run"
+		row.ActionButton.Text = ("BUY — %d"):format(price)
+		row.ActionButton.AutoButtonColor = latestCash >= price
+		row.ActionButton.BackgroundColor3 = latestCash >= price and BUY_GREEN or LOCKED_GREY
 		return
 	end
 
 	local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
 	local nextLevel = level + 1
-
 	if not weaponUpgrades or nextLevel > UpgradeConfig.MaxLevel then
-		row.LevelLabel.Text = ("Level %d / %d (MAX)"):format(level, UpgradeConfig.MaxLevel)
-		row.BuyButton.Text = "MAXED"
-		row.BuyButton.AutoButtonColor = false
-		row.BuyButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+		row.StatusLabel.Text = ("Level %d / %d  MAX"):format(level, UpgradeConfig.MaxLevel)
+		row.ActionButton.Text = "MAXED"
+		row.ActionButton.AutoButtonColor = false
+		row.ActionButton.BackgroundColor3 = LOCKED_GREY
 		return
 	end
 
 	local levelData = weaponUpgrades.Levels[nextLevel]
-	row.LevelLabel.Text = ("Level %d / %d"):format(level, UpgradeConfig.MaxLevel)
-	row.BuyButton.Text = ("Upgrade — %d coins"):format(levelData.Cost)
-	row.BuyButton.AutoButtonColor = true
-	row.BuyButton.BackgroundColor3 = Color3.fromRGB(60, 130, 70)
+	local cost = levelData.Cost
+	row.StatusLabel.Text = ("Level %d / %d"):format(level, UpgradeConfig.MaxLevel)
+	row.ActionButton.Text = ("UPGRADE — %d"):format(cost)
+	row.ActionButton.AutoButtonColor = latestCash >= cost
+	row.ActionButton.BackgroundColor3 = latestCash >= cost and UPGRADE_BLUE or LOCKED_GREY
 end
 
 local function refreshAllRows()
+	if cashLabel then
+		cashLabel.Text = matchOpen and ("$%d this run"):format(latestCash) or "Shop opens in a match"
+	end
+	if hintLabel then
+		if not matchOpen then
+			hintLabel.Text = "Every match starts with the Pistol. Buys and upgrades reset when the run ends."
+		elseif inBreak then
+			hintLabel.Text = "Break — spend now, or save for the next wave."
+		else
+			hintLabel.Text = "Buys and upgrades last this run only. Rifle now, or more pistol levels?"
+		end
+	end
 	for weaponName in rows do
 		refreshRow(weaponName)
+	end
+end
+
+local function requestAction(weaponName: string)
+	if not matchOpen then
+		return
+	end
+	if latestAvailable[weaponName] == false then
+		return
+	end
+	if latestOwned[weaponName] == true then
+		PurchaseUpgradeRequest:FireServer(weaponName)
+	else
+		PurchaseWeaponRequest:FireServer(weaponName)
 	end
 end
 
@@ -91,16 +190,12 @@ local function buildUI()
 	screenGui.ResetOnSpawn = false
 	screenGui.Parent = player:WaitForChild("PlayerGui")
 
-	-- Matches UIController's HUD scaling so the upgrade panel doesn't
-	-- look oversized relative to the rest of the shrunk-down HUD.
 	local uiScale = Instance.new("UIScale")
 	uiScale.Scale = 0.7
 	uiScale.Parent = screenGui
 
-	-- Tab button: always visible, toggles the panel. Bottom-left, clear
-	-- of the HP bar / ammo / fire button clusters elsewhere on screen.
 	tabButton = Instance.new("TextButton")
-	tabButton.Name = "UpgradesTabButton"
+	tabButton.Name = "ShopTabButton"
 	tabButton.Size = UDim2.fromOffset(120, 32)
 	tabButton.Position = UDim2.new(0, 20, 1, -100)
 	tabButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
@@ -108,14 +203,23 @@ local function buildUI()
 	tabButton.TextColor3 = Color3.new(1, 1, 1)
 	tabButton.Font = Enum.Font.GothamBold
 	tabButton.TextSize = 14
-	tabButton.Text = "UPGRADES (U)"
+	tabButton.Text = "SHOP (U)"
 	tabButton.Parent = screenGui
 
+	local tabCorner = Instance.new("UICorner")
+	tabCorner.CornerRadius = UDim.new(0, 6)
+	tabCorner.Parent = tabButton
+
+	tabStroke = Instance.new("UIStroke")
+	tabStroke.Color = Color3.fromRGB(90, 90, 90)
+	tabStroke.Thickness = 1.5
+	tabStroke.Parent = tabButton
+
 	panel = Instance.new("Frame")
-	panel.Name = "UpgradesPanel"
+	panel.Name = "ShopPanel"
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.fromOffset(360, 220)
+	panel.Size = UDim2.fromOffset(420, 310)
 	panel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 	panel.BackgroundTransparency = 0.1
 	panel.Visible = false
@@ -145,32 +249,69 @@ local function buildUI()
 		setPanelVisible(false)
 	end)
 
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, 0, 0, 36)
-	title.BackgroundTransparency = 1
-	title.TextColor3 = Color3.new(1, 1, 1)
-	title.Font = Enum.Font.GothamBold
-	title.TextSize = 18
-	title.Text = "Weapon Upgrades"
-	title.Parent = panel
+	titleLabel = Instance.new("TextLabel")
+	titleLabel.Size = UDim2.new(0.5, 0, 0, 28)
+	titleLabel.Position = UDim2.new(0, 12, 0, 6)
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.TextColor3 = Color3.new(1, 1, 1)
+	titleLabel.Font = Enum.Font.GothamBold
+	titleLabel.TextSize = 18
+	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.Text = "ARMORY"
+	titleLabel.Parent = panel
+
+	cashLabel = Instance.new("TextLabel")
+	cashLabel.Size = UDim2.new(0.45, -20, 0, 28)
+	cashLabel.Position = UDim2.new(0.5, 0, 0, 6)
+	cashLabel.BackgroundTransparency = 1
+	cashLabel.TextColor3 = Color3.fromRGB(255, 210, 90)
+	cashLabel.Font = Enum.Font.GothamBold
+	cashLabel.TextSize = 16
+	cashLabel.TextXAlignment = Enum.TextXAlignment.Right
+	cashLabel.Text = "$0 this run"
+	cashLabel.Parent = panel
+
+	metaLabel = Instance.new("TextLabel")
+	metaLabel.Size = UDim2.new(1, -24, 0, 16)
+	metaLabel.Position = UDim2.new(0, 12, 0, 32)
+	metaLabel.BackgroundTransparency = 1
+	metaLabel.TextColor3 = Color3.fromRGB(170, 190, 210)
+	metaLabel.Font = Enum.Font.Gotham
+	metaLabel.TextSize = 12
+	metaLabel.TextXAlignment = Enum.TextXAlignment.Left
+	metaLabel.Text = "Account Lv 1"
+	metaLabel.Parent = panel
+
+	hintLabel = Instance.new("TextLabel")
+	hintLabel.Size = UDim2.new(1, -24, 0, 18)
+	hintLabel.Position = UDim2.new(0, 12, 0, 48)
+	hintLabel.BackgroundTransparency = 1
+	hintLabel.TextColor3 = Color3.fromRGB(160, 160, 170)
+	hintLabel.Font = Enum.Font.Gotham
+	hintLabel.TextSize = 12
+	hintLabel.TextXAlignment = Enum.TextXAlignment.Left
+	hintLabel.TextWrapped = true
+	hintLabel.Text = "Every match starts with the Pistol."
+	hintLabel.Parent = panel
+
+	local listHolder = Instance.new("Frame")
+	listHolder.Size = UDim2.new(1, -20, 1, -80)
+	listHolder.Position = UDim2.new(0, 10, 0, 70)
+	listHolder.BackgroundTransparency = 1
+	listHolder.Parent = panel
 
 	local layout = Instance.new("UIListLayout")
 	layout.Padding = UDim.new(0, 8)
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
-
-	local listHolder = Instance.new("Frame")
-	listHolder.Size = UDim2.new(1, -20, 1, -46)
-	listHolder.Position = UDim2.new(0, 10, 0, 40)
-	listHolder.BackgroundTransparency = 1
-	listHolder.Parent = panel
 	layout.Parent = listHolder
 
-	for _, weaponName in WeaponConfig.Order do
+	for index, weaponName in WeaponConfig.Order do
 		local row = Instance.new("Frame")
 		row.Name = weaponName .. "Row"
-		row.Size = UDim2.new(1, 0, 0, 50)
+		row.Size = UDim2.new(1, 0, 0, 58)
 		row.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 		row.BackgroundTransparency = 0.2
+		row.LayoutOrder = index
 		row.Parent = listHolder
 
 		local rowCorner = Instance.new("UICorner")
@@ -178,8 +319,8 @@ local function buildUI()
 		rowCorner.Parent = row
 
 		local nameLabel = Instance.new("TextLabel")
-		nameLabel.Size = UDim2.new(0.4, 0, 1, 0)
-		nameLabel.Position = UDim2.new(0, 10, 0, 0)
+		nameLabel.Size = UDim2.new(0.38, 0, 0, 24)
+		nameLabel.Position = UDim2.new(0, 10, 0, 6)
 		nameLabel.BackgroundTransparency = 1
 		nameLabel.TextColor3 = Color3.new(1, 1, 1)
 		nameLabel.Font = Enum.Font.GothamBold
@@ -188,36 +329,37 @@ local function buildUI()
 		nameLabel.Text = weaponName
 		nameLabel.Parent = row
 
-		local levelLabel = Instance.new("TextLabel")
-		levelLabel.Size = UDim2.new(0.3, 0, 1, 0)
-		levelLabel.Position = UDim2.new(0.4, 0, 0, 0)
-		levelLabel.BackgroundTransparency = 1
-		levelLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-		levelLabel.Font = Enum.Font.Gotham
-		levelLabel.TextSize = 13
-		levelLabel.Text = "..."
-		levelLabel.Parent = row
+		local statusLabel = Instance.new("TextLabel")
+		statusLabel.Size = UDim2.new(0.38, 0, 0, 20)
+		statusLabel.Position = UDim2.new(0, 10, 0, 30)
+		statusLabel.BackgroundTransparency = 1
+		statusLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
+		statusLabel.Font = Enum.Font.Gotham
+		statusLabel.TextSize = 12
+		statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+		statusLabel.Text = "..."
+		statusLabel.Parent = row
 
-		local buyButton = Instance.new("TextButton")
-		buyButton.Size = UDim2.new(0.3, -10, 1, -10)
-		buyButton.Position = UDim2.new(0.7, 0, 0, 5)
-		buyButton.BackgroundColor3 = Color3.fromRGB(60, 130, 70)
-		buyButton.TextColor3 = Color3.new(1, 1, 1)
-		buyButton.Font = Enum.Font.GothamBold
-		buyButton.TextSize = 12
-		buyButton.TextWrapped = true
-		buyButton.Text = "..."
-		buyButton.Parent = row
+		local actionButton = Instance.new("TextButton")
+		actionButton.Size = UDim2.new(0.34, -12, 1, -14)
+		actionButton.Position = UDim2.new(0.66, 0, 0, 7)
+		actionButton.BackgroundColor3 = BUY_GREEN
+		actionButton.TextColor3 = Color3.new(1, 1, 1)
+		actionButton.Font = Enum.Font.GothamBold
+		actionButton.TextSize = 13
+		actionButton.TextWrapped = true
+		actionButton.Text = "..."
+		actionButton.Parent = row
 
 		local buyCorner = Instance.new("UICorner")
 		buyCorner.CornerRadius = UDim.new(0, 4)
-		buyCorner.Parent = buyButton
+		buyCorner.Parent = actionButton
 
-		buyButton.Activated:Connect(function()
-			PurchaseUpgradeRequest:FireServer(weaponName)
+		actionButton.Activated:Connect(function()
+			requestAction(weaponName)
 		end)
 
-		rows[weaponName] = { LevelLabel = levelLabel, BuyButton = buyButton }
+		rows[weaponName] = { StatusLabel = statusLabel, ActionButton = actionButton }
 	end
 
 	tabButton.Activated:Connect(function()
@@ -241,13 +383,59 @@ function ShopController.Init()
 end
 
 --[[
-	Called from ClientMain when the WeaponsOwned remote fires (initial
-	sync on join, and again after every successful purchase anywhere —
-	physical stall or this panel).
+	owned / levels / available arrive together from ShopService so the
+	panel can never show a BUY the server would refuse. available is
+	optional for older messages: missing means "treat as unlocked".
 ]]
-function ShopController.SetOwnedWeapons(owned: { [string]: boolean }, levels: { [string]: number })
+function ShopController.SetOwnedWeapons(
+	owned: { [string]: boolean },
+	levels: { [string]: number },
+	available: { [string]: boolean }?
+)
 	latestOwned = owned
 	latestLevels = levels
+	if available then
+		latestAvailable = available
+	end
+	refreshAllRows()
+end
+
+function ShopController.SetCash(amount: number)
+	latestCash = amount
+	refreshAllRows()
+end
+
+function ShopController.SetMetaProgress(state)
+	if type(state) ~= "table" or not metaLabel then
+		return
+	end
+	local level = tonumber(state.Level) or 1
+	local into = tonumber(state.XPIntoLevel) or 0
+	local forNext = tonumber(state.XPForNextLevel)
+	local gained = tonumber(state.XPGained)
+	if forNext then
+		metaLabel.Text = ("Account Lv %d  —  %d / %d XP"):format(level, into, forNext)
+	else
+		metaLabel.Text = ("Account Lv %d  —  MAX"):format(level)
+	end
+	if gained and gained > 0 then
+		metaLabel.Text ..= ("   +%d XP"):format(gained)
+	end
+end
+
+--[[
+	matchOpen gates the buttons (server also refuses). inBreak only
+	pulses the tab so the break reads as a shopping window without
+	auto-opening over the draft cards.
+]]
+function ShopController.SetMatchState(isMatch: boolean, isBreak: boolean)
+	matchOpen = isMatch
+	inBreak = isBreak
+	if inBreak and isMatch then
+		startTabPulse()
+	else
+		stopTabPulse()
+	end
 	refreshAllRows()
 end
 

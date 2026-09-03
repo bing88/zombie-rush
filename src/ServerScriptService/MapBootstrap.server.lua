@@ -1,11 +1,12 @@
 --[[
 	MapBootstrap.server.lua
 
-	Tier 1 map: Lobby (shop + upgrade stalls, teleport pad, safe — no
-	zombies) and Arena, per the Tier 1 checklist ("1 map... cover,
-	corridors, shop area"). The two are sealed off from each other — no
-	walkable path between them — since the teleport pad (see
-	WaveService) is the only way a match actually starts.
+	Tier 1 map: Lobby (portals + landmark, safe — no zombies) and Arena,
+	per the Tier 1 checklist. The two are sealed off from each other —
+	no walkable path between them — since the portals (see WaveService)
+	are the only way a match actually starts. Weapon buy/upgrade used to
+	be physical lobby stalls; those are gone because purchases are now
+	per-run and happen from the in-match U panel (see ShopService).
 
 	Both the lobby and the arena now load real provided assets instead
 	of placeholder blocky geometry, each via the same pattern: a synced-
@@ -15,7 +16,7 @@
 	half-built. The **lobby** uses the "Lobby" sub-model out of the
 	"Game Lobby" kit (see loadGameLobbyArena), synced in from
 	src/ServerStorage/MapAssets/Game_Lobby.rbxm; every functional lobby
-	fixture (spawn, shop/upgrade stalls, monument, teleport pad) is
+	fixture (spawn, monument, match portals) is
 	positioned relative to — and scaled to fit — whichever lobby
 	actually got built, rather than assuming a fixed size. The **arena**
 	uses the "L4D Subway Map" community asset (see loadSubwayMapArena),
@@ -29,9 +30,7 @@
 	server soft-restart without a full place reload).
 
 	Everything here is just static geometry + labels/ProximityPrompts.
-	Purchase logic lives in ShopService; match-start logic (the teleport
-	pad) lives in WaveService — both find these parts by name (Stall_*)
-	and wire up Triggered handlers.
+	Match-start logic (the portals) lives in WaveService.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -314,28 +313,13 @@ monumentTop.Parent = map
 addPointLight(monumentTop, Color3.fromRGB(90, 220, 130), 3, 24)
 addLabel(monumentPillar, "ZOMBIE RUSH")
 
-local weaponStalls = {
-	{ Name = "Stall_BuyAssaultRifle", Position = lobbyPoint(-18, 2.5, -20), Title = "Assault Rifle", Price = 150 },
-	{ Name = "Stall_BuyShotgun", Position = lobbyPoint(-18, 2.5, -8), Title = "Shotgun", Price = 300 },
-}
-for _, data in weaponStalls do
-	local podium = makePart(data.Name, Vector3.new(4, 3, 4), data.Position, Color3.fromRGB(60, 90, 140))
-	addLabel(podium, data.Title, data.Price .. " coins")
-	addPrompt(podium, "Buy", "Buy", data.Title .. " — " .. data.Price .. " coins")
-	addPointLight(podium, Color3.fromRGB(100, 150, 255), 2, 14)
-end
-
-local upgradeStalls = {
-	{ Name = "Stall_UpgradePistol", Position = lobbyPoint(18, 2.5, -20), Title = "Pistol Upgrade" },
-	{ Name = "Stall_UpgradeAssaultRifle", Position = lobbyPoint(18, 2.5, -8), Title = "AR Upgrade" },
-	{ Name = "Stall_UpgradeShotgun", Position = lobbyPoint(18, 2.5, 4), Title = "Shotgun Upgrade" },
-}
-for _, data in upgradeStalls do
-	local podium = makePart(data.Name, Vector3.new(4, 3, 4), data.Position, Color3.fromRGB(140, 110, 40))
-	addLabel(podium, data.Title, "Upgrade")
-	addPrompt(podium, "Upgrade", "Upgrade", data.Title)
-	addPointLight(podium, Color3.fromRGB(255, 200, 100), 2, 14)
-end
+-- One reminder instead of the old five buy/upgrade stalls. Purchases
+-- reset every run and happen from the U panel mid-match, so a lobby
+-- shop would be selling things that vanish the moment the portal
+-- countdown finishes. The sign just tells people where the shop went.
+local armorySign = makePart("ArmorySign", Vector3.new(5, 3, 1.2), lobbyPoint(0, 2.5, -20), Color3.fromRGB(50, 70, 90))
+addLabel(armorySign, "ARMORY", "Press U during a match")
+addPointLight(armorySign, Color3.fromRGB(100, 160, 220), 2, 14)
 
 -- Four match portals. Interacting with one opens a party-size picker
 -- (1-4 players); the host's choice decides whether the match starts on a

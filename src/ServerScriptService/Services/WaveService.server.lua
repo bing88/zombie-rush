@@ -27,6 +27,8 @@ local WaveModifiers = require(ReplicatedStorage.Shared.WaveModifiers)
 local EliteConfig = require(ReplicatedStorage.Shared.EliteConfig)
 local ZombieService = require(script.Parent.ZombieService)
 local DataService = require(script.Parent.DataService)
+local ShopService = require(script.Parent.ShopService)
+local MetaConfig = require(ReplicatedStorage.Shared.MetaConfig)
 local MatchState = require(script.Parent.MatchState)
 local DownedState = require(script.Parent.DownedState)
 local StatsService = require(script.Parent.StatsService)
@@ -39,7 +41,6 @@ local LeaderboardService = require(script.Parent.LeaderboardService)
 local WaveStateChanged = Remotes.WaveStateChanged
 local GameStateChanged = Remotes.GameStateChanged
 local BossHPChanged = Remotes.BossHPChanged
-local CoinsUpdated = Remotes.CoinsUpdated
 local ShowStartConfirmation = Remotes.ShowStartConfirmation
 local ConfirmStartGame = Remotes.ConfirmStartGame
 local WaveModifierAnnounced = Remotes.WaveModifierAnnounced
@@ -58,6 +59,7 @@ RunUpgradeService.Init()
 -- ComboService.Init starts its decay heartbeat; UltimateService.Init
 -- arms the ActivateUltimate listener and its expiry heartbeat.
 ComboService.Init()
+ShopService.Init() -- arms PurchaseWeapon/Upgrade remotes + run-loadout wipe on leave
 UltimateService.Init()
 
 local DEFAULT_ARENA_SPAWN = Vector3.new(0, 5, 105)
@@ -218,10 +220,7 @@ ZombieService.ZombieDied:Connect(function(_statsName: string, killerPlayer: Play
 				* RunUpgradeService.GetScale(killerPlayer, "CoinGain")
 			+ 0.5
 	)
-	local newBalance = DataService.AddCoins(killerPlayer, finalReward)
-	if newBalance then
-		CoinsUpdated:FireClient(killerPlayer, newBalance)
-	end
+	ShopService.AwardCash(killerPlayer, finalReward)
 	StatsService.RecordKill(killerPlayer)
 	StatsService.RecordCoinsEarned(killerPlayer, finalReward)
 
@@ -416,10 +415,7 @@ local function runBossWave(waveNumber: number)
 			local bonus = math.floor(
 				WaveConfig.BossClearBonusCoins * PerkService.GetMultiplier(player, "CoinDoubler") + 0.5
 			)
-			local newBalance = DataService.AddCoins(player, bonus)
-			if newBalance then
-				CoinsUpdated:FireClient(player, newBalance)
-			end
+			ShopService.AwardCash(player, bonus)
 			StatsService.RecordCoinsEarned(player, bonus)
 		end
 	end
@@ -465,10 +461,14 @@ end
 	wave number, since there's no fixed total to count toward; the client
 	renders "Wave N" from it (see UIController.SetWave).
 ]]
-local function runWaves()
+local function runWaves(): number
 	teleportAllPlayersTo(getArenaSpawnPosition())
 
 	local waveNumber = 0
+	-- Waves actually finished, not the one they died on. Meta XP is
+	-- awarded from this (see MetaConfig.GetRunXP): a wipe during wave 7
+	-- scores 6, because they never cleared 7.
+	local lastClearedWave = 0
 	while not matchDefeated do
 		waveNumber += 1
 
@@ -496,9 +496,10 @@ local function runWaves()
 		end
 
 		if matchDefeated then
-			return
+			return lastClearedWave
 		end
 
+		lastClearedWave = waveNumber
 		respawnDeadParticipants()
 
 		MatchState.Set("Break")
@@ -531,6 +532,8 @@ local function runWaves()
 
 		RunUpgradeService.CloseDrafts()
 	end
+
+	return lastClearedWave
 end
 
 
@@ -554,10 +557,27 @@ end
 	silently killing that whole background coroutine (no more lobby
 	phases, no more matches, for the rest of the server's life).
 ]]
-local function runDefeat()
+local function runDefeat(wavesCleared: number)
 	MatchState.Set("Defeat")
 	GameStateChanged:FireAllClients("Defeat", WaveConfig.EndOfRunSeconds)
 	broadcastScoreboard()
+
+	--[[
+		Meta XP is the only thing that survives the run. Awarded here
+		from waves actually cleared (not the one they wiped on) so a
+		wave-7 death doesn't pretend they finished wave 7. Shop and
+		loadout reset AFTER the award so leftover cash can't be spent
+		during the scoreboard, and so the lobby they return to is
+		pistol-only again.
+	]]
+	for _, player in getActiveParticipants() do
+		local xp = MetaConfig.GetRunXP(wavesCleared)
+		if xp > 0 then
+			DataService.AddMetaXP(player, xp)
+		end
+		ShopService.SyncMetaProgress(player, xp)
+	end
+	ShopService.ResetAllRuns()
 
 	for secondsLeft = WaveConfig.EndOfRunSeconds, 1, -1 do
 		GameStateChanged:FireAllClients("Defeat", secondsLeft)
@@ -887,11 +907,15 @@ task.spawn(function()
 			-- charge is kept across DEATH but not across matches).
 			ComboService.ResetAll()
 			UltimateService.ResetAll()
+			-- Weapons, upgrades and cash are per-run too: everyone
+			-- walks into wave 1 with the starting Pistol and empty
+			-- pockets, regardless of what they bought last time.
+			ShopService.ResetAllRuns()
 			-- Endless: runWaves only returns once the team is wiped (or
 			-- everyone left), so defeat is the single exit path — there's
 			-- no victory branch anymore.
-			runWaves()
-			runDefeat()
+			local wavesCleared = runWaves()
+			runDefeat(wavesCleared)
 			matchDefeated = false
 		end
 	end

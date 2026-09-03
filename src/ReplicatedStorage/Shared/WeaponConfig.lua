@@ -1,8 +1,9 @@
 --[[
 	WeaponConfig.lua
-	Tier 1: three weapons. Pistol is the free starter every player owns;
-	AssaultRifle and Shotgun are unlocked from the shop in the lobby (see
-	ShopService + the Stall_Buy* parts in MapBootstrap).
+	Tier 1: three weapons. Pistol is the free starter every run begins
+	with; AssaultRifle and Shotgun are bought mid-match from the U panel
+	with THIS RUN's cash (see ShopService + RunLoadoutService). Nothing
+	here persists — a new match always starts pistol-only at level 0.
 
 	Kept data-driven per the Tier 0 comment this replaces — Tier 1 only
 	needed more entries here, not an architecture change.
@@ -102,7 +103,7 @@ local WeaponConfig: { [string]: WeaponStats } = {
 		Spread = 2,
 		HeadshotMultiplier = 2,
 		Pellets = 1,
-		Price = 150,
+		Price = 120,
 		IconId = "rbxassetid://139869397002241", -- paste rbxassetid://… from AssaultRifle.png
 		-- From the same .rbxm's "rifle_animation" dummy's AnimSaves (its
 		-- Idle/Fire/Equip/Reload are lowercase-named there).

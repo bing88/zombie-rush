@@ -10,6 +10,12 @@
 	per-level delta) — e.g. Pistol level 3's MagazineBonus of 6 means
 	"base + 6" at level 3, not "+6 on top of level 2's bonus".
 
+	These levels are RUN-SCOPED (see RunLoadoutService), not a
+	persistent account track. The costs are tuned so a first-run player
+	hits a real fork around wave 3-4: spend on pistol levels, or save
+	for the rifle. Late levels stay expensive so maxing every gun in one
+	run is a deep-run goal, not a wave-10 default.
+
 	Nothing client-side is trusted with any of this; WeaponService reads
 	these server-side only.
 ]]
@@ -31,7 +37,7 @@ UpgradeConfig.MaxLevel = 10
 local weapons: { [string]: WeaponUpgrades } = {
 	Pistol = {
 		Levels = {
-			[1] = { Cost = 80, DamageMultiplier = 1.15, MagazineBonus = 2 },
+			[1] = { Cost = 50, DamageMultiplier = 1.15, MagazineBonus = 2 },
 			[2] = { Cost = 150, DamageMultiplier = 1.3, MagazineBonus = 4 },
 			[3] = { Cost = 240, DamageMultiplier = 1.5, MagazineBonus = 6 },
 			[4] = { Cost = 350, DamageMultiplier = 1.7, MagazineBonus = 8 },

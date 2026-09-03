@@ -10,7 +10,7 @@
 	N weapons with independent per-weapon ammo/reload state, weapon
 	switching via Roblox's default Backpack hotbar (Tool.Equipped is what
 	we listen to — no custom "switch weapon" remote needed), shotgun-style
-	multi-pellet spread, and damage upgrades read from DataService.
+	multi-pellet spread, and damage upgrades read from RunLoadoutService.
 ]]
 
 local Players = game:GetService("Players")
@@ -26,7 +26,7 @@ local PerkService = require(script.Parent.PerkService)
 local RunUpgradeService = require(script.Parent.RunUpgradeService)
 local ComboService = require(script.Parent.ComboService)
 local UltimateService = require(script.Parent.UltimateService)
-local DataService = require(script.Parent.DataService)
+local RunLoadoutService = require(script.Parent.RunLoadoutService)
 local InternalSignals = require(script.Parent.InternalSignals)
 local DownedState = require(script.Parent.DownedState)
 local StatsService = require(script.Parent.StatsService)
@@ -73,7 +73,7 @@ local function getDamageMultiplier(player: Player, weaponName: string): number
 	-- independent, so all three have to be multiplied together
 	-- regardless of which ones happen to be neutral.
 	local upgradeMultiplier = 1
-	local level = DataService.GetWeaponLevel(player, weaponName)
+	local level = RunLoadoutService.GetWeaponLevel(player, weaponName)
 	if level > 0 then
 		local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
 		local levelData = weaponUpgrades and weaponUpgrades.Levels[level]
@@ -112,7 +112,7 @@ local function getMagazineCapacity(player: Player, weaponName: string): number
 	local magScale = PerkService.GetMultiplier(player, "BigMag") * RunUpgradeService.GetScale(player, "Magazine")
 
 	local bonus = 0
-	local level = DataService.GetWeaponLevel(player, weaponName)
+	local level = RunLoadoutService.GetWeaponLevel(player, weaponName)
 	if level > 0 then
 		local weaponUpgrades = UpgradeConfig.Weapons[weaponName]
 		local levelData = weaponUpgrades and weaponUpgrades.Levels[level]

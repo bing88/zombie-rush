@@ -1,11 +1,9 @@
 --[[
 	UIController.lua (ModuleScript)
 
-	Tier 1 UI stays "basic" per the reconciled plan (no fancy shop menu —
-	that's physical ProximityPrompt stalls, see ShopService) but adds
-	what the checklist calls for: wave counter, coin counter, and a boss
-	HP bar, plus a small toast for shop feedback and a center banner for
-	match state (waiting/starting/boss incoming/victory).
+	Combat HUD. The in-match shop lives in ShopController (U panel),
+	not here — this module only toasts ShopResult and shows the coin
+	counter that ShopService.AwardCash drives.
 ]]
 
 local TweenService = game:GetService("TweenService")

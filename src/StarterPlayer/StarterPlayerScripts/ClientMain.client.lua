@@ -177,10 +177,18 @@ end)
 
 Remotes.CoinsUpdated.OnClientEvent:Connect(function(amount: number)
 	UIController.SetCoins(amount)
+	ShopController.SetCash(amount)
 end)
 
 Remotes.WaveStateChanged.OnClientEvent:Connect(function(waveNumber: number, totalWaves: number, state: string)
 	UIController.SetWave(waveNumber, totalWaves, state)
+	-- Break is the shopping window; InProgress/Boss keep the shop open
+	-- but stop the tab pulse so it doesn't flash through a fight.
+	if state == "Break" then
+		ShopController.SetMatchState(true, true)
+	elseif state == "InProgress" or state == "Boss" then
+		ShopController.SetMatchState(true, false)
+	end
 end)
 
 Remotes.WaveModifierAnnounced.OnClientEvent:Connect(function(name: string, description: string)
@@ -195,9 +203,17 @@ Remotes.ShopResult.OnClientEvent:Connect(function(success: boolean, message: str
 	UIController.ShowToast(message, success)
 end)
 
-Remotes.WeaponsOwned.OnClientEvent:Connect(function(owned: { [string]: boolean }, levels: { [string]: number })
-	ShopController.SetOwnedWeapons(owned, levels)
+Remotes.WeaponsOwned.OnClientEvent:Connect(function(
+	owned: { [string]: boolean },
+	levels: { [string]: number },
+	available: { [string]: boolean }?
+)
+	ShopController.SetOwnedWeapons(owned, levels, available)
 	UIController.SetOwnedWeapons(owned)
+end)
+
+Remotes.MetaProgressChanged.OnClientEvent:Connect(function(state)
+	ShopController.SetMetaProgress(state)
 end)
 
 Remotes.PartyStatusChanged.OnClientEvent:Connect(function(inParty: boolean, joined: number, target: number)
@@ -233,10 +249,13 @@ Remotes.GameStateChanged.OnClientEvent:Connect(function(state: string, secondsLe
 		UIController.SetGameStateBanner("Waiting for players...")
 		UIController.SetWaveModifier("Normal", "")
 		UIController.HideScoreboard()
+		ShopController.SetMatchState(false, false)
 	elseif state == "Starting" then
 		UIController.SetGameStateBanner(("Match starts in %ds"):format(secondsLeft))
+		ShopController.SetMatchState(false, false)
 	elseif state == "WaveIncoming" then
 		UIController.SetGameStateBanner(("Wave %d incoming in %ds"):format(nextWaveNumber or 0, secondsLeft))
+		ShopController.SetMatchState(true, true)
 	elseif state == "WaveStart" then
 		-- secondsLeft doubles as the wave number for this event.
 		UIController.FlashBanner(("WAVE %d"):format(secondsLeft), 2.5)
@@ -245,14 +264,18 @@ Remotes.GameStateChanged.OnClientEvent:Connect(function(state: string, secondsLe
 		-- "you left the party" status here — clear the waiting panel off
 		-- the match starting instead, or it would linger all run.
 		UIController.SetPartyStatus(false, 0, 0)
+		ShopController.SetMatchState(true, false)
 	elseif state == "BossIncoming" then
 		UIController.SetGameStateBanner(("BOSS INCOMING — %ds"):format(secondsLeft))
+		ShopController.SetMatchState(true, false)
 	elseif state == "BossStart" then
 		UIController.FlashBanner("BOSS FIGHT!", 2.5)
+		ShopController.SetMatchState(true, false)
 	elseif state == "Defeat" then
 		-- Endless mode has no victory state — a run only ends by being
 		-- wiped out, and the scoreboard reports how far you got.
 		UIController.SetGameStateBanner(("Wiped out... returning to lobby in %ds"):format(secondsLeft))
+		ShopController.SetMatchState(false, false)
 	else
 		UIController.SetGameStateBanner("")
 	end

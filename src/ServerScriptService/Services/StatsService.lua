@@ -19,7 +19,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
-local DataService = require(script.Parent.DataService)
+local ShopService = require(script.Parent.ShopService)
 
 local StatsService = {}
 
@@ -95,10 +95,7 @@ function StatsService.RecordHeadshotKill(player: Player)
 
 	if playerStats.HeadshotKills >= OBJECTIVE_TARGET then
 		playerStats.ObjectiveCompleted = true
-		local newBalance = DataService.AddCoins(player, OBJECTIVE_REWARD_COINS)
-		if newBalance then
-			Remotes.CoinsUpdated:FireClient(player, newBalance)
-		end
+		ShopService.AwardCash(player, OBJECTIVE_REWARD_COINS)
 		StatsService.RecordCoinsEarned(player, OBJECTIVE_REWARD_COINS)
 		Remotes.ObjectiveUpdated:FireClient(player, playerStats.HeadshotKills, OBJECTIVE_TARGET, true)
 	else

@@ -39,6 +39,8 @@ local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local WeaponModelFactory = require(ReplicatedStorage.Shared.WeaponModelFactory)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local DataService = require(script.Parent.DataService)
+local RunLoadoutService = require(script.Parent.RunLoadoutService)
+local ShopService = require(script.Parent.ShopService)
 local DownedState = require(script.Parent.DownedState)
 local PerkService = require(script.Parent.PerkService)
 local RunUpgradeService = require(script.Parent.RunUpgradeService)
@@ -47,8 +49,6 @@ local MatchState = require(script.Parent.MatchState)
 
 local PlayerHPChanged = Remotes.PlayerHPChanged
 local PlayerDied = Remotes.PlayerDied
-local CoinsUpdated = Remotes.CoinsUpdated
-local WeaponsOwned = Remotes.WeaponsOwned
 local PlayerDownedChanged = Remotes.PlayerDownedChanged
 
 local RESPAWN_DELAY_SECONDS = 3
@@ -66,7 +66,11 @@ local function ensureProfileLoaded(player: Player)
 	local profile = DataService.Get(player)
 	if not profile then
 		profile = DataService.Load(player)
-		CoinsUpdated:FireClient(player, profile.Coins)
+		-- Cash is run-scoped now (see RunLoadoutService). The persistent
+		-- profile only holds MetaXP; showing a leftover banked-coin
+		-- number here would be a lie the moment the next match resets it.
+		ShopService.SyncPlayer(player)
+		ShopService.SyncMetaProgress(player)
 	end
 	return profile
 end
@@ -130,13 +134,7 @@ local function applyRunUpgradeStats(player: Player, humanoid: Humanoid)
 end
 
 local function syncOwnedWeapons(player: Player)
-	local owned = {}
-	local levels = {}
-	for _, weaponName in WeaponConfig.Order do
-		owned[weaponName] = DataService.IsWeaponUnlocked(player, weaponName)
-		levels[weaponName] = DataService.GetWeaponLevel(player, weaponName)
-	end
-	WeaponsOwned:FireClient(player, owned, levels)
+	ShopService.SyncPlayer(player)
 end
 
 --[[
@@ -154,9 +152,9 @@ local function giveOwnedWeapons(player: Player, character: Model)
 	end
 
 	for _, weaponName in WeaponConfig.Order do
-		if DataService.IsWeaponUnlocked(player, weaponName) then
+		if RunLoadoutService.IsWeaponUnlocked(player, weaponName) then
 			local tool = WeaponModelFactory.CreateTool(weaponName)
-			if DataService.GetWeaponLevel(player, weaponName) >= UpgradeConfig.MaxLevel then
+			if RunLoadoutService.GetWeaponLevel(player, weaponName) >= UpgradeConfig.MaxLevel then
 				WeaponModelFactory.ApplyPrestigeEffect(tool)
 			end
 			tool.Parent = backpack

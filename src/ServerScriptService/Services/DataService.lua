@@ -1,13 +1,24 @@
 --[[
 	DataService.lua (ModuleScript)
 
-	Tier 1's DataStore persistence layer — coins + unlocked weapons +
-	weapon upgrade levels + whether the secret stash has been claimed
-	(per the reconciled MVP doc: "coins + unlocked weapons only — no full
-	player profile yet"). Everything else (PlayerService, WeaponService,
-	ShopService, WaveService) reads/writes through this module instead of
-	touching DataStoreService directly, so there's exactly one place that
-	handles retries/failures/caching.
+	The DataStore persistence layer. Everything that survives a run lives
+	here; everything that doesn't lives in RunLoadoutService.
+
+	THIS USED TO STORE COINS, UNLOCKED WEAPONS AND UPGRADE LEVELS, and
+	no longer does. Persisting those meant power came from a savings
+	account rather than from the run — a player with a few runs banked
+	bought every weapon and maxed its upgrades in wave 1 and never met
+	the difficulty curve again. They're now run-scoped (RunLoadoutService)
+	and the only thing persisted in their place is MetaXP, which unlocks
+	which weapons may APPEAR in the run shop and never grants power
+	itself. See MetaConfig for why that distinction is the whole design.
+
+	Old saves still contain the retired Coins/UnlockedWeapons/
+	WeaponUpgrades keys. They're deliberately left alone rather than
+	migrated away: nothing reads them, they cost a few bytes, and
+	stripping them would mean a destructive write over every existing
+	profile to buy nothing. A returning player's banked coins simply stop
+	being meaningful, which is the intent.
 
 	Studio note: without "Enable Studio Access to API Services" turned on,
 	GetAsync/SetAsync will error — this is caught and the module silently
@@ -27,9 +38,12 @@ local AUTOSAVE_INTERVAL_SECONDS = 90
 
 local function defaultProfile()
 	return {
-		Coins = 0,
-		UnlockedWeapons = { Pistol = true },
-		WeaponUpgrades = {},
+		-- Total lifetime meta XP. The level is DERIVED from this
+		-- (MetaConfig.GetLevel) rather than stored alongside it, so the
+		-- two can never disagree and retuning the level curve
+		-- automatically re-grades every existing player instead of
+		-- needing a migration.
+		MetaXP = 0,
 	}
 end
 
@@ -103,46 +117,31 @@ function DataService.Release(player: Player)
 	profiles[player] = nil
 end
 
-function DataService.AddCoins(player: Player, amount: number): number?
+function DataService.GetMetaXP(player: Player): number
 	local profile = profiles[player]
 	if not profile then
+		return 0
+	end
+	-- Coerced rather than trusted: a profile written before MetaXP
+	-- existed backfills it (see Load), but a corrupted save could still
+	-- hand back a non-number, and every caller treats this as arithmetic.
+	local xp = profile.MetaXP
+	return typeof(xp) == "number" and xp or 0
+end
+
+--[[
+	Adds run-end XP and returns the new total, or nil if the player's
+	profile isn't loaded (they left mid-run). Never subtracts: there is
+	no mechanic that takes meta progress away, and a negative amount here
+	would be a bug rather than a feature.
+]]
+function DataService.AddMetaXP(player: Player, amount: number): number?
+	local profile = profiles[player]
+	if not profile or amount <= 0 then
 		return nil
 	end
-	profile.Coins += amount
-	return profile.Coins
-end
-
-function DataService.SpendCoins(player: Player, amount: number): boolean
-	local profile = profiles[player]
-	if not profile or profile.Coins < amount then
-		return false
-	end
-	profile.Coins -= amount
-	return true
-end
-
-function DataService.IsWeaponUnlocked(player: Player, weaponName: string): boolean
-	local profile = profiles[player]
-	return profile ~= nil and profile.UnlockedWeapons[weaponName] == true
-end
-
-function DataService.UnlockWeapon(player: Player, weaponName: string)
-	local profile = profiles[player]
-	if profile then
-		profile.UnlockedWeapons[weaponName] = true
-	end
-end
-
-function DataService.GetWeaponLevel(player: Player, weaponName: string): number
-	local profile = profiles[player]
-	return (profile and profile.WeaponUpgrades[weaponName]) or 0
-end
-
-function DataService.SetWeaponLevel(player: Player, weaponName: string, level: number)
-	local profile = profiles[player]
-	if profile then
-		profile.WeaponUpgrades[weaponName] = level
-	end
+	profile.MetaXP = DataService.GetMetaXP(player) + amount
+	return profile.MetaXP
 end
 
 task.spawn(function()
