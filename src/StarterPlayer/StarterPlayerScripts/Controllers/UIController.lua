@@ -19,6 +19,11 @@ local UIController = {}
 local player = Players.LocalPlayer
 
 local screenGui: ScreenGui
+-- Separate from screenGui on purpose: crosshair/hitmarker must sit at the
+-- true camera/viewport center (where LookVector points). screenGui uses
+-- IgnoreGuiInset=false + UIScale, which shifts "center" downward on
+-- mobile (large top inset) and was making shots land above the reticle.
+local aimOverlayGui: ScreenGui
 local hpLabel: TextLabel
 local hpBarFill: Frame
 local ammoContainer: Frame
@@ -107,6 +112,12 @@ local HITMARKER_HEADSHOT_SIZE = 32
 	cross visually reads as overlapping/part of the weapon model in
 	over-the-shoulder framing; four separate gapped segments read more
 	clearly as a discrete UI element.
+
+	Parent MUST be a ScreenGui with IgnoreGuiInset=true (and no UIScale):
+	shots fire along camera.LookVector = optical viewport center. A HUD
+	gui that respects the top-bar inset centers below that point — fine
+	on desktop (small inset), wrong on phones (large inset) where hits
+	land visibly above the reticle.
 ]]
 local function buildCrosshair(parent: ScreenGui)
 	local crosshair = Instance.new("Frame")
@@ -172,12 +183,24 @@ local function buildUI()
 	uiScale.Scale = 0.7
 	uiScale.Parent = screenGui
 
-	buildCrosshair(screenGui)
+	-- Aim overlay: full viewport, unscaled, no safe-area inset. Shots
+	-- travel along camera.LookVector (optical center); any ScreenInsets
+	-- other than None would still shift the reticle on notched phones.
+	aimOverlayGui = Instance.new("ScreenGui")
+	aimOverlayGui.Name = "AimOverlay"
+	aimOverlayGui.ResetOnSpawn = false
+	aimOverlayGui.IgnoreGuiInset = true
+	aimOverlayGui.ScreenInsets = Enum.ScreenInsets.None
+	aimOverlayGui.DisplayOrder = 10 -- above the combat HUD
+	aimOverlayGui.Parent = player:WaitForChild("PlayerGui")
+
+	buildCrosshair(aimOverlayGui)
 
 	-- Hitmarker: small X that flashes over the crosshair on a confirmed
 	-- hit — white for a body shot, orange-red and larger for a headshot,
 	-- gold for a kill (see ShowHitmarker). Separate from the crosshair
-	-- itself so the two can animate independently.
+	-- itself so the two can animate independently. Same overlay gui so
+	-- it shares the optical center with the reticle.
 	hitmarker = Instance.new("Frame")
 	hitmarker.Name = "Hitmarker"
 	hitmarker.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -185,7 +208,7 @@ local function buildUI()
 	hitmarker.Size = UDim2.fromOffset(HITMARKER_BASE_SIZE, HITMARKER_BASE_SIZE)
 	hitmarker.BackgroundTransparency = 1
 	hitmarker.Visible = false
-	hitmarker.Parent = screenGui
+	hitmarker.Parent = aimOverlayGui
 
 	local function hitmarkerTick(rotation: number)
 		local tick = Instance.new("Frame")
