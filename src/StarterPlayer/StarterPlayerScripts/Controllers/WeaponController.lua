@@ -320,18 +320,27 @@ end
 	hotbar (number keys / clicking a slot) updates local prediction state
 	without any custom input handling.
 ]]
+local function onToolEquipped(toolName: string)
+	currentWeapon = toolName
+	ensureAmmo(currentWeapon)
+	updateAmmoUI()
+	if weaponEquippedCallback then
+		weaponEquippedCallback(currentWeapon)
+	end
+end
+
 local function trackTool(tool: Instance)
 	if not tool:IsA("Tool") or not statsFor(tool.Name) then
 		return
 	end
 	tool.Equipped:Connect(function()
-		currentWeapon = tool.Name
-		ensureAmmo(currentWeapon)
-		updateAmmoUI()
-		if weaponEquippedCallback then
-			weaponEquippedCallback(currentWeapon)
-		end
+		onToolEquipped(tool.Name)
 	end)
+	-- Equipped already fired before we connected (common on first spawn /
+	-- late Init) — still sync hotbar highlight + ammo.
+	if player.Character and tool.Parent == player.Character then
+		onToolEquipped(tool.Name)
+	end
 end
 
 local function watchContainer(container: Instance)
@@ -493,8 +502,13 @@ end
 -- (hotbar click, number key, or Roblox's own equip handling) — lets
 -- UIController keep its custom hotbar's highlight ring in sync without
 -- duplicating this controller's Backpack/Character tracking.
+-- Also invokes once immediately so late subscribers catch the weapon
+-- that was already equipped during Init.
 function WeaponController.OnWeaponEquipped(callback: (string) -> ())
 	weaponEquippedCallback = callback
+	if currentWeapon then
+		callback(currentWeapon)
+	end
 end
 
 return WeaponController

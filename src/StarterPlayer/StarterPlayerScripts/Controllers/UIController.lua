@@ -654,12 +654,6 @@ local function buildUI()
 		slotCorner.CornerRadius = UDim.new(0, 10)
 		slotCorner.Parent = slot
 
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 2
-		stroke.Color = Color3.fromRGB(255, 210, 80)
-		stroke.Transparency = 1 -- only visible on the currently-equipped slot, see SetEquippedWeapon
-		stroke.Parent = slot
-
 		local keyBadge = Instance.new("TextLabel")
 		keyBadge.Name = "KeyBadge"
 		keyBadge.Size = UDim2.fromOffset(16, 16)
@@ -704,12 +698,34 @@ local function buildUI()
 		nameLabel.ZIndex = 2
 		nameLabel.Parent = slot
 
+		-- Selection ring sits ABOVE the full-bleed icon. A UIStroke on the
+		-- slot itself was painted under the opaque PNG and looked like no
+		-- border at all (same failure mode as the Ult button).
+		local selectedBorder = Instance.new("Frame")
+		selectedBorder.Name = "SelectedBorder"
+		selectedBorder.BackgroundTransparency = 1
+		selectedBorder.Size = UDim2.fromScale(1, 1)
+		selectedBorder.ZIndex = 6
+		selectedBorder.Parent = slot
+		local selectedBorderCorner = Instance.new("UICorner")
+		selectedBorderCorner.CornerRadius = UDim.new(0, 10)
+		selectedBorderCorner.Parent = selectedBorder
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 3
+		stroke.Color = Color3.fromRGB(255, 210, 80)
+		stroke.Transparency = 1 -- only visible on the equipped slot, see SetEquippedWeapon
+		stroke.Parent = selectedBorder
+
 		slot.Activated:Connect(function()
 			UIController.EquipWeaponByName(weaponName)
 		end)
 
 		weaponHotbarSlots[weaponName] = { Button = slot, Stroke = stroke }
 	end
+
+	-- Starter is equipped before ClientMain wires OnWeaponEquipped, so paint
+	-- its ring now; later equips refresh via SetEquippedWeapon.
+	UIController.SetEquippedWeapon(WeaponConfig.StartingWeapon)
 
 	-- Death overlay (hidden by default)
 	deathLabel = Instance.new("TextLabel")
