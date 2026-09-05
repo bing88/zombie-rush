@@ -864,12 +864,16 @@ local REQUIRED_HEADROOM = 6 -- a standable spot needs at least this much clear s
 
 --[[
 	Raycasts down at one X/Z column and returns a standable position, or
-	nil. Rays start only PROBE_HEIGHT_ABOVE_FLOOR above the known
-	play-level floor, NOT above the whole model — on an enclosed map like
+	nil. Rays start only PROBE_HEIGHT_ABOVE_FLOOR above the given floor
+	reference Y, NOT above the whole model — on an enclosed map like
 	the subway station, starting above the model means the first downward
 	hit is its ROOF. Also rejects spots without headroom (under a train,
 	stairs, a pipe), which are standable in the raycast sense but
 	instantly trap whatever spawns there.
+
+	floorY is the reference band for THIS probe (ground floor, mezzanine,
+	…), not necessarily the map's absolute bottom — see
+	discoverFloorProbeYs + buildGeometryAwareSpawnPositions.
 ]]
 local function probeFloorAt(geometryModel: Model, x: number, z: number, floorY: number): Vector3?
 	local raycastParams = RaycastParams.new()
@@ -888,6 +892,73 @@ local function probeFloorAt(geometryModel: Model, x: number, z: number, floorY: 
 		return nil
 	end
 	return standPosition
+end
+
+--[[
+	Ground floor (baseFloorY) plus any upper decks implied by Subway
+	Stairs / SubwayRamp tops. Spawn probing used to only sample the
+	ground band, so the station's second floor never got ZombieSpawns
+	even after ramps connected the levels.
+]]
+local function discoverFloorProbeYs(geometryModel: Model, baseFloorY: number): { number }
+	local levels = { baseFloorY }
+
+	local function addLevel(y: number)
+		-- Ignore near-ground noise and anything high enough to be roof.
+		if y < baseFloorY + 5 or y > baseFloorY + 55 then
+			return
+		end
+		for _, existing in levels do
+			if math.abs(existing - y) < 4 then
+				return
+			end
+		end
+		table.insert(levels, y)
+	end
+
+	local function maxPartTopY(root: Instance): number?
+		local topY = -math.huge
+		for _, descendant in root:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				topY = math.max(topY, descendant.Position.Y + descendant.Size.Y / 2)
+			end
+		end
+		if topY == -math.huge then
+			return nil
+		end
+		return topY
+	end
+
+	for _, descendant in geometryModel:GetDescendants() do
+		if descendant:IsA("Model") and descendant.Name == "Subway Stairs" then
+			local topY = maxPartTopY(descendant)
+			if topY then
+				addLevel(topY)
+			end
+		elseif descendant:IsA("BasePart") and descendant.Name == "SubwayRamp" then
+			-- Highest corner of the ramp slab ≈ upper landing height.
+			local cf = descendant.CFrame
+			local half = descendant.Size * 0.5
+			local topY = -math.huge
+			for _, sx in { -1, 1 } do
+				for _, sy in { -1, 1 } do
+					for _, sz in { -1, 1 } do
+						local world = cf * Vector3.new(sx * half.X, sy * half.Y, sz * half.Z)
+						topY = math.max(topY, world.Y)
+					end
+				end
+			end
+			addLevel(topY)
+		end
+	end
+
+	-- One typical flight if the map has no tagged stairs/ramps to read.
+	if #levels == 1 then
+		addLevel(baseFloorY + 14)
+	end
+
+	table.sort(levels)
+	return levels
 end
 
 --[[
@@ -988,16 +1059,33 @@ local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCent
 	local minX, maxX = bottomCenter.X - size.X / 2 + EDGE_MARGIN, bottomCenter.X + size.X / 2 - EDGE_MARGIN
 	local minZ, maxZ = bottomCenter.Z - size.Z / 2 + EDGE_MARGIN, bottomCenter.Z + size.Z / 2 - EDGE_MARGIN
 
+	local floorProbeYs = discoverFloorProbeYs(geometryModel, bottomCenter.Y)
+	do
+		local labels = {}
+		for _, y in floorProbeYs do
+			table.insert(labels, string.format("%.1f", y))
+		end
+		print(("MapBootstrap: probing %d floor band(s) for zombie spawns (Y=%s)"):format(#floorProbeYs, table.concat(labels, ", ")))
+	end
+
 	local candidates: { Vector3 } = {}
+	local seenKeys: { [string]: boolean } = {}
 	local x = minX
 	while x <= maxX do
 		local z = minZ
 		while z <= maxZ do
-			-- Shared with the player-spawn search above: same roof
-			-- avoidance, same headroom rejection.
-			local standPosition = probeFloorAt(geometryModel, x, z, bottomCenter.Y)
-			if standPosition then
-				table.insert(candidates, standPosition)
+			-- Probe every playable deck (ground + upper floors from stairs/
+			-- ramps). The old single-band probe only ever hit the bottom
+			-- platform, so the second floor stayed empty.
+			for _, floorY in floorProbeYs do
+				local standPosition = probeFloorAt(geometryModel, x, z, floorY)
+				if standPosition then
+					local key = string.format("%.0f:%.0f:%.0f", standPosition.X, standPosition.Y, standPosition.Z)
+					if not seenKeys[key] then
+						seenKeys[key] = true
+						table.insert(candidates, standPosition)
+					end
+				end
 			end
 			z += GRID_STEP
 		end
@@ -1042,52 +1130,111 @@ local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCent
 	end
 	candidates = reachable
 
-	-- Shuffle so picking desiredCount below doesn't systematically favor
-	-- whichever corner of the grid happened to be scanned first.
-	for i = #candidates, 2, -1 do
-		local j = math.random(1, i)
-		candidates[i], candidates[j] = candidates[j], candidates[i]
+	local upperCutoffY = bottomCenter.Y + 8
+	local groundCandidates: { Vector3 } = {}
+	local upperCandidates: { Vector3 } = {}
+	for _, candidate in candidates do
+		if candidate.Y >= upperCutoffY then
+			table.insert(upperCandidates, candidate)
+		else
+			table.insert(groundCandidates, candidate)
+		end
 	end
+
+	local function shuffleInPlace(list: { Vector3 })
+		for i = #list, 2, -1 do
+			local j = math.random(1, i)
+			list[i], list[j] = list[j], list[i]
+		end
+	end
+	shuffleInPlace(groundCandidates)
+	shuffleInPlace(upperCandidates)
+
+	-- Reserve roughly 40% of slots for upper decks when they exist, so a
+	-- denser ground-floor grid can't starve the second floor of spawns.
+	local upperQuota = if #upperCandidates > 0 then math.clamp(math.ceil(desiredCount * 0.4), 1, desiredCount - 1) else 0
+	upperQuota = math.min(upperQuota, #upperCandidates)
+	local groundQuota = desiredCount - upperQuota
 
 	-- Greedily pick points that are reasonably spread out from each
 	-- other, so spawns don't cluster even if the grid found a lot of
 	-- valid floor concentrated in one area (e.g. one big open platform).
 	local MIN_SEPARATION = 10
 	local selected: { Vector3 } = {}
-	for _, candidate in candidates do
-		if #selected >= desiredCount then
-			break
-		end
-		local tooClose = false
-		for _, existing in selected do
-			if (candidate - existing).Magnitude < MIN_SEPARATION then
-				tooClose = true
-				break
-			end
-		end
-		if not tooClose then
-			table.insert(selected, candidate)
-		end
-	end
 
-	-- If the spread-out pass alone didn't reach the desired count (e.g.
-	-- a small map with limited open floor), backfill with whatever
-	-- candidates are left, ignoring separation, rather than shipping
-	-- fewer spawn points than requested.
-	if #selected < desiredCount then
-		for _, candidate in candidates do
+	local function pickFrom(pool: { Vector3 }, quota: number)
+		for _, candidate in pool do
 			if #selected >= desiredCount then
 				break
 			end
-			local alreadyPicked = false
+			local fromThisPool = 0
 			for _, existing in selected do
-				if (candidate - existing).Magnitude < 0.1 then
-					alreadyPicked = true
+				local existingIsUpper = existing.Y >= upperCutoffY
+				local candidateIsUpper = candidate.Y >= upperCutoffY
+				if existingIsUpper == candidateIsUpper then
+					fromThisPool += 1
+				end
+			end
+			if fromThisPool >= quota then
+				continue
+			end
+			local tooClose = false
+			for _, existing in selected do
+				if (candidate - existing).Magnitude < MIN_SEPARATION then
+					tooClose = true
 					break
 				end
 			end
-			if not alreadyPicked then
+			if not tooClose then
 				table.insert(selected, candidate)
+			end
+		end
+	end
+
+	pickFrom(upperCandidates, upperQuota)
+	pickFrom(groundCandidates, groundQuota)
+
+	-- Backfill from whichever pool still has room, ignoring band quotas,
+	-- then ignore separation — same as before when a small map can't
+	-- fill the desired count cleanly.
+	if #selected < desiredCount then
+		local leftovers = {}
+		for _, candidate in upperCandidates do
+			table.insert(leftovers, candidate)
+		end
+		for _, candidate in groundCandidates do
+			table.insert(leftovers, candidate)
+		end
+		for _, candidate in leftovers do
+			if #selected >= desiredCount then
+				break
+			end
+			local tooClose = false
+			for _, existing in selected do
+				if (candidate - existing).Magnitude < MIN_SEPARATION then
+					tooClose = true
+					break
+				end
+			end
+			if not tooClose then
+				table.insert(selected, candidate)
+			end
+		end
+		if #selected < desiredCount then
+			for _, candidate in leftovers do
+				if #selected >= desiredCount then
+					break
+				end
+				local alreadyPicked = false
+				for _, existing in selected do
+					if (candidate - existing).Magnitude < 0.1 then
+						alreadyPicked = true
+						break
+					end
+				end
+				if not alreadyPicked then
+					table.insert(selected, candidate)
+				end
 			end
 		end
 	end
@@ -1099,7 +1246,7 @@ local zombieSpawns = Instance.new("Folder")
 zombieSpawns.Name = "ZombieSpawns"
 zombieSpawns.Parent = Workspace
 
-local SPAWN_COUNT = 10
+local SPAWN_COUNT = 14
 local spawnPositions: { Vector3 } = {}
 
 if subwayModel then
