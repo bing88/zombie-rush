@@ -10,9 +10,9 @@
 ]]
 
 local UIIconConfig = {
-	Reload = "rbxassetid://107062032602609", -- e.g. "rbxassetid://1234567890"
-	View = "rbxassetid://76878389142136",
-	Ult = "rbxassetid://122651360419569",
+	Reload = "rbxassetid://104401047645456", -- e.g. "rbxassetid://1234567890"
+	View = "rbxassetid://128458743356127",
+	Ult = "rbxassetid://86026462858693",
 	Fire = "rbxassetid://86911858279919",
 }
 

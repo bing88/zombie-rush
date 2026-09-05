@@ -183,7 +183,7 @@ end
 
 -- "Game Lobby" asset, provided directly as
 -- src/ServerStorage/MapAssets/Game_Lobby.rbxm, synced in by Rojo at
--- ServerStorage.MapAssets.Game_Lobby. Verified by inspecting the file
+-- ServerStorage.MapAssets.Game_Lobby. Verified by reading the file
 -- directly: it's a big multi-purpose kit — 2 police cars w/ lightbars +
 -- sirens, a gate, a road/tunnel test track, ~30 repeated barrier "Wall"
 -- pieces, its own scripted systems (steering, gate triggers, siren/
@@ -191,6 +191,10 @@ end
 -- is its own child Model specifically named "Lobby". Only that one
 -- child is used below; everything else in the kit (vehicles, gate,
 -- road, tunnel, and all of its scripts) is ignored entirely.
+--
+-- Currently off: the kit is heavy and Rojo-deserializes noisily; use
+-- the procedural lobby until we're ready to bring the real building back.
+local USE_GAME_LOBBY_ASSET = false
 local GAME_LOBBY_CHILD_NAME = "Lobby"
 
 local function getLocalGameLobbyTemplate(): Model?
@@ -262,7 +266,10 @@ local function loadGameLobbyArena(): (Model?, Vector3?, Vector3?)
 	return template, targetFloorCenter, boundingSize
 end
 
-local lobbyModel, lobbyWorldCenter, lobbyWorldSize = loadGameLobbyArena()
+local lobbyModel, lobbyWorldCenter, lobbyWorldSize
+if USE_GAME_LOBBY_ASSET then
+	lobbyModel, lobbyWorldCenter, lobbyWorldSize = loadGameLobbyArena()
+end
 if not lobbyModel then
 	lobbyWorldCenter, lobbyWorldSize = buildProceduralLobbyFallback()
 end

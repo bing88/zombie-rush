@@ -38,6 +38,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Remotes = require(ReplicatedStorage.Remotes)
 local UIIconConfig = require(ReplicatedStorage.Shared.UIIconConfig)
+local RunUpgradeConfig = require(ReplicatedStorage.Shared.RunUpgradeConfig)
 
 local RunUpgradeOffer = Remotes.RunUpgradeOffer
 local RunUpgradeChosen = Remotes.RunUpgradeChosen
@@ -46,6 +47,10 @@ local RunUpgradesChanged = Remotes.RunUpgradesChanged
 local RunDraftController = {}
 
 local player = Players.LocalPlayer
+
+-- Preview the draft card icons as soon as the client loads, without
+-- waiting for a between-wave break. Set false when icon testing is done.
+local SHOW_DRAFT_ON_START = false
 
 local screenGui: ScreenGui
 local draftPanel: Frame
@@ -64,6 +69,8 @@ local currentOffer: { { Id: string, Name: string, Description: string, Stacks: n
 local cardButtons: { TextButton } = {}
 local buildPanelVisible = false
 local ownedCount = 0
+-- True only for the SHOW_DRAFT_ON_START preview (no server pending offer).
+local isPreviewDraft = false
 
 -- Coin label sits at (20, bottom-20) size 140x32 in UIController — this
 -- tab sits immediately to its right so the bottom-left row reads
@@ -73,7 +80,11 @@ local BUILD_TAB_POSITION = UDim2.new(0, 168, 1, -20)
 local CARD_WIDTH = 190
 local CARD_HEIGHT = 210
 local CARD_GAP = 14
-local CARD_ICON_SIZE = 64
+-- Full-bleed art under the key badge: the PNG already bakes name +
+-- description, so the TextLabels only show when IconId is empty.
+local CARD_ICON_TOP = 36
+local CARD_ICON_BOTTOM_PAD = 10
+local CARD_ICON_INSET = 10
 
 local ACCENT = Color3.fromRGB(255, 190, 60)
 local PANEL_BG = Color3.fromRGB(18, 18, 22)
@@ -104,12 +115,42 @@ end
 	the UI ate their input. Clearing currentOffer here also disarms the
 	number keys for the same reason.
 ]]
+local function buildPreviewOffer()
+	local offer = {}
+	for _, card in RunUpgradeConfig.Cards do
+		table.insert(offer, {
+			Id = card.Id,
+			Name = card.Name,
+			Description = card.Description,
+			Stacks = 0,
+			MaxStacks = card.MaxStacks,
+			IconId = card.IconId,
+		})
+	end
+	return offer
+end
+
+--[[
+	Sends the pick and immediately closes the panel, without waiting for
+	the server to confirm.
+
+	Optimistic on purpose: the confirmation arrives as RunUpgradesChanged
+	(which updates the build list), and leaving three clickable cards on
+	screen for a round trip invites a second click on a different card —
+	which the server would reject, correctly, leaving the player thinking
+	the UI ate their input. Clearing currentOffer here also disarms the
+	number keys for the same reason.
+]]
 local function choose(cardId: string)
 	if #currentOffer == 0 then
 		return
 	end
+	local preview = isPreviewDraft
 	currentOffer = {}
-	RunUpgradeChosen:FireServer(cardId)
+	isPreviewDraft = false
+	if not preview then
+		RunUpgradeChosen:FireServer(cardId)
+	end
 	RunDraftController.Hide()
 end
 
@@ -124,7 +165,66 @@ local function buildCard(index: number, card): TextButton
 	styleCorner(button, 10)
 	local stroke = styleStroke(button, Color3.fromRGB(70, 70, 80), 1.5)
 
-	-- Keyboard hint, matching the number key that selects this card.
+	local hasIcon = UIIconConfig.IsSet(card.IconId)
+
+	-- Fallback name/description — visible only when there is no icon art.
+	-- When IconId is set, the PNG already includes both strings, and the
+	-- ImageLabel below covers this same region.
+	local name = Instance.new("TextLabel")
+	name.Name = "CardName"
+	name.BackgroundTransparency = 1
+	name.Position = UDim2.new(0, 10, 0, CARD_ICON_TOP + 24)
+	name.Size = UDim2.new(1, -20, 0, 40)
+	name.Font = Enum.Font.GothamBlack
+	name.TextSize = 16
+	name.TextColor3 = ACCENT
+	name.TextWrapped = true
+	name.TextYAlignment = Enum.TextYAlignment.Top
+	name.Text = card.Name
+	name.ZIndex = 1
+	name.Visible = not hasIcon
+	name.Parent = button
+
+	local description = Instance.new("TextLabel")
+	description.Name = "CardDescription"
+	description.BackgroundTransparency = 1
+	description.Position = UDim2.new(0, 12, 0, CARD_ICON_TOP + 72)
+	description.Size = UDim2.new(1, -24, 0, 48)
+	description.Font = Enum.Font.Gotham
+	description.TextSize = 13
+	description.TextColor3 = Color3.fromRGB(225, 225, 235)
+	description.TextWrapped = true
+	description.TextYAlignment = Enum.TextYAlignment.Top
+	description.Text = card.Description
+	description.ZIndex = 1
+	description.Visible = not hasIcon
+	description.Parent = button
+
+	local icon = Instance.new("ImageLabel")
+	icon.Name = "Icon"
+	icon.AnchorPoint = Vector2.new(0.5, 0)
+	icon.Position = UDim2.new(0.5, 0, 0, CARD_ICON_TOP)
+	icon.Size = UDim2.new(1, -CARD_ICON_INSET * 2, 1, -(CARD_ICON_TOP + CARD_ICON_BOTTOM_PAD))
+	icon.BackgroundColor3 = CARD_BG
+	icon.BorderSizePixel = 0
+	icon.ScaleType = Enum.ScaleType.Fit
+	icon.ZIndex = 2
+	icon.Parent = button
+	if hasIcon then
+		-- Opaque card-colored fill so fallback text never peeks through
+		-- letterboxing while the asset streams in.
+		icon.BackgroundTransparency = 0
+		icon.Image = card.IconId :: string
+	else
+		icon.Image = ""
+		icon.BackgroundTransparency = 0.35
+		icon.BackgroundColor3 = Color3.fromRGB(48, 48, 56)
+		icon.Size = UDim2.fromOffset(64, 64)
+		icon.Position = UDim2.new(0.5, 0, 0, CARD_ICON_TOP)
+		styleCorner(icon, 8)
+	end
+
+	-- Keyboard hint above the art so it stays readable over the icon.
 	local keyBadge = Instance.new("TextLabel")
 	keyBadge.Name = "KeyBadge"
 	keyBadge.AnchorPoint = Vector2.new(0.5, 0)
@@ -135,55 +235,9 @@ local function buildCard(index: number, card): TextButton
 	keyBadge.TextSize = 14
 	keyBadge.TextColor3 = Color3.fromRGB(200, 200, 210)
 	keyBadge.Text = tostring(index)
-	keyBadge.ZIndex = 2
+	keyBadge.ZIndex = 3
 	keyBadge.Parent = button
 	styleCorner(keyBadge, 6)
-
-	-- Icon slot reserved even when IconId is empty so layout stays stable
-	-- once art is pasted into RunUpgradeConfig.
-	local icon = Instance.new("ImageLabel")
-	icon.Name = "Icon"
-	icon.BackgroundTransparency = 1
-	icon.AnchorPoint = Vector2.new(0.5, 0)
-	icon.Position = UDim2.new(0.5, 0, 0, 38)
-	icon.Size = UDim2.fromOffset(CARD_ICON_SIZE, CARD_ICON_SIZE)
-	icon.ScaleType = Enum.ScaleType.Fit
-	icon.Parent = button
-	if UIIconConfig.IsSet(card.IconId) then
-		icon.Image = card.IconId
-	else
-		icon.Image = ""
-		-- Soft placeholder so the reserved slot still reads as an icon area.
-		icon.BackgroundColor3 = Color3.fromRGB(48, 48, 56)
-		icon.BackgroundTransparency = 0.35
-		styleCorner(icon, 8)
-	end
-
-	local name = Instance.new("TextLabel")
-	name.Name = "CardName"
-	name.BackgroundTransparency = 1
-	name.Position = UDim2.new(0, 10, 0, 108)
-	name.Size = UDim2.new(1, -20, 0, 36)
-	name.Font = Enum.Font.GothamBlack
-	name.TextSize = 16
-	name.TextColor3 = ACCENT
-	name.TextWrapped = true
-	name.TextYAlignment = Enum.TextYAlignment.Top
-	name.Text = card.Name
-	name.Parent = button
-
-	local description = Instance.new("TextLabel")
-	description.Name = "CardDescription"
-	description.BackgroundTransparency = 1
-	description.Position = UDim2.new(0, 12, 0, 144)
-	description.Size = UDim2.new(1, -24, 0, 42)
-	description.Font = Enum.Font.Gotham
-	description.TextSize = 13
-	description.TextColor3 = Color3.fromRGB(225, 225, 235)
-	description.TextWrapped = true
-	description.TextYAlignment = Enum.TextYAlignment.Top
-	description.Text = card.Description
-	description.Parent = button
 
 	-- Stack readout, shown only for a card the player already owns —
 	-- this is what turns "which of these three is best" into "do I
@@ -201,6 +255,7 @@ local function buildCard(index: number, card): TextButton
 		owned.TextSize = 11
 		owned.TextColor3 = Color3.fromRGB(150, 200, 150)
 		owned.Text = ("OWNED %d/%d"):format(stacks, card.MaxStacks or stacks)
+		owned.ZIndex = 3
 		owned.Parent = button
 	end
 
@@ -311,7 +366,9 @@ function RunDraftController.Show(offer)
 	clearCards()
 
 	local count = #offer
-	cardRow.Size = UDim2.fromOffset(count * CARD_WIDTH + (count - 1) * CARD_GAP, CARD_HEIGHT)
+	local rowWidth = count * CARD_WIDTH + math.max(0, count - 1) * CARD_GAP
+	cardRow.Size = UDim2.fromOffset(rowWidth, CARD_HEIGHT)
+	draftPanel.Size = UDim2.fromOffset(rowWidth + 48, CARD_HEIGHT + 96)
 
 	for index, card in offer do
 		local button = buildCard(index, card)
@@ -320,7 +377,7 @@ function RunDraftController.Show(offer)
 		table.insert(cardButtons, button)
 	end
 
-	draftTitle.Text = "CHOOSE AN UPGRADE"
+	draftTitle.Text = isPreviewDraft and "ICON PREVIEW" or "CHOOSE AN UPGRADE"
 	draftPanel.Visible = true
 
 	-- Short fade-in so the panel doesn't pop into existence over the
@@ -331,6 +388,7 @@ end
 
 function RunDraftController.Hide()
 	currentOffer = {}
+	isPreviewDraft = false
 	draftPanel.Visible = false
 	clearCards()
 end
@@ -499,6 +557,7 @@ function RunDraftController.Init()
 			RunDraftController.Hide()
 			return
 		end
+		isPreviewDraft = false
 		RunDraftController.Show(offer)
 	end)
 
@@ -526,6 +585,13 @@ function RunDraftController.Init()
 			choose(card.Id)
 		end
 	end)
+
+	if SHOW_DRAFT_ON_START then
+		task.defer(function()
+			isPreviewDraft = true
+			RunDraftController.Show(buildPreviewOffer())
+		end)
+	end
 end
 
 return RunDraftController

@@ -88,7 +88,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "FireRate",
 		Amount = 0.15,
 		MaxStacks = 5,
-		IconId = "rbxassetid://103326515677530", -- paste rbxassetid://… from Gunslinger.png
+		IconId = "rbxassetid://114701559447714", -- paste rbxassetid://… from Gunslinger.png
 	},
 	{
 		Id = "HollowPoint",
@@ -97,7 +97,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "Damage",
 		Amount = 0.2,
 		MaxStacks = 5,
-		IconId = "rbxassetid://77891635865774",
+		IconId = "rbxassetid://71628598570694",
 	},
 	{
 		Id = "Marksman",
@@ -106,7 +106,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "HeadshotDamage",
 		Amount = 0.35,
 		MaxStacks = 4,
-		IconId = "rbxassetid://136796673656167",
+		IconId = "rbxassetid://127030114170615",
 	},
 	{
 		Id = "ExtendedMag",
@@ -115,7 +115,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "Magazine",
 		Amount = 0.3,
 		MaxStacks = 4,
-		IconId = "rbxassetid://96764702411905",
+		IconId = "rbxassetid://77040510497416",
 	},
 	{
 		Id = "SpeedLoader",
@@ -124,7 +124,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "ReloadSpeed",
 		Amount = 0.25,
 		MaxStacks = 4,
-		IconId = "rbxassetid://134189055439395",
+		IconId = "rbxassetid://82499606905803",
 	},
 	{
 		Id = "Survivor",
@@ -133,7 +133,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "MaxHealth",
 		Amount = 25,
 		MaxStacks = 4,
-		IconId = "rbxassetid://99314337772025",
+		IconId = "rbxassetid://139552158926461",
 	},
 	{
 		Id = "Adrenaline",
@@ -142,7 +142,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "MoveSpeed",
 		Amount = 0.12,
 		MaxStacks = 3,
-		IconId = "rbxassetid://133080520040170",
+		IconId = "rbxassetid://88494746138138",
 	},
 	{
 		Id = "Bloodthirst",
@@ -151,7 +151,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "HealPerKill",
 		Amount = 3,
 		MaxStacks = 3,
-		IconId = "rbxassetid://105495324331553",
+		IconId = "rbxassetid://119874882411190",
 	},
 	{
 		-- Reuses the exploding-projectile splash WeaponService already
@@ -164,7 +164,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "ExplodeOnKill",
 		Amount = 1,
 		MaxStacks = 3,
-		IconId = "rbxassetid://111395182552873",
+		IconId = "rbxassetid://70637238985763",
 	},
 	{
 		Id = "Scavenger",
@@ -173,7 +173,7 @@ local Cards: { RunUpgradeCard } = {
 		Stat = "CoinGain",
 		Amount = 0.25,
 		MaxStacks = 4,
-		IconId = "rbxassetid://110620391484674",
+		IconId = "rbxassetid://138587746513287",
 	},
 }
 
