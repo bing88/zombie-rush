@@ -1287,6 +1287,72 @@ for i, position in spawnPositions do
 	point.Parent = zombieSpawns
 end
 
+--[[
+	Enclosed subway interiors get almost no sky light, so the global
+	dusk Lighting alone leaves platforms nearly black. Scatter low floor
+	fixtures (and bump indoor ambient) when the subway arena is loaded.
+]]
+if subwayModel then
+	-- Slight indoor lift only — stacked PointLights wash out FastBloom hard
+	-- if ambient + brightness stay aggressive.
+	Lighting.Ambient = Color3.fromRGB(55, 52, 60)
+	Lighting.OutdoorAmbient = Color3.fromRGB(45, 45, 55)
+	Lighting.Brightness = 1.6
+
+	local lightsFolder = Instance.new("Folder")
+	lightsFolder.Name = "SubwayFloorLights"
+	lightsFolder.Parent = map
+
+	local function placeFloorLight(name: string, worldPos: Vector3)
+		local fixture = Instance.new("Part")
+		fixture.Name = name
+		fixture.Anchored = true
+		fixture.CanCollide = false
+		fixture.Size = Vector3.new(0.8, 0.15, 0.8)
+		-- Spawn markers sit ~3 studs above the floor; put the lamp near
+		-- the surface so the glow reads as floor lighting, not ceiling.
+		fixture.Position = Vector3.new(worldPos.X, worldPos.Y - 2.6, worldPos.Z)
+		fixture.Material = Enum.Material.SmoothPlastic
+		fixture.Color = Color3.fromRGB(200, 185, 150)
+		fixture.Transparency = 0.35
+		fixture.Parent = lightsFolder
+		addPointLight(fixture, Color3.fromRGB(255, 220, 175), 0.55, 16)
+	end
+
+	-- Skip per-spawn lights (they clustered with the grid and blew out
+	-- the room). One sparse grid + upper-deck samples is enough.
+	local LIGHT_STEP = 36
+	local EDGE = 14
+	local minX = arenaWorldCenter.X - arenaWorldSize.X / 2 + EDGE
+	local maxX = arenaWorldCenter.X + arenaWorldSize.X / 2 - EDGE
+	local minZ = arenaWorldCenter.Z - arenaWorldSize.Z / 2 + EDGE
+	local maxZ = arenaWorldCenter.Z + arenaWorldSize.Z / 2 - EDGE
+	local lightIndex = 0
+	local x = minX
+	while x <= maxX do
+		local z = minZ
+		while z <= maxZ do
+			local stand = probeFloorAt(subwayModel, x, z, arenaWorldCenter.Y)
+			if stand then
+				lightIndex += 1
+				placeFloorLight("FloorLight_Grid" .. lightIndex, stand)
+			end
+			-- Also try upper deck band so the mezzanine isn't left dark.
+			for _, offsetY in { 14, 28 } do
+				local upper = probeFloorAt(subwayModel, x, z, arenaWorldCenter.Y + offsetY)
+				if upper and (not stand or math.abs(upper.Y - stand.Y) > 6) then
+					lightIndex += 1
+					placeFloorLight("FloorLight_Upper" .. lightIndex, upper)
+				end
+			end
+			z += LIGHT_STEP
+		end
+		x += LIGHT_STEP
+	end
+
+	print(("MapBootstrap: placed %d subway floor light(s)"):format(lightIndex))
+end
+
 -- Diagnostic: confirms spawn points landed at a sane height relative to
 -- the arena floor. A previous bug put every one of them on the subway
 -- station's ROOF (raycasting from above the whole model, so the first

@@ -348,6 +348,23 @@ end
 local function onCharacterAdded(player: Player, character: Model)
 	local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 
+	-- Roblox's default Character "Health" script slowly regenerates HP.
+	-- Kill it so regen is never free — a future HealthRegen game-pass
+	-- perk can reintroduce it (see PerkConfig). Also strip any late
+	-- clones Roblox injects a frame later.
+	local function stripDefaultHealthRegen()
+		local healthScript = character:FindFirstChild("Health")
+		if healthScript and healthScript:IsA("Script") then
+			healthScript:Destroy()
+		end
+	end
+	stripDefaultHealthRegen()
+	character.ChildAdded:Connect(function(child)
+		if child.Name == "Health" and child:IsA("Script") then
+			child:Destroy()
+		end
+	end)
+
 	ensureProfileLoaded(player)
 	giveOwnedWeapons(player, character)
 	syncOwnedWeapons(player)

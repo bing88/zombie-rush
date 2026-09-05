@@ -81,6 +81,8 @@ PerkConfig.Perks = {
 		PriceText = "99 R$",
 		Multiplier = 1.5,
 	},
+	-- Future: HealthRegen perk (natural HP recovery). Default regen is
+	-- stripped in PlayerService so this would be the only way to get it.
 	{
 		Key = "SpeedBoost",
 		DisplayName = "Swift Feet",

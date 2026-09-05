@@ -1206,8 +1206,42 @@ local function playDeathSound(position: Vector3)
 end
 
 --[[
-	Spawns one zombie of the given type at the given position and starts
-	its AI. Returns the Model (or nil if statsName is unknown).
+	Places a freshly spawned zombie so its feet sit on the floor under
+	`approxPosition`, instead of PivotTo-ing the PrimaryPart at the
+	spawn-marker height (floor+3) and letting the body freefall into
+	place. Raycasts ignore the zombie itself so we hit map geometry.
+]]
+local function placeZombieOnFloor(model: Model, approxPosition: Vector3)
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	local rootPart = model.PrimaryPart
+	if not humanoid or not rootPart then
+		model:PivotTo(CFrame.new(approxPosition))
+		return
+	end
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { model }
+
+	local origin = Vector3.new(approxPosition.X, approxPosition.Y + 10, approxPosition.Z)
+	local hit = Workspace:Raycast(origin, Vector3.new(0, -50, 0), params)
+	local floorY = if hit then hit.Position.Y else (approxPosition.Y - 3)
+
+	-- HumanoidRootPart center sits roughly HipHeight + half root height
+	-- above the soles on standard R6/R15 rigs.
+	local standY = floorY + humanoid.HipHeight + (rootPart.Size.Y * 0.5) + 0.05
+	model:PivotTo(CFrame.new(approxPosition.X, standY, approxPosition.Z))
+
+	pcall(function()
+		rootPart.AssemblyLinearVelocity = Vector3.zero
+		rootPart.AssemblyAngularVelocity = Vector3.zero
+	end)
+end
+
+--[[
+	Spawns one zombie of the given type near `position` (snapped onto the
+	floor underneath) and starts its AI. Returns the Model (or nil if
+	statsName is unknown).
 
 	hpMultiplier/speedMultiplier/damageMultiplier (all default 1) let
 	WaveService apply a random per-wave modifier (see WaveModifiers.lua)
@@ -1238,7 +1272,7 @@ function ZombieService.SpawnZombie(
 
 	local model = createZombieModel(statsName)
 	model.Parent = Workspace
-	model:PivotTo(CFrame.new(position))
+	placeZombieOnFloor(model, position)
 	activeZombieCount += 1
 
 	local humanoid = model:FindFirstChildOfClass("Humanoid") :: Humanoid
