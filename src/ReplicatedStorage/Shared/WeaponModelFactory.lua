@@ -76,6 +76,28 @@ local WEAPON_ASSET_IDS: { [string]: number } = {
 	weapon. Used directly until real art exists, and as a fallback if a
 	real asset can't be loaded.
 ]]
+--[[
+	Roblox thumbnail URL for a weapon's catalog asset, for UI icons.
+
+	Uses the rbxthumb:// scheme rather than rendering the real Tool in a
+	ViewportFrame: the model-building path above is server-only (it uses
+	AssetService and parks templates in ServerStorage), so the client
+	genuinely cannot reuse it. rbxthumb resolves entirely client-side
+	from the public asset id, with no server round-trip and no asset
+	loading of our own.
+
+	Returns nil for a weapon with no configured asset (it renders as the
+	placeholder block in-game), so callers can fall back to a text-only
+	row rather than showing a broken image.
+]]
+function WeaponModelFactory.GetIconImage(weaponName: string): string?
+	local assetId = WEAPON_ASSET_IDS[weaponName]
+	if not assetId then
+		return nil
+	end
+	return ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(assetId)
+end
+
 function WeaponModelFactory.CreatePlaceholderTool(weaponName: string): Tool
 	local visuals = WEAPON_VISUALS[weaponName]
 	assert(visuals, "WeaponModelFactory: no visuals defined for weapon " .. tostring(weaponName))
