@@ -554,6 +554,208 @@ end
 -- local file is ever missing from a checkout.
 local SUBWAY_MAP_ASSET_ID = 32852869
 
+-- Ancestors whose parts we never strip as "fences" — train tracks are
+-- walkable floor geometry, and corpse props are just thin limb parts.
+local SUBWAY_FENCE_KEEP_ANCESTORS = {
+	Track = true,
+	LeftTrack = true,
+	RightTrack = true,
+	["Rails of Track"] = true,
+	Corpse = true,
+	Person = true,
+	Body = true,
+	["Dead Person For Alexluci"] = true,
+	Blood = true,
+	["Bloodstain 1"] = true,
+	["Bloodstain 2"] = true,
+}
+
+local function hasKeptFenceAncestor(instance: Instance): boolean
+	local current = instance.Parent
+	while current do
+		if SUBWAY_FENCE_KEEP_ANCESTORS[current.Name] then
+			return true
+		end
+		current = current.Parent
+	end
+	return false
+end
+
+--[[
+	Platform / stair railings on the L4D subway map are thin stud walls
+	and posts that PathfindingService treats as solid obstacles — zombies
+	routinely wedge against them. Identified by size (thin slab or post,
+	person-scale height), not by name (everything is "Smooth Block Model"
+	/ "Part"). Floors (flat 0.4-stud slabs), track rails, and the subway
+	train car are left alone.
+]]
+local function isSubwayFenceSized(part: BasePart): boolean
+	local size = part.Size
+	local dims = { size.X, size.Y, size.Z }
+	table.sort(dims)
+	local thin, mid, long = dims[1], dims[2], dims[3]
+	-- Flat floors/ceilings: one very small axis, two large.
+	if thin < 0.75 and mid >= 1.5 then
+		return false
+	end
+	local isPost = thin <= 1.25 and mid <= 1.25 and long >= 2 and long <= 8
+	local isSlab = thin <= 1.25 and mid >= 2 and mid <= 7.5 and long >= 2
+	return isPost or isSlab
+end
+
+local function stripSubwayFences(template: Model)
+	local removeList: { BasePart } = {}
+	for _, descendant in template:GetDescendants() do
+		if not descendant:IsA("BasePart") then
+			continue
+		end
+		if hasKeptFenceAncestor(descendant) then
+			continue
+		end
+		if not isSubwayFenceSized(descendant) then
+			continue
+		end
+		-- Leave the train car alone — its thin panels are walls/windows,
+		-- not the platform railings zombies get stuck on.
+		local underTrain = false
+		local current = descendant.Parent
+		while current and current ~= template do
+			if current.Name == "Subway Train" then
+				underTrain = true
+				break
+			end
+			current = current.Parent
+		end
+		if underTrain then
+			continue
+		end
+		table.insert(removeList, descendant)
+	end
+	for _, part in removeList do
+		part:Destroy()
+	end
+	if #removeList > 0 then
+		print(("MapBootstrap: removed %d subway fence/railing part(s)"):format(#removeList))
+	end
+end
+
+--[[
+	Replaces each "Subway Stairs" stepped block stack with a single smooth
+	ramp. The original stairs are classic Roblox risers (10 x 1.2-stud
+	steps, 2 studs deep, 14 wide) that PathfindingService and zombie
+	MoveTo struggle with; a rotated slab matches the same rise/run and
+	stays walkable for both players and AI. The long 14x1.2x22 landing
+	slab under each stair is kept as the approach floor.
+]]
+local function replaceSubwayStairsWithRamps(template: Model)
+	local replaced = 0
+	local stairModels = {}
+	for _, descendant in template:GetDescendants() do
+		if descendant:IsA("Model") and descendant.Name == "Subway Stairs" then
+			table.insert(stairModels, descendant)
+		end
+	end
+
+	for _, stairModel in stairModels do
+		local steps: { BasePart } = {}
+		local landing: BasePart? = nil
+		for _, child in stairModel:GetDescendants() do
+			if child:IsA("BasePart") then
+				local size = child.Size
+				-- The long flat base under the steps (14 x 1.2 x 22).
+				if (math.abs(size.Z - 22) < 0.6 and size.Y < 2) or (math.abs(size.X - 22) < 0.6 and size.Y < 2) then
+					landing = child
+				else
+					table.insert(steps, child)
+				end
+			end
+		end
+		if #steps < 2 then
+			continue
+		end
+
+		local shortest = steps[1]
+		local tallest = steps[1]
+		for _, step in steps do
+			if step.Size.Y < shortest.Size.Y then
+				shortest = step
+			end
+			if step.Size.Y > tallest.Size.Y then
+				tallest = step
+			end
+		end
+
+		local bottomY = shortest.Position.Y - shortest.Size.Y / 2
+		local topY = tallest.Position.Y + tallest.Size.Y / 2
+		local rise = topY - bottomY
+		if rise < 1 then
+			continue
+		end
+
+		-- Step depth is the short horizontal axis (2 studs); width is 14.
+		local depthAxis: Vector3
+		local widthAxis: Vector3
+		local width: number
+		if shortest.Size.Z <= shortest.Size.X then
+			depthAxis = shortest.CFrame.LookVector
+			widthAxis = shortest.CFrame.RightVector
+			width = shortest.Size.X
+		else
+			depthAxis = shortest.CFrame.RightVector
+			widthAxis = shortest.CFrame.LookVector
+			width = shortest.Size.Z
+		end
+
+		-- Uphill = shortest tread → tallest tread along the depth axis.
+		local along = (tallest.Position - shortest.Position):Dot(depthAxis)
+		if along < 0 then
+			depthAxis = -depthAxis
+			along = -along
+		end
+
+		local halfDepth = math.min(shortest.Size.X, shortest.Size.Z) / 2
+		local run = along + halfDepth * 2
+		if run < 2 then
+			continue
+		end
+
+		local flatUphill = Vector3.new(depthAxis.X, 0, depthAxis.Z)
+		if flatUphill.Magnitude < 0.05 then
+			flatUphill = depthAxis.Unit
+		else
+			flatUphill = flatUphill.Unit
+		end
+
+		local midAlong = shortest.Position:Dot(flatUphill) + along / 2
+		local midAcross = shortest.Position:Dot(widthAxis)
+		local rampCenter = flatUphill * midAlong + widthAxis * midAcross + Vector3.new(0, bottomY + rise / 2, 0)
+
+		local hyp = math.sqrt(rise * rise + run * run)
+		local angle = math.atan2(rise, run)
+		local rampThickness = if landing then landing.Size.Y else 1.2
+
+		local ramp = Instance.new("Part")
+		ramp.Name = "SubwayRamp"
+		ramp.Anchored = true
+		ramp.CanCollide = true
+		ramp.Size = Vector3.new(width, rampThickness, hyp)
+		ramp.Material = if landing then landing.Material else Enum.Material.Concrete
+		ramp.Color = if landing then landing.Color else Color3.fromRGB(99, 95, 98)
+		-- Look uphill, then pitch so the downhill end drops (was inverted).
+		ramp.CFrame = CFrame.lookAt(rampCenter, rampCenter + flatUphill, Vector3.yAxis) * CFrame.Angles(angle, 0, 0)
+		ramp.Parent = stairModel
+
+		for _, step in steps do
+			step:Destroy()
+		end
+		replaced += 1
+	end
+
+	if replaced > 0 then
+		print(("MapBootstrap: replaced %d Subway Stairs with ramps"):format(replaced))
+	end
+end
+
 --[[
 	Loads the subway map to use as the arena instead of
 	buildProceduralArenaFallback() above — preferring the local copy
@@ -621,6 +823,9 @@ local function loadSubwayMapArena(): (Model?, Vector3?, Vector3?)
 		template:Destroy()
 		return nil, nil, nil
 	end
+
+	stripSubwayFences(template)
+	replaceSubwayStairsWithRamps(template)
 
 	template.Name = "SubwayMapArena"
 	template.Archivable = true
