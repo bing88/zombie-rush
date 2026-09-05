@@ -53,6 +53,7 @@ local latestOwned: { [string]: boolean } = {}
 local latestLevels: { [string]: number } = {}
 local latestAvailable: { [string]: boolean } = {}
 local latestCash = 0
+local equippedWeapon: string? = nil
 local matchOpen = false
 local inBreak = false
 local visible = false
@@ -120,6 +121,12 @@ local function refreshRow(weaponName: string)
 
 	setRowProgress(row, owned and level or 0)
 	row.StatLabel.Text = ""
+
+	-- Only meaningful for a weapon actually in hand, so it's cleared for
+	-- unowned rows regardless of what was equipped previously.
+	local isEquipped = owned and equippedWeapon == weaponName
+	row.EquippedStroke.Transparency = isEquipped and 0 or 1
+	row.NameLabel.Text = isEquipped and (weaponName .. "  •") or weaponName
 
 	if not matchOpen then
 		row.StatusLabel.Text = owned and ("Lv %d — lobby"):format(level) or "Buy in a match"
@@ -362,6 +369,15 @@ local function buildUI()
 		rowCorner.CornerRadius = UDim.new(0, 6)
 		rowCorner.Parent = row
 
+		-- Highlight ring for the equipped weapon, mirroring how the
+		-- hotbar marks the active slot (see UIController) so the two
+		-- read as the same idea.
+		local equippedStroke = Instance.new("UIStroke")
+		equippedStroke.Color = Color3.fromRGB(255, 210, 90)
+		equippedStroke.Thickness = 2
+		equippedStroke.Transparency = 1 -- shown only on the equipped row
+		equippedStroke.Parent = row
+
 		-- Weapon icon. rbxthumb resolves client-side from the public
 		-- catalog asset id (see WeaponModelFactory.GetIconImage) — the
 		-- real model-building path is server-only, so a ViewportFrame of
@@ -483,6 +499,8 @@ local function buildUI()
 			ActionButton = actionButton,
 			ProgressFill = progressFill,
 			StatLabel = statLabel,
+			EquippedStroke = equippedStroke,
+			NameLabel = nameLabel,
 		}
 	end
 
@@ -521,6 +539,17 @@ function ShopController.SetOwnedWeapons(
 	if available then
 		latestAvailable = available
 	end
+	refreshAllRows()
+end
+
+--[[
+	Which weapon the player currently has out. Purely a visual cue in
+	this panel — it doesn't gate any purchase (upgrading a weapon you
+	aren't holding is perfectly valid), it just answers "which of these
+	am I actually using right now?" while comparing upgrade costs.
+]]
+function ShopController.SetEquippedWeapon(weaponName: string)
+	equippedWeapon = weaponName
 	refreshAllRows()
 end
 

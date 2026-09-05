@@ -55,6 +55,7 @@ end)
 
 WeaponController.OnWeaponEquipped(function(weaponName: string)
 	UIController.SetEquippedWeapon(weaponName)
+	ShopController.SetEquippedWeapon(weaponName)
 end)
 
 EffectsController.OnLocalHitmarker(function(killed: boolean, headshot: boolean)
