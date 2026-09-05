@@ -25,8 +25,14 @@ local ammoContainer: Frame
 local ammoNameLabel: TextLabel
 local ammoLabel: TextLabel
 local reloadButton: TextButton
-local ultimateButton: TextButton
+local ultimateButton: ImageButton
 local ultimateButtonStroke: UIStroke
+local ultimateGlowRing: Frame
+local ultimateGlowStroke: UIStroke
+local ultimateProgressFill: Frame
+local ultimateGlowTween: Tween?
+local ultimateGlowBgTween: Tween?
+local ultimateVisualState: string = "idle" -- idle | ready | active
 local fireButton: TextButton
 local deathLabel: TextLabel
 local coinLabel: TextLabel
@@ -43,6 +49,8 @@ local partySizeButtons: { [number]: TextButton } = {}
 local partyWaitPanel: Frame
 local partyWaitLabel: TextLabel
 local partyExitButton: TextButton
+local waveSkipButton: TextButton
+local waveSkipLocalVoted = false
 local confirmNoButton: TextButton
 local vignette: Frame
 local hitmarker: Frame
@@ -466,20 +474,92 @@ local function buildUI()
 	--[[
 		Ultimate, continuing the same 70px pitch (56 tall + 14 gap).
 
-		Exists because the ultimate was keyboard-only at first: the
-		charge meter is drawn bottom-left by ComboController and `Q`
-		spent it, which left touch players with a meter they could watch
-		fill and never use. It's here rather than as a tap target on the
-		meter itself for two reasons — this right-hand column is already
-		where every touch action lives (fire/reload/view), and the
-		bottom-LEFT is where Roblox's own movement thumbstick sits on
-		mobile, so a button there would compete with walking.
-
-		Colour is driven from outside via SetUltimateButtonState, since
-		charge is ComboController's state, not this module's.
+		Built as an ImageButton (not TextButton + child ImageLabel): the
+		Ult PNG is a full square with its own frame/art, and parenting
+		that art under a TextButton with a dark fill + UICorner was
+		washing it grey. Transparent ImageButton + stroke-only outer
+		glow keeps the asset at true colour.
 	]]
-	ultimateButton = actionButton("UltimateButton", "ULT", 412, UIIconConfig.Ult, true)
-	ultimateButtonStroke = ultimateButton:FindFirstChildOfClass("UIStroke") :: UIStroke
+	local ULTIMATE_BOTTOM_OFFSET = 412
+	local ULTIMATE_BUTTON_SIZE = 56
+	local ULTIMATE_GLOW_PAD = 12
+	local ultimateGlowSize = ULTIMATE_BUTTON_SIZE + ULTIMATE_GLOW_PAD * 2
+
+	ultimateGlowRing = Instance.new("Frame")
+	ultimateGlowRing.Name = "UltimateGlowRing"
+	ultimateGlowRing.AnchorPoint = Vector2.new(1, 1)
+	ultimateGlowRing.Size = UDim2.fromOffset(ultimateGlowSize, ultimateGlowSize)
+	ultimateGlowRing.Position = UDim2.new(1, RIGHT_COLUMN_INSET + ULTIMATE_GLOW_PAD, 1, -(ULTIMATE_BOTTOM_OFFSET - ULTIMATE_GLOW_PAD))
+	ultimateGlowRing.BackgroundTransparency = 1
+	ultimateGlowRing.BorderSizePixel = 0
+	ultimateGlowRing.ZIndex = 1
+	ultimateGlowRing.Parent = screenGui
+	local ultimateGlowCorner = Instance.new("UICorner")
+	ultimateGlowCorner.CornerRadius = UDim.new(0, 14)
+	ultimateGlowCorner.Parent = ultimateGlowRing
+
+	ultimateGlowStroke = Instance.new("UIStroke")
+	ultimateGlowStroke.Name = "GlowStroke"
+	ultimateGlowStroke.Thickness = 0
+	ultimateGlowStroke.Transparency = 1
+	ultimateGlowStroke.Color = Color3.fromRGB(255, 176, 64)
+	ultimateGlowStroke.Parent = ultimateGlowRing
+
+	ultimateButton = Instance.new("ImageButton")
+	ultimateButton.Name = "UltimateButton"
+	ultimateButton.AnchorPoint = Vector2.new(1, 1)
+	ultimateButton.Size = UDim2.fromOffset(ULTIMATE_BUTTON_SIZE, ULTIMATE_BUTTON_SIZE)
+	ultimateButton.Position = UDim2.new(1, RIGHT_COLUMN_INSET, 1, -ULTIMATE_BOTTOM_OFFSET)
+	ultimateButton.BackgroundTransparency = 1
+	ultimateButton.BorderSizePixel = 0
+	ultimateButton.AutoButtonColor = false
+	ultimateButton.ImageTransparency = 0
+	ultimateButton.ImageColor3 = Color3.new(1, 1, 1)
+	ultimateButton.ScaleType = Enum.ScaleType.Fit
+	ultimateButton.ZIndex = 2
+	if UIIconConfig.IsSet(UIIconConfig.Ult) then
+		ultimateButton.Image = UIIconConfig.Ult
+	else
+		ultimateButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		ultimateButton.BackgroundTransparency = 0.15
+	end
+	ultimateButton.Parent = screenGui
+
+	ultimateButtonStroke = Instance.new("UIStroke")
+	ultimateButtonStroke.Thickness = 1.5
+	ultimateButtonStroke.Color = Color3.fromRGB(90, 90, 90)
+	ultimateButtonStroke.Parent = ultimateButton
+
+	-- Charge / countdown track along the top edge of the icon.
+	local ultimateChargeTrack = Instance.new("Frame")
+	ultimateChargeTrack.Name = "ChargeTrack"
+	ultimateChargeTrack.AnchorPoint = Vector2.new(0.5, 0)
+	ultimateChargeTrack.Position = UDim2.new(0.5, 0, 0, 3)
+	ultimateChargeTrack.Size = UDim2.new(1, -8, 0, 5)
+	ultimateChargeTrack.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+	ultimateChargeTrack.BackgroundTransparency = 0.05
+	ultimateChargeTrack.BorderSizePixel = 0
+	ultimateChargeTrack.ZIndex = 3
+	ultimateChargeTrack.Parent = ultimateButton
+	local ultimateChargeTrackCorner = Instance.new("UICorner")
+	ultimateChargeTrackCorner.CornerRadius = UDim.new(0, 3)
+	ultimateChargeTrackCorner.Parent = ultimateChargeTrack
+	local ultimateChargeTrackStroke = Instance.new("UIStroke")
+	ultimateChargeTrackStroke.Color = Color3.fromRGB(220, 220, 230)
+	ultimateChargeTrackStroke.Thickness = 1.5
+	ultimateChargeTrackStroke.Transparency = 0.15
+	ultimateChargeTrackStroke.Parent = ultimateChargeTrack
+
+	ultimateProgressFill = Instance.new("Frame")
+	ultimateProgressFill.Name = "ChargeFill"
+	ultimateProgressFill.Size = UDim2.fromScale(0, 1)
+	ultimateProgressFill.BackgroundColor3 = Color3.fromRGB(120, 120, 132)
+	ultimateProgressFill.BorderSizePixel = 0
+	ultimateProgressFill.ZIndex = 4
+	ultimateProgressFill.Parent = ultimateChargeTrack
+	local ultimateProgressFillCorner = Instance.new("UICorner")
+	ultimateProgressFillCorner.CornerRadius = UDim.new(0, 3)
+	ultimateProgressFillCorner.Parent = ultimateProgressFill
 
 	-- Fire button: the ONLY manual firing trigger (see WeaponController —
 	-- generic screen-tap/click firing was removed). Works via mouse click
@@ -635,6 +715,30 @@ local function buildUI()
 	stateBanner.Text = ""
 	stateBanner.Visible = false
 	stateBanner.Parent = screenGui
+
+	-- Skip the between-wave break. Visible only during WaveIncoming; label
+	-- shows live vote count so multiplayer parties know who still needs
+	-- to press. Solo is one press.
+	waveSkipButton = Instance.new("TextButton")
+	waveSkipButton.Name = "WaveSkipButton"
+	waveSkipButton.AnchorPoint = Vector2.new(0.5, 0)
+	waveSkipButton.Size = UDim2.fromOffset(200, 36)
+	waveSkipButton.Position = UDim2.new(0.5, 0, 0, 168)
+	waveSkipButton.BackgroundColor3 = Color3.fromRGB(40, 70, 50)
+	waveSkipButton.BackgroundTransparency = 0.15
+	waveSkipButton.TextColor3 = Color3.fromRGB(180, 255, 190)
+	waveSkipButton.Font = Enum.Font.GothamBold
+	waveSkipButton.TextSize = 15
+	waveSkipButton.Text = "SKIP BREAK"
+	waveSkipButton.Visible = false
+	waveSkipButton.Parent = screenGui
+	local waveSkipCorner = Instance.new("UICorner")
+	waveSkipCorner.CornerRadius = UDim.new(0, 8)
+	waveSkipCorner.Parent = waveSkipButton
+	local waveSkipStroke = Instance.new("UIStroke")
+	waveSkipStroke.Color = Color3.fromRGB(120, 200, 140)
+	waveSkipStroke.Thickness = 1.5
+	waveSkipStroke.Parent = waveSkipButton
 
 	-- Shop/secret feedback toast (top-center, below wave/boss UI)
 	toastLabel = Instance.new("TextLabel")
@@ -1130,6 +1234,58 @@ function UIController.SetGameStateBanner(text: string)
 end
 
 --[[
+	Shows/hides the between-wave SKIP button and refreshes its vote label.
+	totalNeeded 0 hides the button (break over / not in a break).
+]]
+function UIController.SetWaveBreakSkipStatus(skippedCount: number, totalNeeded: number)
+	if not waveSkipButton then
+		return
+	end
+	if totalNeeded <= 0 then
+		waveSkipButton.Visible = false
+		waveSkipLocalVoted = false
+		return
+	end
+
+	waveSkipButton.Visible = true
+	local skipped = math.clamp(math.floor(skippedCount), 0, totalNeeded)
+	-- Server says nobody has voted yet → this is a fresh break (or a
+	-- recount after someone left). Clear the local vote latch.
+	if skipped == 0 then
+		waveSkipLocalVoted = false
+	end
+	if waveSkipLocalVoted then
+		waveSkipButton.Text = ("SKIPPED  %d/%d"):format(skipped, totalNeeded)
+		waveSkipButton.BackgroundColor3 = Color3.fromRGB(55, 55, 60)
+		waveSkipButton.TextColor3 = Color3.fromRGB(190, 190, 200)
+		waveSkipButton.AutoButtonColor = false
+	else
+		waveSkipButton.Text = ("SKIP BREAK  %d/%d"):format(skipped, totalNeeded)
+		waveSkipButton.BackgroundColor3 = Color3.fromRGB(40, 70, 50)
+		waveSkipButton.TextColor3 = Color3.fromRGB(180, 255, 190)
+		waveSkipButton.AutoButtonColor = true
+	end
+end
+
+function UIController.OnWaveBreakSkipPressed(callback: () -> ())
+	if not waveSkipButton then
+		return
+	end
+	waveSkipButton.Activated:Connect(function()
+		if waveSkipLocalVoted then
+			return
+		end
+		waveSkipLocalVoted = true
+		-- Optimistic label until the server's WaveBreakSkipStatus arrives.
+		local text = waveSkipButton.Text
+		local total = tonumber(string.match(text, "/(%d+)")) or 1
+		local skipped = tonumber(string.match(text, "(%d+)/")) or 0
+		UIController.SetWaveBreakSkipStatus(math.min(skipped + 1, total), total)
+		callback()
+	end)
+end
+
+--[[
 	Shows a big banner for a fixed duration then clears itself, regardless
 	of whether any further GameStateChanged event arrives — used for
 	"Wave N incoming" announcements where the server doesn't send a
@@ -1190,40 +1346,117 @@ function UIController.OnUltimatePressed(callback: () -> ())
 end
 
 --[[
-	Recolours the ULT button to match the charge meter's three states:
-	dim while charging, green when ready to spend, and the ability's own
-	colour while it's running.
+	Drives the ULT icon's charge bar and ready/active glow.
 
-	Deliberately stays VISIBLE and tappable when not ready rather than
-	hiding or disabling itself — a button that disappears takes its own
-	explanation with it, and on touch (where there's no `Q` and no
-	tooltip) the dim ULT circle is the only thing telling a player the
-	ability exists at all. Tapping it early is harmless: ComboController
-	drops the press and the server re-checks regardless.
+	  idle   — dim stroke, fill = charge 0..1
+	  ready  — full fill + pulsing ready-coloured glow
+	  active — fill drains as countdown, pulsing ability-coloured glow
+
+	Fill size can update every frame during the active countdown; glow
+	tweens only restart when the visual state actually changes, so the
+	pulse isn't cancelled mid-cycle by charge ticks.
 ]]
-function UIController.SetUltimateButtonState(ready: boolean, active: boolean, color: Color3?)
+function UIController.SetUltimateButtonState(ready: boolean, active: boolean, color: Color3?, charge: number?)
 	if not ultimateButton then
 		return
 	end
 
-	local accent = color or Color3.fromRGB(120, 255, 160)
+	local accent = color or Color3.fromRGB(255, 72, 200)
+	local readyAccent = Color3.fromRGB(255, 176, 64) -- warm gold — matches the skull art
+	local idleAccent = Color3.fromRGB(120, 120, 132)
+	local chargeValue = math.clamp(tonumber(charge) or 0, 0, 1)
 	if active then
-		ultimateButton.BackgroundColor3 = accent
-		ultimateButton.BackgroundTransparency = 0.15
-		ultimateButton.TextColor3 = Color3.fromRGB(20, 20, 20)
+		-- Countdown: treat missing charge as full so the first active
+		-- frame doesn't flash empty before RenderStepped catches up.
+		if charge == nil then
+			chargeValue = 1
+		end
 	elseif ready then
-		ultimateButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-		ultimateButton.BackgroundTransparency = 0.15
-		ultimateButton.TextColor3 = accent
-	else
-		ultimateButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-		ultimateButton.BackgroundTransparency = 0.5
-		ultimateButton.TextColor3 = Color3.fromRGB(150, 150, 150)
+		chargeValue = 1
 	end
 
-	if ultimateButtonStroke then
-		ultimateButtonStroke.Color = (ready or active) and accent or Color3.fromRGB(90, 90, 90)
-		ultimateButtonStroke.Thickness = (ready or active) and 2.5 or 1.5
+	if ultimateProgressFill then
+		ultimateProgressFill.Size = UDim2.fromScale(chargeValue, 1)
+		if active then
+			ultimateProgressFill.BackgroundColor3 = accent
+		elseif ready then
+			ultimateProgressFill.BackgroundColor3 = readyAccent
+		else
+			ultimateProgressFill.BackgroundColor3 = idleAccent
+		end
+	end
+
+	local nextState = if active then "active" elseif ready then "ready" else "idle"
+	if nextState == ultimateVisualState then
+		-- Fill already updated above; only restart glow when the state changes.
+		return
+	end
+	ultimateVisualState = nextState
+
+	if ultimateGlowTween then
+		ultimateGlowTween:Cancel()
+		ultimateGlowTween = nil
+	end
+	if ultimateGlowBgTween then
+		ultimateGlowBgTween:Cancel()
+		ultimateGlowBgTween = nil
+	end
+
+	-- Keep the Ult image at full brightness in every state. Ready/active
+	-- feedback is the outer glow stroke + charge bar only — never tint or
+	-- dim the ImageButton (that was washing the art grey).
+	ultimateButton.BackgroundTransparency = 1
+	ultimateButton.ImageTransparency = 0
+	ultimateButton.ImageColor3 = Color3.new(1, 1, 1)
+	ultimateButton.AutoButtonColor = false
+
+	if active then
+		if ultimateButtonStroke then
+			ultimateButtonStroke.Color = accent
+			ultimateButtonStroke.Thickness = 1.5
+			ultimateButtonStroke.Transparency = 0
+		end
+		if ultimateGlowRing and ultimateGlowStroke then
+			ultimateGlowRing.BackgroundTransparency = 1
+			ultimateGlowStroke.Color = accent
+			ultimateGlowStroke.Thickness = 4
+			ultimateGlowStroke.Transparency = 0
+			ultimateGlowTween = TweenService:Create(
+				ultimateGlowStroke,
+				TweenInfo.new(0.35, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+				{ Thickness = 8, Transparency = 0.35 }
+			)
+			ultimateGlowTween:Play()
+		end
+	elseif ready then
+		if ultimateButtonStroke then
+			ultimateButtonStroke.Color = readyAccent
+			ultimateButtonStroke.Thickness = 1.5
+			ultimateButtonStroke.Transparency = 0
+		end
+		if ultimateGlowRing and ultimateGlowStroke then
+			ultimateGlowRing.BackgroundTransparency = 1
+			ultimateGlowStroke.Color = readyAccent
+			ultimateGlowStroke.Thickness = 4
+			ultimateGlowStroke.Transparency = 0
+			ultimateGlowTween = TweenService:Create(
+				ultimateGlowStroke,
+				TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+				{ Thickness = 9, Transparency = 0.4 }
+			)
+			ultimateGlowTween:Play()
+		end
+	else
+		if ultimateButtonStroke then
+			ultimateButtonStroke.Color = Color3.fromRGB(90, 90, 90)
+			ultimateButtonStroke.Thickness = 1.5
+			ultimateButtonStroke.Transparency = 0
+		end
+		if ultimateGlowRing and ultimateGlowStroke then
+			ultimateGlowRing.BackgroundTransparency = 1
+			ultimateGlowStroke.Thickness = 0
+			ultimateGlowStroke.Transparency = 1
+		end
 	end
 end
 

@@ -47,6 +47,8 @@ local WaveModifierAnnounced = Remotes.WaveModifierAnnounced
 local MatchScoreboard = Remotes.MatchScoreboard
 local LeaveParty = Remotes.LeaveParty
 local PartyStatusChanged = Remotes.PartyStatusChanged
+local SkipWaveBreak = Remotes.SkipWaveBreak
+local WaveBreakSkipStatus = Remotes.WaveBreakSkipStatus
 
 -- Arms the RunUpgradeChosen listener. Done from here because this
 -- module is what drives the draft lifecycle (offered at each break,
@@ -78,6 +80,14 @@ local startRequested = false
 local matchParticipants: { Player } = {}
 
 --[[
+	Between-wave skip votes. Cleared at the start of every break; only
+	counts while MatchState is Break. Everyone still in the match must
+	vote before the countdown ends early (solo = one press).
+]]
+local breakSkipVotes: { [Player]: boolean } = {}
+local breakSkipArmed = false
+
+--[[
 	Participants still connected. Everything match-scoped filters through
 	this rather than Players:GetPlayers(), so someone leaving mid-run
 	shrinks the party instead of hanging the match waiting on a player
@@ -91,6 +101,33 @@ local function getActiveParticipants(): { Player }
 		end
 	end
 	return active
+end
+
+local function countBreakSkipVotes(): (number, number)
+	local participants = getActiveParticipants()
+	local skipped = 0
+	for _, player in participants do
+		if breakSkipVotes[player] then
+			skipped += 1
+		end
+	end
+	return skipped, #participants
+end
+
+local function allParticipantsSkippedBreak(): boolean
+	local skipped, total = countBreakSkipVotes()
+	return total > 0 and skipped >= total
+end
+
+local function pushBreakSkipStatus()
+	local skipped, total = countBreakSkipVotes()
+	WaveBreakSkipStatus:FireAllClients(skipped, total)
+end
+
+local function clearBreakSkipVotes()
+	breakSkipVotes = {}
+	breakSkipArmed = false
+	WaveBreakSkipStatus:FireAllClients(0, 0)
 end
 
 -- This wave's randomly picked modifier (see WaveModifiers.lua). Reset to
@@ -521,15 +558,34 @@ local function runWaves(): number
 		]]
 		RunUpgradeService.OfferDraftToAll(getActiveParticipants())
 
-		for secondsLeft = WaveConfig.BetweenWaveBreakSeconds, 1, -1 do
+		breakSkipVotes = {}
+		breakSkipArmed = true
+		pushBreakSkipStatus()
+
+		-- Sub-second polling so a unanimous skip ends the break promptly
+		-- instead of waiting out the remainder of a full 1s tick.
+		local breakEndsAt = os.clock() + WaveConfig.BetweenWaveBreakSeconds
+		local lastBroadcastSecond: number? = nil
+		while os.clock() < breakEndsAt do
 			if matchDefeated then
+				breakSkipArmed = false
 				RunUpgradeService.CloseDrafts() -- don't leave a card UI open over the defeat screen
+				clearBreakSkipVotes()
 				return
 			end
-			GameStateChanged:FireAllClients("WaveIncoming", secondsLeft, waveNumber + 1)
-			task.wait(1)
+			if allParticipantsSkippedBreak() then
+				break
+			end
+			local secondsLeft = math.max(1, math.ceil(breakEndsAt - os.clock()))
+			if secondsLeft ~= lastBroadcastSecond then
+				lastBroadcastSecond = secondsLeft
+				GameStateChanged:FireAllClients("WaveIncoming", secondsLeft, waveNumber + 1)
+			end
+			task.wait(0.2)
 		end
 
+		breakSkipArmed = false
+		clearBreakSkipVotes()
 		RunUpgradeService.CloseDrafts()
 	end
 
@@ -851,6 +907,32 @@ connectPortals()
 	cancelled. Validated server-side (1..PORTAL_COUNT) rather than
 	trusting the client's number.
 ]]
+--[[
+	Between-wave skip vote. Only armed during Break; every still-connected
+	match participant must press it before the countdown ends early.
+	Solo is just one vote.
+]]
+SkipWaveBreak.OnServerEvent:Connect(function(player: Player)
+	if not breakSkipArmed or MatchState.Get() ~= "Break" then
+		return
+	end
+	local inMatch = false
+	for _, participant in getActiveParticipants() do
+		if participant == player then
+			inMatch = true
+			break
+		end
+	end
+	if not inMatch then
+		return
+	end
+	if breakSkipVotes[player] then
+		return
+	end
+	breakSkipVotes[player] = true
+	pushBreakSkipStatus()
+end)
+
 LeaveParty.OnServerEvent:Connect(function(player: Player)
 	removeFromParty(player)
 end)

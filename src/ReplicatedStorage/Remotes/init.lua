@@ -56,6 +56,8 @@ local remoteNames = {
 	"UltimateStateChanged", -- server -> owning client: ultimate charge 0-1, whether it's active, and for how much longer
 	"ActivateUltimate", -- client -> server: player pressed the ultimate key; server re-checks charge/liveness before spending it
 	"UltimateActivated", -- server -> all clients: someone spent their ultimate, for the aura FX everyone should see
+	"SkipWaveBreak", -- client -> server: vote to skip the between-wave break; all living participants must vote before it ends early
+	"WaveBreakSkipStatus", -- server -> all clients: (skippedCount, totalNeeded) during a break, or (0, 0) when the break ends
 	"PurchaseWeaponRequest", -- client -> server: buy a weapon with this run's cash (replaces the removed lobby Stall_Buy* prompts)
 	"MetaProgressChanged", -- server -> owning client: persistent meta level/XP, which decides what the run shop may offer (see MetaConfig)
 }

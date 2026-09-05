@@ -75,19 +75,18 @@ local READY_COLOR = Color3.fromRGB(120, 255, 160)
 local PANEL_BG = Color3.fromRGB(18, 18, 22)
 
 --[[
-	Left edge, stacked upward, with the ultimate meter below the streak.
-
-	Scaled to 0.5 (see PANEL_SCALE) so the pair stays compact above the
-	coin / shop / run-build row. Bottom offsets clear that row: coins sit
-	~20-52px up and the shop tab ~68-100px up, so the ultimate meter
-	starts at 108 rather than at the corner.
+	Left edge: streak panel only. The ultimate charge meter used to sit
+	under it; charge now lives on UIController's ULT icon (progress bar
+	+ glow), so this panel is hidden — see SHOW_ULTIMATE_METER_PANEL.
 ]]
 local PANEL_SCALE = 0.5
 local PANEL_WIDTH = 196
 local ULTIMATE_PANEL_HEIGHT = 78
-local ULTIMATE_PANEL_BOTTOM = 108
+-- Same bottom offset the ultimate meter used; streak drops into that
+-- slot now that the meter panel is hidden.
 local COMBO_PANEL_HEIGHT = 92
-local COMBO_PANEL_BOTTOM = ULTIMATE_PANEL_BOTTOM + math.ceil(ULTIMATE_PANEL_HEIGHT * PANEL_SCALE) + 6
+local COMBO_PANEL_BOTTOM = 108
+local SHOW_ULTIMATE_METER_PANEL = false
 
 local screenGui: ScreenGui
 local comboPanel: Frame
@@ -114,9 +113,10 @@ local ultimateEndsAt: number? = nil
 local ultimateReady = false
 local ultimateActive = false
 
--- Set by OnUltimateStateChanged so ClientMain can forward readiness to
--- UIController's ULT button without this module requiring it.
-local ultimateStateCallback: ((boolean, boolean, Color3) -> ())? = nil
+-- Set by OnUltimateStateChanged so ClientMain can forward readiness +
+-- charge to UIController.SetUltimateButtonState without this module
+-- requiring it. Args: ready, active, color, charge (0-1).
+local ultimateStateCallback: ((boolean, boolean, Color3, number) -> ())? = nil
 
 --[[
 	"PRESS Q" or "TAP ULT" on the ready meter, matching how the player
@@ -153,18 +153,16 @@ function ComboController.TryActivate()
 end
 
 --[[
-	Fires (ready, active, color) whenever the server pushes new ultimate
-	state. ClientMain forwards it to UIController.SetUltimateButtonState;
-	going through a callback rather than requiring UIController directly
-	keeps the controllers independent, matching how ammo and hitmarkers
-	are already wired.
+	Fires (ready, active, color, charge) whenever the server pushes new
+	ultimate state — and on each local countdown tick while active.
+	ClientMain forwards it to UIController.SetUltimateButtonState.
 ]]
-function ComboController.OnUltimateStateChanged(callback: (boolean, boolean, Color3) -> ())
+function ComboController.OnUltimateStateChanged(callback: (boolean, boolean, Color3, number) -> ())
 	ultimateStateCallback = callback
 	-- Push immediately: ClientMain registers this AFTER Init has already
 	-- drawn the meter's starting state, so without this the button would
 	-- keep its default styling until the first kill pushed an update.
-	callback(ultimateReady, ultimateActive, UltimateConfig.Color)
+	callback(ultimateReady, ultimateActive, UltimateConfig.Color, 0)
 end
 
 local function styleCorner(instance: Instance, radius: number)
@@ -276,20 +274,20 @@ local function buildComboPanel()
 end
 
 --[[
-	Ultimate meter: bottom-left under the streak panel, always visible so
-	the charge is readable even at zero — unlike the streak, it's a
-	resource the player is saving, and a meter that only appears when
-	full couldn't be saved toward.
+	Ultimate meter: bottom-left under the streak panel. Hidden by default
+	now that the ULT icon carries the charge bar + glow — flip
+	SHOW_ULTIMATE_METER_PANEL to bring this text meter back.
 ]]
 local function buildUltimatePanel()
 	ultimatePanel = Instance.new("Frame")
 	ultimatePanel.Name = "UltimatePanel"
 	ultimatePanel.AnchorPoint = Vector2.new(0, 1)
-	ultimatePanel.Position = UDim2.new(0, 16, 1, -ULTIMATE_PANEL_BOTTOM)
+	ultimatePanel.Position = UDim2.new(0, 16, 1, -COMBO_PANEL_BOTTOM)
 	ultimatePanel.Size = UDim2.fromOffset(PANEL_WIDTH, ULTIMATE_PANEL_HEIGHT)
 	ultimatePanel.BackgroundColor3 = PANEL_BG
 	ultimatePanel.BackgroundTransparency = 0.25
 	ultimatePanel.BorderSizePixel = 0
+	ultimatePanel.Visible = SHOW_ULTIMATE_METER_PANEL
 	ultimatePanel.Parent = screenGui
 	local ultimateScale = Instance.new("UIScale")
 	ultimateScale.Scale = PANEL_SCALE
@@ -407,10 +405,24 @@ local function renderUltimate(state)
 	ultimateReady = state.Ready == true
 	ultimateActive = state.Active == true
 
-	-- Mirror the state onto the touch button, which lives in
-	-- UIController — see OnUltimateStateChanged.
+	-- Mirror onto the ULT icon button (charge bar + glow).
 	if ultimateStateCallback then
-		ultimateStateCallback(ultimateReady, ultimateActive, UltimateConfig.Color)
+		local callbackCharge = ultimateCharge
+		if ultimateActive then
+			callbackCharge = 1
+		elseif ultimateReady then
+			callbackCharge = 1
+		end
+		ultimateStateCallback(ultimateReady, ultimateActive, UltimateConfig.Color, callbackCharge)
+	end
+
+	if not SHOW_ULTIMATE_METER_PANEL then
+		if ultimateActive then
+			ultimateEndsAt = os.clock() + (tonumber(state.SecondsLeft) or 0)
+		else
+			ultimateEndsAt = nil
+		end
+		return
 	end
 
 	if ultimateActive then
@@ -501,7 +513,14 @@ function ComboController.Init()
 				-- panel to its idle state, so this can't flicker it back
 				-- early on a slightly fast client clock.
 			else
-				ultimateHint.Text = ("ACTIVE — %.1fs"):format(remaining)
+				local fraction = math.clamp(remaining / UltimateConfig.DurationSeconds, 0, 1)
+				if ultimateStateCallback then
+					ultimateStateCallback(false, true, UltimateConfig.Color, fraction)
+				end
+				if SHOW_ULTIMATE_METER_PANEL then
+					ultimateHint.Text = ("ACTIVE — %.1fs"):format(remaining)
+					ultimateFill.Size = UDim2.fromScale(fraction, 1)
+				end
 			end
 		end
 	end)

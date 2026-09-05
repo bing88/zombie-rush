@@ -77,8 +77,8 @@ UIController.OnUltimatePressed(function()
 	ComboController.TryActivate()
 end)
 
-ComboController.OnUltimateStateChanged(function(ready: boolean, active: boolean, color: Color3)
-	UIController.SetUltimateButtonState(ready, active, color)
+ComboController.OnUltimateStateChanged(function(ready: boolean, active: boolean, color: Color3, charge: number)
+	UIController.SetUltimateButtonState(ready, active, color, charge)
 end)
 
 UIController.OnFireButtonStateChanged(function(held: boolean)
@@ -249,9 +249,11 @@ Remotes.GameStateChanged.OnClientEvent:Connect(function(state: string, secondsLe
 		UIController.SetGameStateBanner("Waiting for players...")
 		UIController.SetWaveModifier("Normal", "")
 		UIController.HideScoreboard()
+		UIController.SetWaveBreakSkipStatus(0, 0)
 		ShopController.SetMatchState(false, false)
 	elseif state == "Starting" then
 		UIController.SetGameStateBanner(("Match starts in %ds"):format(secondsLeft))
+		UIController.SetWaveBreakSkipStatus(0, 0)
 		ShopController.SetMatchState(false, false)
 	elseif state == "WaveIncoming" then
 		UIController.SetGameStateBanner(("Wave %d incoming in %ds"):format(nextWaveNumber or 0, secondsLeft))
@@ -264,19 +266,32 @@ Remotes.GameStateChanged.OnClientEvent:Connect(function(state: string, secondsLe
 		-- "you left the party" status here — clear the waiting panel off
 		-- the match starting instead, or it would linger all run.
 		UIController.SetPartyStatus(false, 0, 0)
+		UIController.SetWaveBreakSkipStatus(0, 0)
 		ShopController.SetMatchState(true, false)
 	elseif state == "BossIncoming" then
 		UIController.SetGameStateBanner(("BOSS INCOMING — %ds"):format(secondsLeft))
+		UIController.SetWaveBreakSkipStatus(0, 0)
 		ShopController.SetMatchState(true, false)
 	elseif state == "BossStart" then
 		UIController.FlashBanner("BOSS FIGHT!", 2.5)
+		UIController.SetWaveBreakSkipStatus(0, 0)
 		ShopController.SetMatchState(true, false)
 	elseif state == "Defeat" then
 		-- Endless mode has no victory state — a run only ends by being
 		-- wiped out, and the scoreboard reports how far you got.
 		UIController.SetGameStateBanner(("Wiped out... returning to lobby in %ds"):format(secondsLeft))
+		UIController.SetWaveBreakSkipStatus(0, 0)
 		ShopController.SetMatchState(false, false)
 	else
 		UIController.SetGameStateBanner("")
+		UIController.SetWaveBreakSkipStatus(0, 0)
 	end
+end)
+
+UIController.OnWaveBreakSkipPressed(function()
+	Remotes.SkipWaveBreak:FireServer()
+end)
+
+Remotes.WaveBreakSkipStatus.OnClientEvent:Connect(function(skippedCount: number, totalNeeded: number)
+	UIController.SetWaveBreakSkipStatus(tonumber(skippedCount) or 0, tonumber(totalNeeded) or 0)
 end)

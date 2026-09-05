@@ -33,6 +33,10 @@ local PerkShopController = {}
 
 local player = Players.LocalPlayer
 
+-- Set false to hide the PERKS (P) tab and panel entirely. Perk effects
+-- still apply server-side if a player already owns a pass.
+local SHOW_PERKS_UI = false
+
 local screenGui: ScreenGui
 local panel: Frame
 local tabButton: TextButton
@@ -121,6 +125,10 @@ local function buildRow(perk, index: number)
 end
 
 function PerkShopController.Init()
+	if not SHOW_PERKS_UI then
+		return
+	end
+
 	screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "PerkShopGui"
 	screenGui.ResetOnSpawn = false
