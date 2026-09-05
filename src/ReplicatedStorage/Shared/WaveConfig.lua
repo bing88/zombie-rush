@@ -128,4 +128,27 @@ function WaveConfig.GetBossHPMultiplier(waveNumber: number): number
 	return 1 + (bossIndex - 1) * 0.75
 end
 
+--[[
+	Support pack that spawns alongside the boss. Uses that wave's normal
+	composition (same curve as a non-boss wave) so escorts scale with
+	depth — wave 10 gets the handcrafted finale mix, wave 20+ gets the
+	generated curve. Boss itself is never in this table; WaveService
+	spawns it separately.
+]]
+function WaveConfig.GetBossEscort(waveNumber: number): WaveData
+	local base = WaveConfig.GetWave(waveNumber)
+	local composition: WaveComposition = {}
+	for zombieType, count in base.Composition do
+		if zombieType ~= "Boss" and type(count) == "number" and count > 0 then
+			composition[zombieType] = count
+		end
+	end
+	return {
+		Composition = composition,
+		-- Slightly slower than the normal wave so the boss remains readable
+		-- while adds keep pressure on.
+		SpawnInterval = math.max(0.7, base.SpawnInterval * 1.15),
+	}
+end
+
 return WaveConfig

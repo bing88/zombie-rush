@@ -411,11 +411,13 @@ end
 
 --[[
 	Runs the boss portion of a boss wave (every WaveConfig.BossEveryNWaves
-	waves). Returns once the boss is dead or the match was lost.
+	waves). Returns once the boss AND its escort are dead, or the match
+	was lost.
 
 	HP scales with which boss this is (see WaveConfig.GetBossHPMultiplier)
 	so the wave-20/30/... bosses stay threatening against upgraded
-	weapons instead of melting instantly.
+	weapons instead of melting instantly. Escort zombies trickle in from
+	WaveConfig.GetBossEscort so the arena isn't a 1v1 duel.
 ]]
 local function runBossWave(waveNumber: number)
 	if matchDefeated then
@@ -442,6 +444,16 @@ local function runBossWave(waveNumber: number)
 	if bossHumanoid then
 		BossHPChanged:FireAllClients(bossHumanoid.Health, bossHumanoid.MaxHealth)
 	end
+
+	-- Escort horde in parallel so waitUntilArenaClear covers boss + adds.
+	local escort = WaveConfig.GetBossEscort(waveNumber)
+	task.spawn(function()
+		task.wait(1.2) -- let the boss land / banner read before adds pour in
+		if matchDefeated then
+			return
+		end
+		spawnWaveTrickle(escort.Composition, escort.SpawnInterval, waveNumber)
+	end)
 
 	waitUntilArenaClear()
 
