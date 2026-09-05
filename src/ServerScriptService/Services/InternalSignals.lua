@@ -15,6 +15,7 @@
 local InternalSignals = {}
 
 local ammoRefreshHandler: ((Player) -> ())? = nil
+local ammoRefillHandler: ((Player) -> ())? = nil
 
 function InternalSignals.SetAmmoRefreshHandler(handler: (Player) -> ())
 	ammoRefreshHandler = handler
@@ -23,6 +24,17 @@ end
 function InternalSignals.RequestAmmoRefresh(player: Player)
 	if ammoRefreshHandler then
 		ammoRefreshHandler(player)
+	end
+end
+
+-- Tops up every owned magazine immediately (Ammo Crate consumable).
+function InternalSignals.SetAmmoRefillHandler(handler: (Player) -> ())
+	ammoRefillHandler = handler
+end
+
+function InternalSignals.RequestAmmoRefill(player: Player)
+	if ammoRefillHandler then
+		ammoRefillHandler(player)
 	end
 end
 

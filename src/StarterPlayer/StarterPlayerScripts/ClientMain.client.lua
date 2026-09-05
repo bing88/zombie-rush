@@ -179,6 +179,7 @@ end)
 Remotes.CoinsUpdated.OnClientEvent:Connect(function(amount: number)
 	UIController.SetCoins(amount)
 	ShopController.SetCash(amount)
+	RunDraftController.SetCash(amount)
 end)
 
 Remotes.WaveStateChanged.OnClientEvent:Connect(function(waveNumber: number, totalWaves: number, state: string)
@@ -211,6 +212,12 @@ Remotes.WeaponsOwned.OnClientEvent:Connect(function(
 )
 	ShopController.SetOwnedWeapons(owned, levels, available)
 	UIController.SetOwnedWeapons(owned)
+end)
+
+Remotes.ConsumablesUpdated.OnClientEvent:Connect(function(state)
+	if type(state) == "table" then
+		ShopController.SetConsumables(state)
+	end
 end)
 
 Remotes.MetaProgressChanged.OnClientEvent:Connect(function(state)

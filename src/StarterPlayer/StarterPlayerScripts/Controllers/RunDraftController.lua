@@ -43,6 +43,7 @@ local RunUpgradeConfig = require(ReplicatedStorage.Shared.RunUpgradeConfig)
 local RunUpgradeOffer = Remotes.RunUpgradeOffer
 local RunUpgradeChosen = Remotes.RunUpgradeChosen
 local RunUpgradesChanged = Remotes.RunUpgradesChanged
+local RerollDraftRequest = Remotes.RerollDraftRequest
 
 local RunDraftController = {}
 
@@ -56,6 +57,7 @@ local screenGui: ScreenGui
 local draftPanel: Frame
 local draftTitle: TextLabel
 local cardRow: Frame
+local rerollButton: TextButton
 local buildTabButton: TextButton
 local buildPanel: Frame
 local buildList: Frame
@@ -71,6 +73,8 @@ local buildPanelVisible = false
 local ownedCount = 0
 -- True only for the SHOW_DRAFT_ON_START preview (no server pending offer).
 local isPreviewDraft = false
+local latestCash = 0
+local currentRerollCost = RunUpgradeConfig.RerollBaseCost
 
 -- Coin label sits at (20, bottom-20) size 140x32 in UIController — this
 -- tab sits immediately to its right so the bottom-left row reads
@@ -361,14 +365,15 @@ local function renderBuildList(owned: { { Name: string, Stacks: number, IconId: 
 	buildPanel.Size = UDim2.fromOffset(220, 44 + ownedCount * rowHeight)
 end
 
-function RunDraftController.Show(offer)
+function RunDraftController.Show(offer, rerollCost: number?)
 	currentOffer = offer
+	currentRerollCost = rerollCost or RunUpgradeConfig.RerollBaseCost
 	clearCards()
 
 	local count = #offer
 	local rowWidth = count * CARD_WIDTH + math.max(0, count - 1) * CARD_GAP
 	cardRow.Size = UDim2.fromOffset(rowWidth, CARD_HEIGHT)
-	draftPanel.Size = UDim2.fromOffset(rowWidth + 48, CARD_HEIGHT + 96)
+	draftPanel.Size = UDim2.fromOffset(math.max(rowWidth + 48, 420), CARD_HEIGHT + 140)
 
 	for index, card in offer do
 		local button = buildCard(index, card)
@@ -378,6 +383,15 @@ function RunDraftController.Show(offer)
 	end
 
 	draftTitle.Text = isPreviewDraft and "ICON PREVIEW" or "CHOOSE AN UPGRADE"
+	if rerollButton then
+		local canReroll = not isPreviewDraft
+		rerollButton.Visible = canReroll
+		rerollButton.Text = ("REROLL — %d"):format(currentRerollCost)
+		rerollButton.AutoButtonColor = latestCash >= currentRerollCost
+		rerollButton.BackgroundColor3 = if latestCash >= currentRerollCost
+			then Color3.fromRGB(70, 55, 20)
+			else Color3.fromRGB(50, 50, 55)
+	end
 	draftPanel.Visible = true
 
 	-- Short fade-in so the panel doesn't pop into existence over the
@@ -390,7 +404,21 @@ function RunDraftController.Hide()
 	currentOffer = {}
 	isPreviewDraft = false
 	draftPanel.Visible = false
+	if rerollButton then
+		rerollButton.Visible = false
+	end
 	clearCards()
+end
+
+function RunDraftController.SetCash(amount: number)
+	latestCash = amount
+	if rerollButton and rerollButton.Visible and #currentOffer > 0 then
+		rerollButton.Text = ("REROLL — %d"):format(currentRerollCost)
+		rerollButton.AutoButtonColor = latestCash >= currentRerollCost
+		rerollButton.BackgroundColor3 = if latestCash >= currentRerollCost
+			then Color3.fromRGB(70, 55, 20)
+			else Color3.fromRGB(50, 50, 55)
+	end
 end
 
 --[[
@@ -425,7 +453,7 @@ function RunDraftController.Init()
 	draftPanel.Name = "DraftPanel"
 	draftPanel.AnchorPoint = Vector2.new(0.5, 0.5)
 	draftPanel.Position = UDim2.fromScale(0.5, 0.42)
-	draftPanel.Size = UDim2.fromOffset(3 * CARD_WIDTH + 2 * CARD_GAP + 48, CARD_HEIGHT + 96)
+	draftPanel.Size = UDim2.fromOffset(3 * CARD_WIDTH + 2 * CARD_GAP + 48, CARD_HEIGHT + 140)
 	draftPanel.BackgroundColor3 = PANEL_BG
 	draftPanel.BackgroundTransparency = 0.12
 	draftPanel.BorderSizePixel = 0
@@ -453,7 +481,7 @@ function RunDraftController.Init()
 	subtitle.Font = Enum.Font.Gotham
 	subtitle.TextSize = 13
 	subtitle.TextColor3 = Color3.fromRGB(170, 170, 180)
-	subtitle.Text = "Press 1, 2 or 3 to choose. Lasts this run only."
+	subtitle.Text = "Press 1, 2 or 3 to choose. Reroll spends run cash."
 	subtitle.Parent = draftPanel
 
 	cardRow = Instance.new("Frame")
@@ -463,6 +491,27 @@ function RunDraftController.Init()
 	cardRow.Size = UDim2.fromOffset(3 * CARD_WIDTH + 2 * CARD_GAP, CARD_HEIGHT)
 	cardRow.BackgroundTransparency = 1
 	cardRow.Parent = draftPanel
+
+	rerollButton = Instance.new("TextButton")
+	rerollButton.Name = "RerollButton"
+	rerollButton.AnchorPoint = Vector2.new(0.5, 1)
+	rerollButton.Position = UDim2.new(0.5, 0, 1, -14)
+	rerollButton.Size = UDim2.fromOffset(180, 32)
+	rerollButton.BackgroundColor3 = Color3.fromRGB(70, 55, 20)
+	rerollButton.TextColor3 = Color3.new(1, 1, 1)
+	rerollButton.Font = Enum.Font.GothamBold
+	rerollButton.TextSize = 14
+	rerollButton.Text = "REROLL — 125"
+	rerollButton.Visible = false
+	rerollButton.Parent = draftPanel
+	styleCorner(rerollButton, 6)
+	styleStroke(rerollButton, ACCENT, 1.5)
+	rerollButton.Activated:Connect(function()
+		if isPreviewDraft or #currentOffer == 0 then
+			return
+		end
+		RerollDraftRequest:FireServer()
+	end)
 
 	-- RUN tab next to the coin counter (bottom-left). Opens a panel with
 	-- the owned draft-upgrade list — used to sit permanently on the
@@ -552,13 +601,31 @@ function RunDraftController.Init()
 		was auto-resolved for them. Dismissing on it guarantees the panel
 		can never outlive its break and hang over the next wave.
 	]]
-	RunUpgradeOffer.OnClientEvent:Connect(function(offer)
-		if type(offer) ~= "table" or #offer == 0 then
+	RunUpgradeOffer.OnClientEvent:Connect(function(payload)
+		if type(payload) ~= "table" then
 			RunDraftController.Hide()
 			return
 		end
+
+		local cards = payload.Cards
+		local rerollCost = payload.RerollCost
+		-- Backward-compatible: older servers sent a bare card array.
+		if typeof(cards) ~= "table" then
+			if #payload > 0 and payload[1] and payload[1].Id then
+				cards = payload
+				rerollCost = RunUpgradeConfig.RerollBaseCost
+			else
+				RunDraftController.Hide()
+				return
+			end
+		end
+		if #cards == 0 then
+			RunDraftController.Hide()
+			return
+		end
+
 		isPreviewDraft = false
-		RunDraftController.Show(offer)
+		RunDraftController.Show(cards, if typeof(rerollCost) == "number" then rerollCost else nil)
 	end)
 
 	RunUpgradesChanged.OnClientEvent:Connect(function(state)

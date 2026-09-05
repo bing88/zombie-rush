@@ -39,6 +39,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ZombieConfig = require(ReplicatedStorage.Shared.ZombieConfig)
 local EliteConfig = require(ReplicatedStorage.Shared.EliteConfig)
 local Remotes = require(ReplicatedStorage.Remotes)
+local RunUpgradeService = require(script.Parent.RunUpgradeService)
 
 local ZombieRangedAttack = Remotes.ZombieRangedAttack
 local ZombieExploded = Remotes.ZombieExploded
@@ -441,6 +442,8 @@ local function createZombieModel(statsName: string): Model
 	if statsName == "Boss" then
 		CollectionService:AddTag(model, BOSS_TAG)
 	end
+	-- Used by hit-knockback resistance (Boss/Tank/Brute ignore shove).
+	model:SetAttribute("ZombieType", statsName)
 
 	return model
 end
@@ -1047,10 +1050,21 @@ end
 local HIT_KNOCKBACK_STUN_SECONDS = 0.15
 local HIT_KNOCKBACK_SPEED = 16
 local HIT_KNOCKBACK_LIFT = 5
+-- Without Impact drafted, only ~30% of surviving hits shove — high fire
+-- rate used to permanently stun bosses/hordes when every pellet knocked.
+local HIT_KNOCKBACK_BASE_CHANCE = 0.3
+local HIT_KNOCKBACK_COOLDOWN = 0.45
+-- Heavy types never take living-hit knockback (death fling still applies).
+local KNOCKBACK_IMMUNE_TYPES: { [string]: boolean } = {
+	Boss = true,
+	Tank = true,
+	Brute = true,
+}
 
+local lastHitKnockbackAt: { [Model]: number } = {}
 -- Shared per-zombie "stun until" clock (os.clock() timestamp), keyed by
--- Model. See ApplyHitKnockback's comment for why this replaced each
--- call independently saving/restoring humanoid.PlatformStand.
+-- Model. See ApplyHitKnockback's comment for why overlapping hits share
+-- one expiry instead of independently restoring PlatformStand.
 local knockbackStunExpiry: { [Model]: number } = {}
 
 --[[
@@ -1058,6 +1072,11 @@ local knockbackStunExpiry: { [Model]: number } = {}
 	blows keep the separate, more theatrical applyDeathKnockback instead)
 	backward along the shot's direction, so getting shot reads as an
 	impact instead of the zombie just soaking damage silently.
+
+	Not every hit: base chance + optional Impact run-upgrade bonus, with
+	a per-zombie cooldown so AR/Gunslinger can't soft-lock an enemy by
+	chaining PlatformStand stuns. Boss/Tank/Brute are fully immune so
+	late-game bosses can actually close distance.
 
 	Briefly flips Humanoid.PlatformStand on: a Humanoid actively fighting
 	for movement control (MoveTo, every AI loop below calls it constantly)
@@ -1085,10 +1104,35 @@ local knockbackStunExpiry: { [Model]: number } = {}
 	expiry actually clears PlatformStand, so overlapping hits can no
 	longer race each other into leaving it stuck on.
 ]]
-function ZombieService.ApplyHitKnockback(zombieModel: Model, shotDirection: Vector3)
+function ZombieService.ApplyHitKnockback(zombieModel: Model, shotDirection: Vector3, player: Player?)
 	local rootPart = zombieModel.PrimaryPart
 	local humanoid = zombieModel:FindFirstChildOfClass("Humanoid")
 	if not rootPart or not humanoid or humanoid.Health <= 0 then
+		return
+	end
+
+	local zombieType = zombieModel:GetAttribute("ZombieType")
+	if typeof(zombieType) ~= "string" then
+		zombieType = ""
+	end
+	if KNOCKBACK_IMMUNE_TYPES[zombieType] or CollectionService:HasTag(zombieModel, BOSS_TAG) then
+		return
+	end
+
+	local now = os.clock()
+	if (lastHitKnockbackAt[zombieModel] or 0) + HIT_KNOCKBACK_COOLDOWN > now then
+		return
+	end
+
+	local chance = HIT_KNOCKBACK_BASE_CHANCE
+	local forceScale = 1
+	if player then
+		chance += RunUpgradeService.GetTotal(player, "KnockbackChance")
+		local impactStacks = RunUpgradeService.GetStacks(player, "Impact")
+		forceScale = 1 + impactStacks * 0.3
+	end
+	chance = math.clamp(chance, 0, 0.92)
+	if math.random() > chance then
 		return
 	end
 
@@ -1096,8 +1140,9 @@ function ZombieService.ApplyHitKnockback(zombieModel: Model, shotDirection: Vect
 	if horizontal.Magnitude < 0.01 then
 		return
 	end
-	local impulseVelocity = horizontal.Unit * HIT_KNOCKBACK_SPEED + Vector3.new(0, HIT_KNOCKBACK_LIFT, 0)
+	local impulseVelocity = horizontal.Unit * (HIT_KNOCKBACK_SPEED * forceScale) + Vector3.new(0, HIT_KNOCKBACK_LIFT, 0)
 
+	lastHitKnockbackAt[zombieModel] = now
 	humanoid.PlatformStand = true
 
 	local ok = pcall(function()
@@ -1245,6 +1290,7 @@ function ZombieService.SpawnZombie(
 		end
 		zombieDiedBindable:Fire(statsName, killerPlayer, coinReward)
 		knockbackStunExpiry[model] = nil -- drop the reference so the destroyed Model can actually be garbage collected
+		lastHitKnockbackAt[model] = nil
 		task.delay(2, function()
 			model:Destroy()
 		end)

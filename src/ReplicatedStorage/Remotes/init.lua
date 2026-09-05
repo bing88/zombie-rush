@@ -60,6 +60,9 @@ local remoteNames = {
 	"WaveBreakSkipStatus", -- server -> all clients: (skippedCount, totalNeeded) during a break, or (0, 0) when the break ends
 	"PurchaseWeaponRequest", -- client -> server: buy a weapon with this run's cash (replaces the removed lobby Stall_Buy* prompts)
 	"MetaProgressChanged", -- server -> owning client: persistent meta level/XP, which decides what the run shop may offer (see MetaConfig)
+	"PurchaseConsumableRequest", -- client -> server: buy a run consumable (Medkit / Ammo Crate / Sweep) with this run's cash
+	"ConsumablesUpdated", -- server -> owning client: per-consumable buy counts + next costs for the shop rows
+	"RerollDraftRequest", -- client -> server: spend cash to reroll the current between-wave draft offer
 }
 
 local Remotes = {}

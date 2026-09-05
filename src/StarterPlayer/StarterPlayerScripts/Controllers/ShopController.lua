@@ -29,10 +29,12 @@ local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local MetaConfig = require(ReplicatedStorage.Shared.MetaConfig)
+local ConsumableConfig = require(ReplicatedStorage.Shared.ConsumableConfig)
 local WeaponModelFactory = require(ReplicatedStorage.Shared.WeaponModelFactory)
 
 local PurchaseUpgradeRequest = Remotes.PurchaseUpgradeRequest
 local PurchaseWeaponRequest = Remotes.PurchaseWeaponRequest
+local PurchaseConsumableRequest = Remotes.PurchaseConsumableRequest
 local TOGGLE_KEY = Enum.KeyCode.U
 
 local ShopController = {}
@@ -48,10 +50,12 @@ local cashLabel: TextLabel
 local metaLabel: TextLabel
 local hintLabel: TextLabel
 local rows: { [string]: { StatusLabel: TextLabel, ActionButton: TextButton } } = {}
+local consumableRows: { [string]: { StatusLabel: TextLabel, ActionButton: TextButton } } = {}
 
 local latestOwned: { [string]: boolean } = {}
 local latestLevels: { [string]: number } = {}
 local latestAvailable: { [string]: boolean } = {}
+local latestConsumables: { [string]: { Buys: number, NextCost: number } } = {}
 local latestCash = 0
 local equippedWeapon: string? = nil
 local matchOpen = false
@@ -61,6 +65,7 @@ local tabPulse: Tween? = nil
 
 local BUY_GREEN = Color3.fromRGB(60, 130, 70)
 local UPGRADE_BLUE = Color3.fromRGB(50, 110, 160)
+local CONSUMABLE_ORANGE = Color3.fromRGB(160, 100, 40)
 local LOCKED_GREY = Color3.fromRGB(60, 60, 60)
 local READY_GOLD = Color3.fromRGB(255, 190, 60)
 
@@ -203,6 +208,31 @@ local function refreshRow(weaponName: string)
 	row.ActionButton.BackgroundColor3 = canAfford and UPGRADE_BLUE or LOCKED_GREY
 end
 
+local function refreshConsumableRow(consumableId: string)
+	local row = consumableRows[consumableId]
+	local def = ConsumableConfig.Get(consumableId)
+	if not row or not def then
+		return
+	end
+
+	local state = latestConsumables[consumableId]
+	local buys = state and state.Buys or 0
+	local cost = (state and state.NextCost) or ConsumableConfig.GetCost(consumableId, buys) or def.BaseCost
+	row.StatusLabel.Text = buys > 0 and ("Bought %dx this run"):format(buys) or def.Description
+
+	if not matchOpen then
+		row.ActionButton.Text = "IN MATCH"
+		row.ActionButton.AutoButtonColor = false
+		row.ActionButton.BackgroundColor3 = LOCKED_GREY
+		return
+	end
+
+	local canAfford = latestCash >= cost
+	row.ActionButton.Text = canAfford and ("BUY — %d"):format(cost) or ("NEED %d"):format(cost - latestCash)
+	row.ActionButton.AutoButtonColor = canAfford
+	row.ActionButton.BackgroundColor3 = canAfford and CONSUMABLE_ORANGE or LOCKED_GREY
+end
+
 local function refreshAllRows()
 	if cashLabel then
 		cashLabel.Text = matchOpen and ("$%d this run"):format(latestCash) or "Shop opens in a match"
@@ -211,13 +241,16 @@ local function refreshAllRows()
 		if not matchOpen then
 			hintLabel.Text = "Every match starts with the Pistol. Buys and upgrades reset when the run ends."
 		elseif inBreak then
-			hintLabel.Text = "Break — spend now, or save for the next wave."
+			hintLabel.Text = "Break — upgrade guns, buy supplies, or reroll the draft."
 		else
-			hintLabel.Text = "Buys and upgrades last this run only. Rifle now, or more pistol levels?"
+			hintLabel.Text = "Guns first, then supplies once you're maxed. Prices rise each buy."
 		end
 	end
 	for weaponName in rows do
 		refreshRow(weaponName)
+	end
+	for consumableId in consumableRows do
+		refreshConsumableRow(consumableId)
 	end
 end
 
@@ -233,6 +266,13 @@ local function requestAction(weaponName: string)
 	else
 		PurchaseWeaponRequest:FireServer(weaponName)
 	end
+end
+
+local function requestConsumable(consumableId: string)
+	if not matchOpen then
+		return
+	end
+	PurchaseConsumableRequest:FireServer(consumableId)
 end
 
 local function buildUI()
@@ -270,7 +310,7 @@ local function buildUI()
 	panel.Name = "ShopPanel"
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.fromOffset(420, 310)
+	panel.Size = UDim2.fromOffset(420, 520)
 	panel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 	panel.BackgroundTransparency = 0.1
 	panel.Visible = false
@@ -345,10 +385,14 @@ local function buildUI()
 	hintLabel.Text = "Every match starts with the Pistol."
 	hintLabel.Parent = panel
 
-	local listHolder = Instance.new("Frame")
+	local listHolder = Instance.new("ScrollingFrame")
 	listHolder.Size = UDim2.new(1, -20, 1, -80)
 	listHolder.Position = UDim2.new(0, 10, 0, 70)
 	listHolder.BackgroundTransparency = 1
+	listHolder.BorderSizePixel = 0
+	listHolder.ScrollBarThickness = 4
+	listHolder.CanvasSize = UDim2.fromOffset(0, 0)
+	listHolder.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	listHolder.Parent = panel
 
 	local layout = Instance.new("UIListLayout")
@@ -356,13 +400,15 @@ local function buildUI()
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
 	layout.Parent = listHolder
 
+	local layoutOrder = 0
 	for index, weaponName in WeaponConfig.Order do
+		layoutOrder = index
 		local row = Instance.new("Frame")
 		row.Name = weaponName .. "Row"
-		row.Size = UDim2.new(1, 0, 0, 66)
+		row.Size = UDim2.new(1, -8, 0, 66)
 		row.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 		row.BackgroundTransparency = 0.2
-		row.LayoutOrder = index
+		row.LayoutOrder = layoutOrder
 		row.Parent = listHolder
 
 		local rowCorner = Instance.new("UICorner")
@@ -501,6 +547,85 @@ local function buildUI()
 		}
 	end
 
+	layoutOrder += 1
+	local suppliesHeader = Instance.new("TextLabel")
+	suppliesHeader.Name = "SuppliesHeader"
+	suppliesHeader.Size = UDim2.new(1, -8, 0, 22)
+	suppliesHeader.BackgroundTransparency = 1
+	suppliesHeader.TextColor3 = Color3.fromRGB(255, 190, 60)
+	suppliesHeader.Font = Enum.Font.GothamBold
+	suppliesHeader.TextSize = 13
+	suppliesHeader.TextXAlignment = Enum.TextXAlignment.Left
+	suppliesHeader.Text = "SUPPLIES  (prices rise each buy)"
+	suppliesHeader.LayoutOrder = layoutOrder
+	suppliesHeader.Parent = listHolder
+
+	for _, consumableId in ConsumableConfig.Order do
+		layoutOrder += 1
+		local def = ConsumableConfig.Get(consumableId)
+		if not def then
+			continue
+		end
+
+		local row = Instance.new("Frame")
+		row.Name = consumableId .. "Row"
+		row.Size = UDim2.new(1, -8, 0, 52)
+		row.BackgroundColor3 = Color3.fromRGB(40, 32, 28)
+		row.BackgroundTransparency = 0.15
+		row.LayoutOrder = layoutOrder
+		row.Parent = listHolder
+
+		local rowCorner = Instance.new("UICorner")
+		rowCorner.CornerRadius = UDim.new(0, 6)
+		rowCorner.Parent = row
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Size = UDim2.new(0.55, 0, 0, 20)
+		nameLabel.Position = UDim2.new(0, 10, 0, 6)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.TextColor3 = Color3.new(1, 1, 1)
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextSize = 14
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+		nameLabel.Text = def.Name
+		nameLabel.Parent = row
+
+		local statusLabel = Instance.new("TextLabel")
+		statusLabel.Size = UDim2.new(0.55, 0, 0, 18)
+		statusLabel.Position = UDim2.new(0, 10, 0, 26)
+		statusLabel.BackgroundTransparency = 1
+		statusLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
+		statusLabel.Font = Enum.Font.Gotham
+		statusLabel.TextSize = 12
+		statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+		statusLabel.Text = def.Description
+		statusLabel.Parent = row
+
+		local actionButton = Instance.new("TextButton")
+		actionButton.Size = UDim2.new(0.32, -12, 1, -14)
+		actionButton.Position = UDim2.new(0.68, 0, 0, 7)
+		actionButton.BackgroundColor3 = CONSUMABLE_ORANGE
+		actionButton.TextColor3 = Color3.new(1, 1, 1)
+		actionButton.Font = Enum.Font.GothamBold
+		actionButton.TextSize = 13
+		actionButton.TextWrapped = true
+		actionButton.Text = "..."
+		actionButton.Parent = row
+
+		local buyCorner = Instance.new("UICorner")
+		buyCorner.CornerRadius = UDim.new(0, 4)
+		buyCorner.Parent = actionButton
+
+		actionButton.Activated:Connect(function()
+			requestConsumable(consumableId)
+		end)
+
+		consumableRows[consumableId] = {
+			StatusLabel = statusLabel,
+			ActionButton = actionButton,
+		}
+	end
+
 	tabButton.Activated:Connect(function()
 		setPanelVisible(not visible)
 	end)
@@ -552,6 +677,11 @@ end
 
 function ShopController.SetCash(amount: number)
 	latestCash = amount
+	refreshAllRows()
+end
+
+function ShopController.SetConsumables(state: { [string]: { Buys: number, NextCost: number } })
+	latestConsumables = state
 	refreshAllRows()
 end
 

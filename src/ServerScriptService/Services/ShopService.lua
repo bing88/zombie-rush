@@ -40,20 +40,66 @@ local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 local UpgradeConfig = require(ReplicatedStorage.Shared.UpgradeConfig)
 local MetaConfig = require(ReplicatedStorage.Shared.MetaConfig)
+local ConsumableConfig = require(ReplicatedStorage.Shared.ConsumableConfig)
 local WeaponModelFactory = require(ReplicatedStorage.Shared.WeaponModelFactory)
 local DataService = require(script.Parent.DataService)
 local RunLoadoutService = require(script.Parent.RunLoadoutService)
 local MatchState = require(script.Parent.MatchState)
 local InternalSignals = require(script.Parent.InternalSignals)
 
+local CollectionService = game:GetService("CollectionService")
+
 local CoinsUpdated = Remotes.CoinsUpdated
 local WeaponsOwned = Remotes.WeaponsOwned
 local ShopResult = Remotes.ShopResult
 local PurchaseUpgradeRequest = Remotes.PurchaseUpgradeRequest
 local PurchaseWeaponRequest = Remotes.PurchaseWeaponRequest
+local PurchaseConsumableRequest = Remotes.PurchaseConsumableRequest
+local ConsumablesUpdated = Remotes.ConsumablesUpdated
 local MetaProgressChanged = Remotes.MetaProgressChanged
 
 local ShopService = {}
+
+-- [player][consumableId] = purchases this run (drives escalating costs).
+local consumableBuys: { [Player]: { [string]: number } } = {}
+
+local function getConsumableBuys(player: Player): { [string]: number }
+	local buys = consumableBuys[player]
+	if not buys then
+		buys = {}
+		consumableBuys[player] = buys
+	end
+	return buys
+end
+
+--[[
+	Spend path shared by weapon buys, upgrades, consumables, and draft
+	rerolls — always syncs CoinsUpdated so the HUD can't drift.
+]]
+function ShopService.TrySpend(player: Player, amount: number, failMessage: string): boolean
+	if amount <= 0 then
+		return true
+	end
+	if not RunLoadoutService.SpendCash(player, amount) then
+		ShopResult:FireClient(player, false, failMessage)
+		return false
+	end
+	CoinsUpdated:FireClient(player, RunLoadoutService.GetCash(player))
+	return true
+end
+
+local function syncConsumables(player: Player)
+	local buys = getConsumableBuys(player)
+	local payload = {}
+	for _, id in ConsumableConfig.Order do
+		local count = buys[id] or 0
+		payload[id] = {
+			Buys = count,
+			NextCost = ConsumableConfig.GetCost(id, count),
+		}
+	end
+	ConsumablesUpdated:FireClient(player, payload)
+end
 
 --[[
 	Pushes the player's whole shop-relevant state: cash, and per weapon
@@ -76,6 +122,7 @@ function ShopService.SyncPlayer(player: Player)
 		available[weaponName] = MetaConfig.IsWeaponAvailable(metaLevel, weaponName)
 	end
 	WeaponsOwned:FireClient(player, owned, levels, available)
+	syncConsumables(player)
 end
 
 --[[
@@ -158,6 +205,7 @@ end
 function ShopService.ResetAllRuns()
 	for _, player in Players:GetPlayers() do
 		RunLoadoutService.ResetPlayer(player)
+		consumableBuys[player] = nil
 		reconcileTools(player)
 		ShopService.SyncPlayer(player)
 	end
@@ -229,6 +277,7 @@ local function tryBuyWeapon(player: Player, weaponName: string)
 		ShopResult:FireClient(player, false, ("Need %d coins for the %s"):format(stats.Price, weaponName))
 		return
 	end
+	CoinsUpdated:FireClient(player, RunLoadoutService.GetCash(player))
 
 	RunLoadoutService.UnlockWeapon(player, weaponName)
 	ShopResult:FireClient(player, true, "Bought the " .. weaponName .. "!")
@@ -270,6 +319,7 @@ local function tryBuyUpgrade(player: Player, weaponName: string)
 		ShopResult:FireClient(player, false, ("Need %d coins for %s Lv%d"):format(levelData.Cost, weaponName, nextLevel))
 		return
 	end
+	CoinsUpdated:FireClient(player, RunLoadoutService.GetCash(player))
 
 	RunLoadoutService.SetWeaponLevel(player, weaponName, nextLevel)
 	ShopResult:FireClient(player, true, ("%s upgraded to Lv%d!"):format(weaponName, nextLevel))
@@ -306,6 +356,68 @@ PurchaseUpgradeRequest.OnServerEvent:Connect(function(player: Player, weaponName
 		return
 	end
 	tryBuyUpgrade(player, weaponName :: string)
+end)
+
+local function tryBuyConsumable(player: Player, consumableId: string)
+	local def = ConsumableConfig.Get(consumableId)
+	if not def then
+		return
+	end
+	if not requireActiveMatch(player) then
+		return
+	end
+
+	local buys = getConsumableBuys(player)
+	local prior = buys[consumableId] or 0
+	local cost = ConsumableConfig.GetCost(consumableId, prior)
+	if not cost then
+		return
+	end
+	if not ShopService.TrySpend(player, cost, ("Need %d coins for %s"):format(cost, def.Name)) then
+		return
+	end
+
+	buys[consumableId] = prior + 1
+
+	if consumableId == "Medkit" then
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 then
+			humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + ConsumableConfig.MedkitHeal)
+		end
+		ShopResult:FireClient(player, true, ("Used %s (+%d HP)"):format(def.Name, ConsumableConfig.MedkitHeal))
+	elseif consumableId == "AmmoCrate" then
+		InternalSignals.RequestAmmoRefill(player)
+		ShopResult:FireClient(player, true, "Magazines refilled")
+	elseif consumableId == "Sweep" then
+		local hit = 0
+		for _, zombie in CollectionService:GetTagged("Zombie") do
+			if zombie:IsA("Model") and zombie.Parent then
+				local humanoid = zombie:FindFirstChildOfClass("Humanoid")
+				if humanoid and humanoid.Health > 0 then
+					zombie:SetAttribute("LastHitPlayerId", player.UserId)
+					humanoid:TakeDamage(ConsumableConfig.SweepDamage)
+					hit += 1
+				end
+			end
+		end
+		ShopResult:FireClient(player, true, ("Sweep hit %d zombie(s)"):format(hit))
+	else
+		ShopResult:FireClient(player, true, "Bought " .. def.Name)
+	end
+
+	syncConsumables(player)
+end
+
+PurchaseConsumableRequest.OnServerEvent:Connect(function(player: Player, consumableId: unknown)
+	if typeof(consumableId) ~= "string" then
+		return
+	end
+	tryBuyConsumable(player, consumableId :: string)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	consumableBuys[player] = nil
 end)
 
 return ShopService

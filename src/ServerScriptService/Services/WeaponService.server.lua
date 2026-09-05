@@ -143,6 +143,17 @@ InternalSignals.SetAmmoRefreshHandler(function(player: Player)
 	end
 end)
 
+InternalSignals.SetAmmoRefillHandler(function(player: Player)
+	local state = getOrCreateState(player)
+	for _, weaponName in WeaponConfig.Order do
+		if RunLoadoutService.IsWeaponUnlocked(player, weaponName) then
+			state.Ammo[weaponName] = getMagazineCapacity(player, weaponName)
+			state.Reloading[weaponName] = false
+		end
+	end
+	syncAmmo(player, state)
+end)
+
 --[[
 	Connects Tool.Equipped so we always know the *actual* equipped weapon
 	server-side, regardless of whether the client switched via number key
@@ -403,7 +414,7 @@ local function resolvePellet(player: Player, character: Model, stats, damage: nu
 		-- (see ZombieService's applyDeathKnockback via onDeath) — this is
 		-- just for hits the zombie survives, so getting shot always reads
 		-- as an impact rather than only mattering on the kill.
-		ZombieService.ApplyHitKnockback(zombieModel, direction)
+		ZombieService.ApplyHitKnockback(zombieModel, direction, player)
 	end
 
 	-- Only the BOSS broadcasts its health, because it's the only zombie

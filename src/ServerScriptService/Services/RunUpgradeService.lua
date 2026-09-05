@@ -27,6 +27,7 @@
 	                 ReloadSpeed, ExplodeOnKill
 	  PlayerService  MaxHealth, MoveSpeed (via onUpgradeApplied, below)
 	  WaveService    CoinGain, HealPerKill
+	  ZombieService  KnockbackChance (+ Impact stacks for force)
 
 	DRAFT LIFECYCLE, and why the server owns the offer:
 
@@ -51,10 +52,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Remotes = require(ReplicatedStorage.Remotes)
 local RunUpgradeConfig = require(ReplicatedStorage.Shared.RunUpgradeConfig)
+local ShopService = require(script.Parent.ShopService)
 
 local RunUpgradeOffer = Remotes.RunUpgradeOffer
 local RunUpgradeChosen = Remotes.RunUpgradeChosen
 local RunUpgradesChanged = Remotes.RunUpgradesChanged
+local RerollDraftRequest = Remotes.RerollDraftRequest
+local ShopResult = Remotes.ShopResult
 
 local RunUpgradeService = {}
 
@@ -67,6 +71,8 @@ local cardStacks: { [Player]: { [string]: number } } = {}
 -- [player] = { cardId, cardId, cardId } — the offer currently open for
 -- them, or nil if they have no draft pending.
 local pendingOffers: { [Player]: { string } } = {}
+-- Rerolls spent during the CURRENT break only (reset each OfferDraftToAll).
+local rerollCounts: { [Player]: number } = {}
 
 local upgradeAppliedHandlers: { (Player) -> () } = {}
 
@@ -214,6 +220,7 @@ function RunUpgradeService.ResetPlayer(player: Player)
 	statTotals[player] = nil
 	cardStacks[player] = nil
 	pendingOffers[player] = nil
+	rerollCounts[player] = nil
 	if player.Parent then
 		pushClientState(player)
 	end
@@ -284,16 +291,26 @@ local function buildOfferPayload(player: Player, offer: { string })
 	return payload
 end
 
+local function buildOfferEnvelope(player: Player, offer: { string })
+	local rerolls = rerollCounts[player] or 0
+	return {
+		Cards = buildOfferPayload(player, offer),
+		RerollCost = RunUpgradeConfig.GetRerollCost(rerolls),
+		RerollsUsed = rerolls,
+	}
+end
+
 --[[
 	Opens a draft for each given player. Called by WaveService at the
 	start of every break.
 ]]
 function RunUpgradeService.OfferDraftToAll(players: { Player })
 	for _, player in players do
+		rerollCounts[player] = 0
 		local offer = rollOffer(player)
 		if #offer > 0 then
 			pendingOffers[player] = offer
-			RunUpgradeOffer:FireClient(player, buildOfferPayload(player, offer))
+			RunUpgradeOffer:FireClient(player, buildOfferEnvelope(player, offer))
 		end
 	end
 end
@@ -361,6 +378,32 @@ function RunUpgradeService.Init()
 		-- same frame can't both pass the checks above and stack twice.
 		pendingOffers[player] = nil
 		applyCard(player, card)
+	end)
+
+	RerollDraftRequest.OnServerEvent:Connect(function(player: Player)
+		local offer = pendingOffers[player]
+		if not offer then
+			return
+		end
+
+		local rerolls = rerollCounts[player] or 0
+		local cost = RunUpgradeConfig.GetRerollCost(rerolls)
+		if not ShopService.TrySpend(player, cost, ("Need %d coins to reroll"):format(cost)) then
+			return
+		end
+
+		local newOffer = rollOffer(player)
+		if #newOffer == 0 then
+			-- Spend already happened; put the coins back and keep the old offer.
+			ShopService.AwardCash(player, cost)
+			ShopResult:FireClient(player, false, "No upgrades left to reroll into")
+			return
+		end
+
+		rerollCounts[player] = rerolls + 1
+		pendingOffers[player] = newOffer
+		RunUpgradeOffer:FireClient(player, buildOfferEnvelope(player, newOffer))
+		ShopResult:FireClient(player, true, ("Draft rerolled (−%d)"):format(cost))
 	end)
 
 	Players.PlayerRemoving:Connect(function(player)

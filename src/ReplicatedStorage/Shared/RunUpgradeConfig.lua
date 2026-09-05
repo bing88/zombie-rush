@@ -50,7 +50,8 @@
 	                            ever touching it. "25% faster" therefore
 	                            means 1/1.25 = 0.8x the time, which is
 	                            genuinely 25% more actions per second.
-	  GetTotal     (raw sum)    MaxHealth, HealPerKill, ExplodeOnKill
+	  GetTotal     (raw sum)    MaxHealth, HealPerKill, ExplodeOnKill,
+	                            KnockbackChance
 	                            -> flat values, used directly
 
 	Adding a card needs nothing but a new entry here as long as it reuses
@@ -79,6 +80,11 @@ local RunUpgradeConfig = {}
 	choice between alternatives rather than a formality.
 ]]
 RunUpgradeConfig.OfferCount = 3
+
+-- Cash sink during the break draft: first reroll is cheap, then grows so
+-- deep-run coin piles can't infinite-fish for one card forever.
+RunUpgradeConfig.RerollBaseCost = 125
+RunUpgradeConfig.RerollCostGrowth = 1.45
 
 local Cards: { RunUpgradeCard } = {
 	{
@@ -175,6 +181,18 @@ local Cards: { RunUpgradeCard } = {
 		MaxStacks = 4,
 		IconId = "rbxassetid://138587746513287",
 	},
+	{
+		-- Default hit knockback is chance-based; this opts into crowd
+		-- control. Boss/Tank/Brute stay immune regardless (see
+		-- ZombieService.ApplyHitKnockback). Force scales with stacks.
+		Id = "Impact",
+		Name = "IMPACT",
+		Description = "+25% knockback chance (+30% force/stack)",
+		Stat = "KnockbackChance",
+		Amount = 0.25,
+		MaxStacks = 3,
+		IconId = "rbxassetid://102649129276392",
+	},
 }
 
 RunUpgradeConfig.Cards = Cards
@@ -186,6 +204,11 @@ end
 
 function RunUpgradeConfig.GetCard(id: string): RunUpgradeCard?
 	return cardsById[id]
+end
+
+function RunUpgradeConfig.GetRerollCost(rerollCountThisBreak: number): number
+	local count = math.max(0, rerollCountThisBreak)
+	return math.floor(RunUpgradeConfig.RerollBaseCost * (RunUpgradeConfig.RerollCostGrowth ^ count) + 0.5)
 end
 
 --[[
