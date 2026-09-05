@@ -378,10 +378,7 @@ local function buildUI()
 		equippedStroke.Transparency = 1 -- shown only on the equipped row
 		equippedStroke.Parent = row
 
-		-- Weapon icon. rbxthumb resolves client-side from the public
-		-- catalog asset id (see WeaponModelFactory.GetIconImage) — the
-		-- real model-building path is server-only, so a ViewportFrame of
-		-- the actual Tool isn't available to us here.
+		-- Weapon icon from WeaponConfig.IconId (same art as the hotbar).
 		local iconImage = WeaponModelFactory.GetIconImage(weaponName)
 		local iconHolder = Instance.new("Frame")
 		iconHolder.Name = "Icon"

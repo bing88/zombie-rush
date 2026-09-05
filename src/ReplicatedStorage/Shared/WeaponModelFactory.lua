@@ -38,6 +38,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CFrameDebug = require(ReplicatedStorage.Shared.CFrameDebug)
+local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
 
 local WeaponModelFactory = {}
 
@@ -65,6 +66,7 @@ local WEAPON_VISUALS: { [string]: { Size: Vector3, Color: Color3, MuzzleZ: numbe
 -- visual geometry + those two attachments for positioning; the kit's own
 -- WeaponsSystem scripts/framework are never imported, since WeaponService
 -- must remain the sole authority on firing/damage/ammo.
+-- 3D kit models only — HUD/shop icons live on WeaponConfig.IconId.
 local WEAPON_ASSET_IDS: { [string]: number } = {
 	Pistol = 118912302094201,
 	AssaultRifle = 96131146947811,
@@ -77,25 +79,20 @@ local WEAPON_ASSET_IDS: { [string]: number } = {
 	real asset can't be loaded.
 ]]
 --[[
-	Roblox thumbnail URL for a weapon's catalog asset, for UI icons.
-
-	Uses the rbxthumb:// scheme rather than rendering the real Tool in a
-	ViewportFrame: the model-building path above is server-only (it uses
-	AssetService and parks templates in ServerStorage), so the client
-	genuinely cannot reuse it. rbxthumb resolves entirely client-side
-	from the public asset id, with no server round-trip and no asset
-	loading of our own.
-
-	Returns nil for a weapon with no configured asset (it renders as the
-	placeholder block in-game), so callers can fall back to a text-only
-	row rather than showing a broken image.
+	UI icon for a weapon (shop row, etc.). Same source as the hotbar:
+	WeaponConfig.IconId. Returns nil when unset so callers can fall back
+	to a text glyph instead of a broken image.
 ]]
 function WeaponModelFactory.GetIconImage(weaponName: string): string?
-	local assetId = WEAPON_ASSET_IDS[weaponName]
-	if not assetId then
+	local stats = WeaponConfig[weaponName]
+	if typeof(stats) ~= "table" then
 		return nil
 	end
-	return ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(assetId)
+	local iconId = (stats :: any).IconId
+	if typeof(iconId) ~= "string" or iconId == "" then
+		return nil
+	end
+	return iconId
 end
 
 function WeaponModelFactory.CreatePlaceholderTool(weaponName: string): Tool
