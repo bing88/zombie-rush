@@ -160,25 +160,70 @@ end
 
 --[[
 	Original hand-built lobby (flat floor slab + 4 solid perimeter
-	walls) — kept as the fallback for loadGameLobbyArena() below, the
-	same role buildProceduralArenaFallback plays for the arena. Returns
-	the lobby's world-space horizontal center at floor height (Y = 1)
-	and its (X, Y, Z) extents, matching that same convention, so every
-	functional lobby fixture below (spawn, stalls, monument, teleport
-	pad) can be positioned relative to it regardless of which lobby
-	actually got built.
+	walls + roof) — kept as the fallback for loadGameLobbyArena() below,
+	the same role buildProceduralArenaFallback plays for the arena.
+	Returns the lobby's world-space horizontal center at floor height
+	(Y = 1) and its (X, Y, Z) extents, matching that same convention, so
+	every functional lobby fixture below (spawn, stalls, monument,
+	teleport pad) can be positioned relative to it regardless of which
+	lobby actually got built.
+
+	Sized for ~50 concurrent players: ~160×160 studs of floor is enough
+	to mill around without stacking on the portals, without feeling like
+	an empty warehouse once a few decoration props are in.
 ]]
 local function buildProceduralLobbyFallback(): (Vector3, Vector3)
-	makePart("LobbyFloor", Vector3.new(50, 2, 50), Vector3.new(0, 0, 0), Color3.fromRGB(65, 65, 72))
-
-	local LOBBY_WALL_HEIGHT = 12
+	local LOBBY_SIZE = 160
+	local LOBBY_HALF = LOBBY_SIZE / 2
+	local LOBBY_WALL_HEIGHT = 32
 	local lobbyWallColor = Color3.fromRGB(50, 50, 58)
-	makePart("LobbyWallSouth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, -25), lobbyWallColor)
-	makePart("LobbyWallWest", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(-25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
-	makePart("LobbyWallEast", Vector3.new(1, LOBBY_WALL_HEIGHT, 50), Vector3.new(25, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
-	makePart("LobbyWallNorth", Vector3.new(50, LOBBY_WALL_HEIGHT, 1), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, 25), lobbyWallColor)
+	local floorColor = Color3.fromRGB(65, 65, 72)
 
-	return Vector3.new(0, 1, 0), Vector3.new(50, LOBBY_WALL_HEIGHT, 50)
+	makePart("LobbyFloor", Vector3.new(LOBBY_SIZE, 2, LOBBY_SIZE), Vector3.new(0, 0, 0), floorColor)
+
+	makePart("LobbyWallSouth", Vector3.new(LOBBY_SIZE, LOBBY_WALL_HEIGHT, 2), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, -LOBBY_HALF), lobbyWallColor)
+	makePart("LobbyWallWest", Vector3.new(2, LOBBY_WALL_HEIGHT, LOBBY_SIZE), Vector3.new(-LOBBY_HALF, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
+	makePart("LobbyWallEast", Vector3.new(2, LOBBY_WALL_HEIGHT, LOBBY_SIZE), Vector3.new(LOBBY_HALF, LOBBY_WALL_HEIGHT / 2, 0), lobbyWallColor)
+	makePart("LobbyWallNorth", Vector3.new(LOBBY_SIZE, LOBBY_WALL_HEIGHT, 2), Vector3.new(0, LOBBY_WALL_HEIGHT / 2, LOBBY_HALF), lobbyWallColor)
+
+	-- Roof seals the box so players can't jump the walls into the void /
+	-- arena gap. Slightly oversized so edges sit on the wall tops.
+	makePart(
+		"LobbyRoof",
+		Vector3.new(LOBBY_SIZE + 2, 2, LOBBY_SIZE + 2),
+		Vector3.new(0, LOBBY_WALL_HEIGHT + 1, 0),
+		Color3.fromRGB(40, 40, 48),
+		{ Material = Enum.Material.Concrete }
+	)
+
+	-- Soft overhead fill so the bigger enclosed volume isn't a black box.
+	local lobbyLampPositions = {
+		Vector3.new(-40, LOBBY_WALL_HEIGHT - 2, -40),
+		Vector3.new(40, LOBBY_WALL_HEIGHT - 2, -40),
+		Vector3.new(-40, LOBBY_WALL_HEIGHT - 2, 40),
+		Vector3.new(40, LOBBY_WALL_HEIGHT - 2, 40),
+		Vector3.new(0, LOBBY_WALL_HEIGHT - 2, 0),
+		Vector3.new(-50, LOBBY_WALL_HEIGHT - 2, 0),
+		Vector3.new(50, LOBBY_WALL_HEIGHT - 2, 0),
+		Vector3.new(0, LOBBY_WALL_HEIGHT - 2, -50),
+		Vector3.new(0, LOBBY_WALL_HEIGHT - 2, 50),
+	}
+	for i, lampPos in lobbyLampPositions do
+		local lamp = Instance.new("Part")
+		lamp.Name = "LobbyCeilingLamp" .. i
+		lamp.Shape = Enum.PartType.Ball
+		lamp.Anchored = true
+		lamp.CanCollide = false
+		lamp.Size = Vector3.new(2, 2, 2)
+		lamp.Position = lampPos
+		lamp.Material = Enum.Material.SmoothPlastic
+		lamp.Color = Color3.fromRGB(220, 210, 180)
+		lamp.Transparency = 0.25
+		lamp.Parent = map
+		addPointLight(lamp, Color3.fromRGB(255, 235, 200), 0.7, 42)
+	end
+
+	return Vector3.new(0, 1, 0), Vector3.new(LOBBY_SIZE, LOBBY_WALL_HEIGHT, LOBBY_SIZE)
 end
 
 -- "Game Lobby" asset, provided directly as
@@ -275,14 +320,10 @@ if not lobbyModel then
 end
 assert(lobbyWorldCenter and lobbyWorldSize)
 
--- Every fixture below was originally designed for the procedural
--- lobby's fixed 50x50 footprint (half-extent 25 on both axes) — scaled
--- here so they still land inside whichever lobby actually got built
--- above instead of assuming that exact size. Clamped so a wildly
--- small/large real asset doesn't push fixtures absurdly close together
--- or out past its walls. Still just a best-effort fit — verify in
--- Studio that nothing lands inside a wall/pillar of the real building.
-local LOBBY_REFERENCE_HALF_EXTENT = 25
+-- Every fixture below was originally designed for a 50×50 lobby
+-- (half-extent 25). Procedural lobby is now 160×160 (half 80) so scale
+-- lands near 1; still clamped for the optional Game_Lobby asset.
+local LOBBY_REFERENCE_HALF_EXTENT = 80
 local lobbyScaleX = math.clamp((lobbyWorldSize.X / 2) / LOBBY_REFERENCE_HALF_EXTENT, 0.4, 3)
 local lobbyScaleZ = math.clamp((lobbyWorldSize.Z / 2) / LOBBY_REFERENCE_HALF_EXTENT, 0.4, 3)
 
@@ -290,11 +331,11 @@ local function lobbyPoint(offsetX: number, height: number, offsetZ: number): Vec
 	return lobbyWorldCenter + Vector3.new(offsetX * lobbyScaleX, height, offsetZ * lobbyScaleZ)
 end
 
-local playerSpawnPosition = lobbyPoint(0, 0.5, -18)
+local playerSpawnPosition = lobbyPoint(0, 0.5, -55)
 local playerSpawn = Instance.new("SpawnLocation")
 playerSpawn.Name = "PlayerSpawn"
 playerSpawn.Anchored = true
-playerSpawn.Size = Vector3.new(8, 1, 8)
+playerSpawn.Size = Vector3.new(14, 1, 14)
 playerSpawn.Position = playerSpawnPosition
 playerSpawn.Transparency = 1
 playerSpawn.CanCollide = true
@@ -304,29 +345,61 @@ playerSpawn.Parent = map
 makeMarker("LobbySpawnPoint", playerSpawnPosition + Vector3.new(0, 1.5, 0))
 
 -- Lobby landmark: a simple abstract monument between spawn and the
--- teleport pad, purely decorative — gives the lobby a focal point
--- instead of just being a flat room with stalls around the edges.
-local monumentBase = makePart("MonumentBase", Vector3.new(4, 1, 4), lobbyPoint(0, 0.5, -6), Color3.fromRGB(50, 50, 55))
-local monumentPillar = makePart("MonumentPillar", Vector3.new(1.5, 6, 1.5), lobbyPoint(0, 4, -6), Color3.fromRGB(80, 80, 88))
+-- portals, purely decorative — gives the lobby a focal point
+-- instead of just being a flat room with pads around the edges.
+local monumentBase = makePart("MonumentBase", Vector3.new(6, 1, 6), lobbyPoint(0, 0.5, -18), Color3.fromRGB(50, 50, 55))
+local monumentPillar = makePart("MonumentPillar", Vector3.new(2, 10, 2), lobbyPoint(0, 6, -18), Color3.fromRGB(80, 80, 88))
 local monumentTop = Instance.new("Part")
 monumentTop.Name = "MonumentTop"
 monumentTop.Shape = Enum.PartType.Ball
 monumentTop.Anchored = true
-monumentTop.Size = Vector3.new(2.5, 2.5, 2.5)
-monumentTop.Position = lobbyPoint(0, 8.5, -6)
+monumentTop.Size = Vector3.new(3.5, 3.5, 3.5)
+monumentTop.Position = lobbyPoint(0, 13, -18)
 monumentTop.Material = Enum.Material.Neon
 monumentTop.Color = Color3.fromRGB(90, 220, 130)
 monumentTop.Parent = map
-addPointLight(monumentTop, Color3.fromRGB(90, 220, 130), 3, 24)
+addPointLight(monumentTop, Color3.fromRGB(90, 220, 130), 2.2, 36)
 addLabel(monumentPillar, "ZOMBIE RUSH")
 
 -- One reminder instead of the old five buy/upgrade stalls. Purchases
 -- reset every run and happen from the U panel mid-match, so a lobby
 -- shop would be selling things that vanish the moment the portal
 -- countdown finishes. The sign just tells people where the shop went.
-local armorySign = makePart("ArmorySign", Vector3.new(5, 3, 1.2), lobbyPoint(0, 2.5, -20), Color3.fromRGB(50, 70, 90))
+local armorySign = makePart("ArmorySign", Vector3.new(6, 3.5, 1.4), lobbyPoint(0, 2.5, -62), Color3.fromRGB(50, 70, 90))
 addLabel(armorySign, "ARMORY", "Press U during a match")
-addPointLight(armorySign, Color3.fromRGB(100, 160, 220), 2, 14)
+addPointLight(armorySign, Color3.fromRGB(100, 160, 220), 1.6, 18)
+
+-- Simple floor lane + side benches so the large lobby isn't an empty
+-- grey box. Real art can replace these later (see decoration notes).
+do
+	local lane = makePart(
+		"LobbyCenterLane",
+		Vector3.new(18, 0.2, 110),
+		lobbyPoint(0, 1.05, -10),
+		Color3.fromRGB(85, 85, 95),
+		{ Material = Enum.Material.SmoothPlastic, CanCollide = false }
+	)
+	lane.Transparency = 0.15
+
+	local benchColor = Color3.fromRGB(95, 70, 45)
+	local benchSpots = {
+		Vector3.new(-28, 0, -35),
+		Vector3.new(28, 0, -35),
+		Vector3.new(-28, 0, 5),
+		Vector3.new(28, 0, 5),
+		Vector3.new(-28, 0, 40),
+		Vector3.new(28, 0, 40),
+	}
+	for i, spot in benchSpots do
+		makePart(
+			"LobbyBench" .. i,
+			Vector3.new(10, 1.2, 3),
+			lobbyPoint(spot.X, 1.6, spot.Z),
+			benchColor,
+			{ Material = Enum.Material.WoodPlanks }
+		)
+	end
+end
 
 -- Four match portals. Interacting with one opens a party-size picker
 -- (1-4 players); the host's choice decides whether the match starts on a
@@ -347,14 +420,20 @@ local portalsFolder = Instance.new("Folder")
 portalsFolder.Name = "MatchPortals"
 portalsFolder.Parent = map
 
+-- Portal cage: tall walls + ceiling so waiting players can't jump out
+-- into the open lobby (or out of the party staging volume).
+local PORTAL_BARRIER_HEIGHT = 28
+local PORTAL_SPACING = 28 -- center-to-center along X in reference lobby units
+
 for i = 1, PORTAL_COUNT do
-	-- Spread along the lobby's x axis, a short walk in front of the stalls.
-	local offsetX = (i - (PORTAL_COUNT + 1) / 2) * 9
+	-- Spread along the lobby's x axis, north of the monument.
+	local offsetX = (i - (PORTAL_COUNT + 1) / 2) * PORTAL_SPACING
 	local color = PORTAL_COLORS[i]
+	local portalCenter = lobbyPoint(offsetX, 0.5, 35)
 	local portal = makePart(
 		"MatchPortal" .. i,
-		Vector3.new(7, 1, 7),
-		lobbyPoint(offsetX, 0.5, 5),
+		Vector3.new(9, 1, 9),
+		portalCenter,
 		color,
 		{ Material = Enum.Material.Neon }
 	)
@@ -365,7 +444,7 @@ for i = 1, PORTAL_COUNT do
 	-- self-evidently interactable.
 	addLabel(portal, "", "")
 	addPrompt(portal, "StartMatch", "Open Portal", ("Portal %d"):format(i))
-	addPointLight(portal, color, 4, 18)
+	addPointLight(portal, color, 2.5, 22)
 
 	-- Invisible barrier ringing the pad: players can't simply walk in,
 	-- they're teleported inside on joining the party (see WaveService)
@@ -373,20 +452,21 @@ for i = 1, PORTAL_COUNT do
 	-- wander into the staging area without ever being added to a party,
 	-- which reads as "I'm standing in the portal but the match ignores
 	-- me". Teleports aren't affected by collision, so this only blocks
-	-- walking.
-	local barrierHeight = 10
-	local halfSpan = 4 -- pad is 7 wide; barrier sits just outside it
+	-- walking. Ceiling stops jump-outs while waiting for the match.
+	local halfSpan = 5 -- pad is 9 wide; barrier sits just outside it
 	local barrierSpecs = {
-		{ size = Vector3.new(8, barrierHeight, 1), offset = Vector3.new(0, barrierHeight / 2, halfSpan) },
-		{ size = Vector3.new(8, barrierHeight, 1), offset = Vector3.new(0, barrierHeight / 2, -halfSpan) },
-		{ size = Vector3.new(1, barrierHeight, 8), offset = Vector3.new(halfSpan, barrierHeight / 2, 0) },
-		{ size = Vector3.new(1, barrierHeight, 8), offset = Vector3.new(-halfSpan, barrierHeight / 2, 0) },
+		{ size = Vector3.new(10, PORTAL_BARRIER_HEIGHT, 1), offset = Vector3.new(0, PORTAL_BARRIER_HEIGHT / 2, halfSpan) },
+		{ size = Vector3.new(10, PORTAL_BARRIER_HEIGHT, 1), offset = Vector3.new(0, PORTAL_BARRIER_HEIGHT / 2, -halfSpan) },
+		{ size = Vector3.new(1, PORTAL_BARRIER_HEIGHT, 10), offset = Vector3.new(halfSpan, PORTAL_BARRIER_HEIGHT / 2, 0) },
+		{ size = Vector3.new(1, PORTAL_BARRIER_HEIGHT, 10), offset = Vector3.new(-halfSpan, PORTAL_BARRIER_HEIGHT / 2, 0) },
+		-- Roof
+		{ size = Vector3.new(11, 1, 11), offset = Vector3.new(0, PORTAL_BARRIER_HEIGHT + 0.5, 0) },
 	}
 	for wallIndex, spec in barrierSpecs do
 		local wall = makePart(
 			("MatchPortal%dBarrier%d"):format(i, wallIndex),
 			spec.size,
-			lobbyPoint(offsetX, 0.5, 5) + spec.offset,
+			portalCenter + spec.offset,
 			color,
 			{ Transparency = 1, CanCollide = true }
 		)
@@ -404,7 +484,7 @@ end
 -- from the lobby's real far edge (whichever lobby actually got built)
 -- plus a fixed gap, instead of a fixed 95, and loadSubwayMapArena below
 -- uses it the same way to place the arena just past that edge.
-local LOBBY_ARENA_GAP = 20
+local LOBBY_ARENA_GAP = 50
 local LOBBY_ARENA_BOUNDARY_Z = lobbyWorldCenter.Z + lobbyWorldSize.Z / 2 + LOBBY_ARENA_GAP
 
 -- ============================== ARENA ==============================
