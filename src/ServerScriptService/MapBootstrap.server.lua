@@ -29,6 +29,9 @@
 	Idempotent: skips building if the "Map" folder already exists (e.g. a
 	server soft-restart without a full place reload).
 
+	Place roles (see PlaceConfig): Hub builds lobby+portals only; Match
+	builds arena+spawns only; Combined (Studio default) builds both.
+
 	Everything here is just static geometry + labels/ProximityPrompts.
 	Match-start logic (the portals) lives in WaveService.
 ]]
@@ -38,10 +41,23 @@ local Lighting = game:GetService("Lighting")
 local AssetService = game:GetService("AssetService")
 local ServerStorage = game:GetService("ServerStorage")
 local PathfindingService = game:GetService("PathfindingService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PlaceConfig = require(ReplicatedStorage.Shared.PlaceConfig)
+
+-- Hub = lobby+portals only; Match = arena+spawns only; Combined = both
+-- (Studio when PlaceIds are unset).
+local BUILD_LOBBY = PlaceConfig.IsHub()
+local BUILD_ARENA = PlaceConfig.IsMatch()
 
 if Workspace:FindFirstChild("Map") then
 	return
 end
+
+print(("MapBootstrap: place role=%s (lobby=%s arena=%s)"):format(
+	PlaceConfig.GetRole(),
+	tostring(BUILD_LOBBY),
+	tostring(BUILD_ARENA)
+))
 
 -- Atmosphere: a bit moodier than default Roblox daylight, matching a
 -- "zombie outbreak at dusk" tone, but bright enough that the arena is
@@ -82,6 +98,33 @@ local function makePart(name: string, size: Vector3, position: Vector3, color: C
 	end
 
 	return part
+end
+
+-- Match-only: subway load can take a few seconds after the reserved
+-- server starts. Teleported players otherwise spawn with no floor and
+-- fall into the void. A temporary pad holds them until ArenaSpawnPoint
+-- is ready; the SpawnLocation is moved onto the subway after that.
+local matchHoldingPad: BasePart? = nil
+local matchPlayerSpawn: SpawnLocation? = nil
+if BUILD_ARENA and not BUILD_LOBBY then
+	matchHoldingPad = makePart(
+		"MatchHoldingPad",
+		Vector3.new(40, 2, 40),
+		Vector3.new(0, 48, 55),
+		Color3.fromRGB(40, 40, 48),
+		{ CanCollide = true }
+	)
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "PlayerSpawn"
+	spawn.Anchored = true
+	spawn.Size = Vector3.new(14, 1, 14)
+	spawn.Position = Vector3.new(0, 50, 55)
+	spawn.Transparency = 1
+	spawn.CanCollide = true
+	spawn.Duration = 0
+	spawn.Neutral = true
+	spawn.Parent = map
+	matchPlayerSpawn = spawn
 end
 
 local function makeMarker(name: string, position: Vector3): Part
@@ -157,6 +200,14 @@ end
 
 -- ============================== LOBBY ==============================
 -- Safe zone: no zombies ever spawn here (WaveService only spawns in Wave/Boss states, always in the arena).
+-- Skipped entirely on Match-only places (arena servers have no lobby).
+
+local lobbyModel: Model? = nil
+local lobbyWorldCenter: Vector3
+local lobbyWorldSize: Vector3
+local playerSpawnPosition: Vector3
+
+if BUILD_LOBBY then
 
 --[[
 	Original hand-built lobby (flat floor slab + 4 solid perimeter
@@ -311,7 +362,6 @@ local function loadGameLobbyArena(): (Model?, Vector3?, Vector3?)
 	return template, targetFloorCenter, boundingSize
 end
 
-local lobbyModel, lobbyWorldCenter, lobbyWorldSize
 if USE_GAME_LOBBY_ASSET then
 	lobbyModel, lobbyWorldCenter, lobbyWorldSize = loadGameLobbyArena()
 end
@@ -331,7 +381,7 @@ local function lobbyPoint(offsetX: number, height: number, offsetZ: number): Vec
 	return lobbyWorldCenter + Vector3.new(offsetX * lobbyScaleX, height, offsetZ * lobbyScaleZ)
 end
 
-local playerSpawnPosition = lobbyPoint(0, 0.5, -55)
+playerSpawnPosition = lobbyPoint(0, 0.5, -55)
 local playerSpawn = Instance.new("SpawnLocation")
 playerSpawn.Name = "PlayerSpawn"
 playerSpawn.Anchored = true
@@ -474,6 +524,13 @@ for i = 1, PORTAL_COUNT do
 	end
 end
 
+else
+	-- Match-only place: no lobby geometry. Arena is placed from Z=0.
+	lobbyWorldCenter = Vector3.new(0, 1, 0)
+	lobbyWorldSize = Vector3.new(0, 0, 0)
+	playerSpawnPosition = Vector3.new(0, 5, 0)
+end
+
 -- Match starts via the teleport pad now (see WaveService), not by
 -- walking from the lobby into the arena — the corridor that used to
 -- physically connect them served no purpose once that changed and was
@@ -485,9 +542,17 @@ end
 -- plus a fixed gap, instead of a fixed 95, and loadSubwayMapArena below
 -- uses it the same way to place the arena just past that edge.
 local LOBBY_ARENA_GAP = 50
-local LOBBY_ARENA_BOUNDARY_Z = lobbyWorldCenter.Z + lobbyWorldSize.Z / 2 + LOBBY_ARENA_GAP
+local LOBBY_ARENA_BOUNDARY_Z = if BUILD_LOBBY
+	then lobbyWorldCenter.Z + lobbyWorldSize.Z / 2 + LOBBY_ARENA_GAP
+	else 0
 
 -- ============================== ARENA ==============================
+-- Skipped on Hub-only places (parties teleport to a Match place).
+local arenaWorldCenter: Vector3
+local arenaWorldSize: Vector3
+local arenaPlayerSpawn: Vector3
+
+if BUILD_ARENA then
 -- Target footprint used as the placement target below regardless of
 -- which arena actually ends up getting built — X widened east (vs. a
 -- symmetric range) purely so the procedural fallback's CoverBarrel
@@ -933,7 +998,8 @@ local function loadSubwayMapArena(): (Model?, Vector3?, Vector3?)
 	return template, targetFloorCenter, boundingSize
 end
 
-local subwayModel, arenaWorldCenter, arenaWorldSize = loadSubwayMapArena()
+local subwayModel
+subwayModel, arenaWorldCenter, arenaWorldSize = loadSubwayMapArena()
 if not subwayModel then
 	arenaWorldCenter, arenaWorldSize = buildProceduralArenaFallback()
 end
@@ -941,6 +1007,13 @@ assert(arenaWorldCenter and arenaWorldSize)
 
 local PROBE_HEIGHT_ABOVE_FLOOR = 12 -- high enough to clear low steps/platforms, low enough to stay under any ceiling
 local REQUIRED_HEADROOM = 6 -- a standable spot needs at least this much clear space above it
+-- Playable interior must have a ceiling within this many studs above the
+-- headroom band. Roof tops are open to sky, so they fail this and are
+-- rejected — that was letting zombies spawn on top of the subway.
+local REQUIRED_CEILING_WITHIN = 30
+-- Absolute cap above the arena floor band; second-floor platforms stay
+-- under this, roof slabs do not.
+local MAX_SPAWN_ABOVE_BASE_FLOOR = 24
 
 --[[
 	Raycasts down at one X/Z column and returns a standable position, or
@@ -951,11 +1024,20 @@ local REQUIRED_HEADROOM = 6 -- a standable spot needs at least this much clear s
 	stairs, a pipe), which are standable in the raycast sense but
 	instantly trap whatever spawns there.
 
+	Also rejects open-air / roof tops: after clearing REQUIRED_HEADROOM,
+	there must still be a ceiling within REQUIRED_CEILING_WITHIN studs.
+	Roof exteriors have sky above them, so they used to pass headroom
+	and become zombie spawn points.
+
 	floorY is the reference band for THIS probe (ground floor, mezzanine,
 	…), not necessarily the map's absolute bottom — see
 	discoverFloorProbeYs + buildGeometryAwareSpawnPositions.
+
+	baseFloorY (optional) is the arena's ground floor; when set, stands
+	too far above it (roof band) are rejected even if a probe band was
+	mis-detected as a "floor".
 ]]
-local function probeFloorAt(geometryModel: Model, x: number, z: number, floorY: number): Vector3?
+local function probeFloorAt(geometryModel: Model, x: number, z: number, floorY: number, baseFloorY: number?): Vector3?
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Include
 	raycastParams.FilterDescendantsInstances = { geometryModel }
@@ -967,10 +1049,22 @@ local function probeFloorAt(geometryModel: Model, x: number, z: number, floorY: 
 	end
 
 	local standPosition = result.Position + Vector3.new(0, 3, 0)
+	if baseFloorY and standPosition.Y > baseFloorY + MAX_SPAWN_ABOVE_BASE_FLOOR then
+		return nil
+	end
+
 	local headroomHit = Workspace:Raycast(standPosition, Vector3.new(0, REQUIRED_HEADROOM, 0), raycastParams)
 	if headroomHit then
 		return nil
 	end
+
+	-- Must be indoors: a ceiling somewhere above the clear headroom band.
+	local ceilingOrigin = standPosition + Vector3.new(0, REQUIRED_HEADROOM + 0.1, 0)
+	local ceilingHit = Workspace:Raycast(ceilingOrigin, Vector3.new(0, REQUIRED_CEILING_WITHIN, 0), raycastParams)
+	if not ceilingHit then
+		return nil
+	end
+
 	return standPosition
 end
 
@@ -985,7 +1079,8 @@ local function discoverFloorProbeYs(geometryModel: Model, baseFloorY: number): {
 
 	local function addLevel(y: number)
 		-- Ignore near-ground noise and anything high enough to be roof.
-		if y < baseFloorY + 5 or y > baseFloorY + 55 then
+		-- Cap is well below typical subway roof slabs (~30+ above floor).
+		if y < baseFloorY + 5 or y > baseFloorY + 26 then
 			return
 		end
 		for _, existing in levels do
@@ -1062,7 +1157,7 @@ local function findStandablePosition(geometryModel: Model?, center: Vector3, siz
 		return fallback -- procedural arena: flat and open, center is fine
 	end
 
-	local direct = probeFloorAt(geometryModel, center.X, center.Z, center.Y)
+	local direct = probeFloorAt(geometryModel, center.X, center.Z, center.Y, center.Y)
 	if direct then
 		return direct
 	end
@@ -1082,7 +1177,7 @@ local function findStandablePosition(geometryModel: Model?, center: Vector3, siz
 			Vector3.new(center.X + offset, 0, center.Z - offset),
 			Vector3.new(center.X - offset, 0, center.Z + offset),
 		} do
-			local found = probeFloorAt(geometryModel, candidate.X, candidate.Z, center.Y)
+			local found = probeFloorAt(geometryModel, candidate.X, candidate.Z, center.Y, center.Y)
 			if found then
 				return found
 			end
@@ -1093,7 +1188,7 @@ local function findStandablePosition(geometryModel: Model?, center: Vector3, siz
 	return fallback
 end
 
-local arenaPlayerSpawn = findStandablePosition(subwayModel, arenaWorldCenter, arenaWorldSize)
+arenaPlayerSpawn = findStandablePosition(subwayModel, arenaWorldCenter, arenaWorldSize)
 makeMarker("ArenaSpawnPoint", arenaPlayerSpawn)
 print(("MapBootstrap: ArenaSpawnPoint at %.1f, %.1f, %.1f (arena floor Y=%.1f)"):format(
 	arenaPlayerSpawn.X,
@@ -1158,7 +1253,7 @@ local function buildGeometryAwareSpawnPositions(geometryModel: Model, bottomCent
 			-- ramps). The old single-band probe only ever hit the bottom
 			-- platform, so the second floor stayed empty.
 			for _, floorY in floorProbeYs do
-				local standPosition = probeFloorAt(geometryModel, x, z, floorY)
+				local standPosition = probeFloorAt(geometryModel, x, z, floorY, bottomCenter.Y)
 				if standPosition then
 					local key = string.format("%.0f:%.0f:%.0f", standPosition.X, standPosition.Y, standPosition.Z)
 					if not seenKeys[key] then
@@ -1412,14 +1507,14 @@ if subwayModel then
 	while x <= maxX do
 		local z = minZ
 		while z <= maxZ do
-			local stand = probeFloorAt(subwayModel, x, z, arenaWorldCenter.Y)
+			local stand = probeFloorAt(subwayModel, x, z, arenaWorldCenter.Y, arenaWorldCenter.Y)
 			if stand then
 				lightIndex += 1
 				placeFloorLight("FloorLight_Grid" .. lightIndex, stand)
 			end
 			-- Also try upper deck band so the mezzanine isn't left dark.
-			for _, offsetY in { 14, 28 } do
-				local upper = probeFloorAt(subwayModel, x, z, arenaWorldCenter.Y + offsetY)
+			for _, offsetY in { 14, 22 } do
+				local upper = probeFloorAt(subwayModel, x, z, arenaWorldCenter.Y + offsetY, arenaWorldCenter.Y)
 				if upper and (not stand or math.abs(upper.Y - stand.Y) > 6) then
 					lightIndex += 1
 					placeFloorLight("FloorLight_Upper" .. lightIndex, upper)
@@ -1431,6 +1526,61 @@ if subwayModel then
 	end
 
 	print(("MapBootstrap: placed %d subway floor light(s)"):format(lightIndex))
+
+	--[[
+		The L4D subway asset has open station entrances / track mouths that
+		lead straight into the void. Outer Boundary* walls are too far out
+		to catch that. Invisible seals sit just outside the station AABB
+		(plus a lid) so players can't walk out a doorway or off the roof.
+	]]
+	do
+		local pad = 3
+		local thickness = 8
+		local wallHeight = math.max(arenaWorldSize.Y + 20, 52)
+		local halfX = arenaWorldSize.X / 2 + pad
+		local halfZ = arenaWorldSize.Z / 2 + pad
+		local wallMidY = arenaWorldCenter.Y + wallHeight / 2
+		local sealsFolder = Instance.new("Folder")
+		sealsFolder.Name = "SubwaySeals"
+		sealsFolder.Parent = map
+
+		local function sealPart(name: string, size: Vector3, position: Vector3)
+			local part = makePart(name, size, position, Color3.new(), { Transparency = 1, CanCollide = true })
+			part.Parent = sealsFolder
+		end
+
+		sealPart(
+			"SubwaySealNorth",
+			Vector3.new(halfX * 2 + thickness, wallHeight, thickness),
+			Vector3.new(arenaWorldCenter.X, wallMidY, arenaWorldCenter.Z + halfZ)
+		)
+		sealPart(
+			"SubwaySealSouth",
+			Vector3.new(halfX * 2 + thickness, wallHeight, thickness),
+			Vector3.new(arenaWorldCenter.X, wallMidY, arenaWorldCenter.Z - halfZ)
+		)
+		sealPart(
+			"SubwaySealEast",
+			Vector3.new(thickness, wallHeight, halfZ * 2),
+			Vector3.new(arenaWorldCenter.X + halfX, wallMidY, arenaWorldCenter.Z)
+		)
+		sealPart(
+			"SubwaySealWest",
+			Vector3.new(thickness, wallHeight, halfZ * 2),
+			Vector3.new(arenaWorldCenter.X - halfX, wallMidY, arenaWorldCenter.Z)
+		)
+		-- Lid: blocks walking out across the station roof.
+		sealPart(
+			"SubwaySealLid",
+			Vector3.new(halfX * 2 + thickness * 2, thickness, halfZ * 2 + thickness * 2),
+			Vector3.new(arenaWorldCenter.X, arenaWorldCenter.Y + arenaWorldSize.Y + 4, arenaWorldCenter.Z)
+		)
+		print(("MapBootstrap: sealed subway exits (volume %.0f x %.0f x %.0f)"):format(
+			arenaWorldSize.X,
+			arenaWorldSize.Y,
+			arenaWorldSize.Z
+		))
+	end
 end
 
 -- Diagnostic: confirms spawn points landed at a sane height relative to
@@ -1452,6 +1602,45 @@ do
 		minY,
 		maxY
 	))
+end
+
+-- Match-only: move the early SpawnLocation onto the validated subway
+-- pad and drop the holding floor so everyone lands inside the station.
+if not BUILD_LOBBY then
+	local spawnFloor = arenaPlayerSpawn - Vector3.new(0, 3, 0)
+	if matchPlayerSpawn and matchPlayerSpawn.Parent then
+		matchPlayerSpawn.Position = spawnFloor
+	else
+		local matchSpawn = Instance.new("SpawnLocation")
+		matchSpawn.Name = "PlayerSpawn"
+		matchSpawn.Anchored = true
+		matchSpawn.Size = Vector3.new(14, 1, 14)
+		matchSpawn.Position = spawnFloor
+		matchSpawn.Transparency = 1
+		matchSpawn.CanCollide = true
+		matchSpawn.Duration = 0
+		matchSpawn.Neutral = true
+		matchSpawn.Parent = map
+	end
+	if matchHoldingPad then
+		matchHoldingPad:Destroy()
+		matchHoldingPad = nil
+	end
+	-- Anyone who arrived on the holding pad while the subway loaded.
+	for _, player in game:GetService("Players"):GetPlayers() do
+		local character = player.Character
+		if character then
+			character:PivotTo(CFrame.new(arenaPlayerSpawn))
+		end
+	end
+	playerSpawnPosition = arenaPlayerSpawn
+end
+
+else
+	-- Hub-only: no arena. Boundary / fall recovery use lobby extents only.
+	arenaWorldCenter = lobbyWorldCenter
+	arenaWorldSize = lobbyWorldSize
+	arenaPlayerSpawn = playerSpawnPosition + Vector3.new(0, 3.5, 0)
 end
 
 -- ============================== BOUNDARY ==============================
@@ -1499,7 +1688,7 @@ fallSafetyNet.Position = Vector3.new(boundaryCenterX, -50, boundaryCenterZ)
 fallSafetyNet.Parent = map
 
 local LOBBY_RECOVERY_POSITION = playerSpawnPosition + Vector3.new(0, 3.5, 0)
-local ARENA_RECOVERY_POSITION = arenaWorldCenter + Vector3.new(0, 7, 0)
+local ARENA_RECOVERY_POSITION = arenaPlayerSpawn
 local recoveringCharacters: { [Model]: boolean } = {}
 
 fallSafetyNet.Touched:Connect(function(hit: BasePart)
@@ -1520,7 +1709,16 @@ fallSafetyNet.Touched:Connect(function(hit: BasePart)
 	-- before hitting the net (X/Z barely drift during a straight fall) —
 	-- good enough since this is only ever expected to fire as a last
 	-- resort, not something normal play should ever actually trigger.
-	local recoveryPosition = if rootPart.Position.Z < LOBBY_ARENA_BOUNDARY_Z then LOBBY_RECOVERY_POSITION else ARENA_RECOVERY_POSITION
+	local recoveryPosition: Vector3
+	if BUILD_LOBBY and BUILD_ARENA then
+		recoveryPosition = if rootPart.Position.Z < LOBBY_ARENA_BOUNDARY_Z
+			then LOBBY_RECOVERY_POSITION
+			else ARENA_RECOVERY_POSITION
+	elseif BUILD_ARENA then
+		recoveryPosition = ARENA_RECOVERY_POSITION
+	else
+		recoveryPosition = LOBBY_RECOVERY_POSITION
+	end
 
 	rootPart.AssemblyLinearVelocity = Vector3.zero
 	character:PivotTo(CFrame.new(recoveryPosition))

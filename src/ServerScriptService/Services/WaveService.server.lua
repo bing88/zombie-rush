@@ -37,6 +37,8 @@ local RunUpgradeService = require(script.Parent.RunUpgradeService)
 local ComboService = require(script.Parent.ComboService)
 local UltimateService = require(script.Parent.UltimateService)
 local LeaderboardService = require(script.Parent.LeaderboardService)
+local MatchTeleport = require(script.Parent.MatchTeleport)
+local PlaceConfig = require(ReplicatedStorage.Shared.PlaceConfig)
 
 local WaveStateChanged = Remotes.WaveStateChanged
 local GameStateChanged = Remotes.GameStateChanged
@@ -64,7 +66,7 @@ ComboService.Init()
 ShopService.Init() -- arms PurchaseWeapon/Upgrade remotes + run-loadout wipe on leave
 UltimateService.Init()
 
-local DEFAULT_ARENA_SPAWN = Vector3.new(0, 5, 105)
+local DEFAULT_ARENA_SPAWN = Vector3.new(0, 5, 55)
 local DEFAULT_LOBBY_SPAWN = Vector3.new(0, 3, -18)
 
 -- Set true once a portal's party countdown finishes (see the portal
@@ -150,6 +152,25 @@ local function getMarkerPosition(name: string, fallback: Vector3): Vector3
 	return fallback
 end
 
+--[[
+	MapBootstrap can still be loading the subway when a reserved Match
+	server accepts teleports. Waiting here avoids PivotTo-ing into the
+	old Combined-era default (or void) before ArenaSpawnPoint exists.
+]]
+local function waitForArenaSpawnPosition(timeoutSeconds: number?): Vector3
+	local timeout = timeoutSeconds or 45
+	local deadline = os.clock() + timeout
+	while os.clock() < deadline do
+		local marker = Workspace:FindFirstChild("ArenaSpawnPoint", true)
+		if marker and marker:IsA("BasePart") then
+			return marker.Position
+		end
+		task.wait(0.1)
+	end
+	warn("WaveService: ArenaSpawnPoint not ready after wait — using fallback spawn")
+	return DEFAULT_ARENA_SPAWN
+end
+
 local function getArenaSpawnPosition(): Vector3
 	return getMarkerPosition("ArenaSpawnPoint", DEFAULT_ARENA_SPAWN)
 end
@@ -215,7 +236,15 @@ end
 
 --[[ Teleports match participants only — lobby players stay put. ]]
 local function teleportAllPlayersTo(position: Vector3)
-	for _, player in getActiveParticipants() do
+	-- Tight offsets: subway platforms are narrow; the old ±5 stud jitter
+	-- shoved players into the track pit / void next to the platform.
+	local slotOffsets = {
+		Vector3.zero,
+		Vector3.new(2, 0, 0),
+		Vector3.new(-2, 0, 0),
+		Vector3.new(0, 0, 2),
+	}
+	for index, player in getActiveParticipants() do
 		-- A player who's truly dead at this point (see PlayerService's
 		-- Died handler, which doesn't auto-respawn mid-match) needs a
 		-- fresh character before there's anything to teleport.
@@ -227,8 +256,8 @@ local function teleportAllPlayersTo(position: Vector3)
 			character = player.Character
 		end
 		if character then
-			local jitter = Vector3.new(math.random(-5, 5), 0, math.random(-5, 5))
-			character:PivotTo(CFrame.new(position + jitter))
+			local offset = slotOffsets[((index - 1) % #slotOffsets) + 1]
+			character:PivotTo(CFrame.new(position + offset))
 		end
 	end
 end
@@ -323,28 +352,53 @@ end)
 	they never opted into — and since allPlayersDefeated only counts
 	participants, their death wouldn't even register. They stay in the
 	lobby and can start their own run at a portal instead.
+
+	Match-only place exception: everyone who lands here is in the run,
+	and they often spawn on the holding pad (or void) before the subway
+	finishes loading — always snap them to ArenaSpawnPoint once it exists.
 ]]
-Players.PlayerAdded:Connect(function(player)
-	player.CharacterAdded:Connect(function(character)
-		if not MatchState.IsMatchActive() then
-			return
-		end
-		local isParticipant = false
+local function onMatchOrParticipantCharacterAdded(player: Player, character: Model)
+	local isMatchPlace = PlaceConfig.GetRole() == "Match"
+	if not isMatchPlace and not MatchState.IsMatchActive() then
+		return
+	end
+	local isParticipant = isMatchPlace
+	if not isParticipant then
 		for _, participant in matchParticipants do
 			if participant == player then
 				isParticipant = true
 				break
 			end
 		end
-		if not isParticipant then
-			return
-		end
-		task.wait(0.2) -- let the character finish loading before moving it
-		if character.Parent then
-			character:PivotTo(CFrame.new(getArenaSpawnPosition()))
-		end
+	end
+	if not isParticipant then
+		return
+	end
+	task.wait(0.2) -- let the character finish loading before moving it
+	if not character.Parent then
+		return
+	end
+	local spawnPosition = if isMatchPlace
+		then waitForArenaSpawnPosition(30)
+		else getArenaSpawnPosition()
+	if character.Parent then
+		character:PivotTo(CFrame.new(spawnPosition))
+	end
+end
+
+local function hookPlayerArenaSnap(player: Player)
+	player.CharacterAdded:Connect(function(character)
+		onMatchOrParticipantCharacterAdded(player, character)
 	end)
-end)
+	if player.Character then
+		task.spawn(onMatchOrParticipantCharacterAdded, player, player.Character)
+	end
+end
+
+for _, player in Players:GetPlayers() do
+	hookPlayerArenaSnap(player)
+end
+Players.PlayerAdded:Connect(hookPlayerArenaSnap)
 
 local function spawnWaveTrickle(composition, spawnInterval: number, waveNumber: number)
 	local positions = getZombieSpawnPositions()
@@ -511,7 +565,7 @@ end
 	renders "Wave N" from it (see UIController.SetWave).
 ]]
 local function runWaves(): number
-	teleportAllPlayersTo(getArenaSpawnPosition())
+	teleportAllPlayersTo(waitForArenaSpawnPosition(45))
 
 	local waveNumber = 0
 	-- Waves actually finished, not the one they died on. Meta XP is
@@ -652,7 +706,19 @@ local function runDefeat(wavesCleared: number)
 		task.wait(1)
 	end
 
-	teleportAllPlayersTo(getLobbySpawnPosition())
+	if PlaceConfig.UsesCrossPlaceTeleport() then
+		-- Match place: send the party (and anyone still on this reserved
+		-- server) back to the Hub. Empty reserved servers shut down on their own.
+		local toHub = Players:GetPlayers()
+		if #toHub > 0 then
+			local ok = MatchTeleport.TeleportPlayersToHub(toHub)
+			if not ok then
+				warn("WaveService: return-to-Hub teleport failed — leaving players in the Match place")
+			end
+		end
+	else
+		teleportAllPlayersTo(getLobbySpawnPosition())
+	end
 end
 
 --[[
@@ -857,6 +923,32 @@ local function runPartyCountdown()
 			-- moved into the match, not ejected. Their waiting UI is
 			-- cleared client-side when the match state changes.
 			clearParty(false)
+
+			if PlaceConfig.GetRole() == "Hub" then
+				-- Hub place: reserved Match server instead of local waves.
+				if not PlaceConfig.UsesCrossPlaceTeleport() then
+					warn("WaveService: Hub role but HubPlaceId/MatchPlaceId are unset — paste PlaceIds in PlaceConfig")
+					for _, member in matchParticipants do
+						teleportPlayerTo(member, getLobbySpawnPosition())
+					end
+					matchParticipants = {}
+					return
+				end
+				GameStateChanged:FireAllClients("Starting", 1)
+				local ok = MatchTeleport.TeleportPartyToMatch(matchParticipants)
+				if not ok then
+					warn("WaveService: TeleportPartyToMatch failed — returning party to lobby spawn")
+					for _, member in matchParticipants do
+						teleportPlayerTo(member, getLobbySpawnPosition())
+					end
+					matchParticipants = {}
+					return
+				end
+				-- Teleport initiated; this Hub server stays in Lobby for the next party.
+				matchParticipants = {}
+				return
+			end
+
 			startRequested = true
 			return
 		end
@@ -875,6 +967,9 @@ end
 	state — a no-op mid-match.
 ]]
 local function connectPortals()
+	if not PlaceConfig.IsHub() then
+		return
+	end
 	local mapFolder = Workspace:WaitForChild("Map", 10)
 	local portalsFolder = mapFolder and mapFolder:WaitForChild("MatchPortals", 10)
 	if not portalsFolder then
@@ -913,6 +1008,49 @@ local function connectPortals()
 	updatePortalLabels()
 end
 connectPortals()
+
+--[[
+	Match-only place: wait for the teleported party to land, freeze them
+	as matchParticipants, then start waves. No portals on this place.
+]]
+local function runMatchPlaceStart(): boolean
+	MatchState.Set("Lobby")
+	startRequested = false
+	matchParticipants = {}
+	currentModifier = WaveModifiers[1]
+	GameStateChanged:FireAllClients("Lobby", 0)
+
+	-- Don't start the countdown until the subway (and ArenaSpawnPoint)
+	-- actually exist — otherwise the party sits on the holding pad or
+	-- gets teleported into a stale fallback coordinate in the void.
+	local arenaSpawn = waitForArenaSpawnPosition(60)
+
+	while #Players:GetPlayers() == 0 do
+		task.wait(0.25)
+	end
+
+	-- Give TeleportAsync a moment so the full party can arrive together.
+	local settleEndsAt = os.clock() + 4
+	while os.clock() < settleEndsAt do
+		matchParticipants = Players:GetPlayers()
+		task.wait(0.25)
+	end
+	matchParticipants = Players:GetPlayers()
+	if #matchParticipants == 0 then
+		return false
+	end
+
+	-- Pull everyone off the holding pad / bad default spawn into the station.
+	teleportAllPlayersTo(arenaSpawn)
+
+	MatchState.Set("Starting")
+	for secondsLeft = 3, 1, -1 do
+		GameStateChanged:FireAllClients("Starting", secondsLeft)
+		task.wait(1)
+		matchParticipants = Players:GetPlayers()
+	end
+	return #matchParticipants > 0
+end
 
 --[[
 	Host's answer to the party size picker. partySize nil/0 means they
@@ -980,14 +1118,30 @@ end)
 
 
 task.spawn(function()
+	local role = PlaceConfig.GetRole()
+	print(("WaveService: place role=%s crossPlace=%s"):format(
+		role,
+		tostring(PlaceConfig.UsesCrossPlaceTeleport())
+	))
+
+	-- Hub-only: portals teleport parties to Match. Never run local waves.
+	if role == "Hub" then
+		MatchState.Set("Lobby")
+		GameStateChanged:FireAllClients("Lobby", 0)
+		return
+	end
+
 	while true do
-		-- Blocks until a portal party's countdown completes; that
-		-- countdown IS the pre-match countdown now (the old fixed
-		-- lobby countdown was removed, since the party's own timer
-		-- already serves that role and its length depends on the
-		-- chosen party size).
-		runLobbyPhase()
-		if #getActiveParticipants() > 0 then
+		local ready = false
+		if role == "Match" then
+			ready = runMatchPlaceStart()
+		else
+			-- Combined (Studio / unset PlaceIds): portal countdown → local waves.
+			runLobbyPhase()
+			ready = true
+		end
+
+		if ready and #getActiveParticipants() > 0 then
 			matchDefeated = false
 			StatsService.ResetAll()
 			-- Run upgrades are per-RUN by design (see
@@ -1011,6 +1165,14 @@ task.spawn(function()
 			local wavesCleared = runWaves()
 			runDefeat(wavesCleared)
 			matchDefeated = false
+
+			-- Reserved Match servers: after returning to Hub, stop the
+			-- loop so an empty instance doesn't immediately re-start.
+			if role == "Match" and PlaceConfig.UsesCrossPlaceTeleport() then
+				return
+			end
+		elseif role == "Match" then
+			task.wait(1)
 		end
 	end
 end)

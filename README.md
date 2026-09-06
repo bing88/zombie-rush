@@ -89,6 +89,25 @@ Both settings are saved with the place, so you only need to set them once (per p
 
 ---
 
+## Hub + Match places (live multiplayer)
+
+Studio Play stays on **Combined** mode (lobby + arena in one place) while `PlaceConfig.HubPlaceId` / `MatchPlaceId` are `0`. For a live Universe that can run many matches in parallel:
+
+1. Create a **Universe** with two places: **Hub** (lobby) and **Match** (arena).
+2. Publish the same Rojo tree to both (`default.project.json`, or `hub.project.json` / `match.project.json` — same `$path`s; role is decided by PlaceId, not the project file).
+3. Paste the numeric PlaceIds into `ReplicatedStorage/Shared/PlaceConfig.lua`:
+   ```lua
+   PlaceConfig.HubPlaceId = 123 -- Hub place
+   PlaceConfig.MatchPlaceId = 456 -- Match place
+   ```
+4. Re-publish both places.
+
+**Flow:** Hub portals fill a party → `ReserveServer` + teleport into an isolated Match instance → waves run → defeat → teleport back to Hub. Empty reserved Match servers shut down on their own.
+
+**Studio role override (optional):** set `PlaceConfig.ForceRole = "Hub"` or `"Match"` to test one role inside a single Studio place. Cross-place teleports still need real PlaceIds (`UsesCrossPlaceTeleport`).
+
+---
+
 ## What's intentionally cut from Tier 1 (per the reconciled plan)
 
 - Gems/premium currency (Robux perks and the run-upgrade draft both shipped since — see their rows above)

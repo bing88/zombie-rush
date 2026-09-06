@@ -10,6 +10,9 @@ local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.Remotes)
 local WeaponConfig = require(ReplicatedStorage.Shared.WeaponConfig)
+local PlaceConfig = require(ReplicatedStorage.Shared.PlaceConfig)
+
+print(("ClientMain: place role=%s"):format(PlaceConfig.GetRole()))
 
 local Controllers = script.Parent:WaitForChild("Controllers")
 local WeaponController = require(Controllers.WeaponController)
